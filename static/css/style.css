@@ -1,0 +1,174 @@
+/* Portfolio Tracker Custom Styles - Bootstrap Enhancement */
+
+:root {
+    --success-color: #198754;
+    --danger-color: #dc3545;
+}
+
+/* Body */
+body {
+    background-color: #f8f9fa;
+}
+
+/* Charts */
+.chart-container {
+    position: relative;
+    height: 300px;
+}
+
+.pnl-chart-container {
+    height: 350px;
+}
+
+.allocation-chart {
+    height: 280px;
+}
+
+/* Tables */
+.sortable {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.sortable:hover {
+    background-color: #e9ecef;
+}
+
+.sortable .sort-icon {
+    opacity: 0.3;
+    font-size: 0.75rem;
+    margin-left: 4px;
+}
+
+.sortable.asc .sort-icon::before {
+    content: "\F148" !important;
+}
+
+.sortable.desc .sort-icon::before {
+    content: "\F128" !important;
+}
+
+.sortable.asc .sort-icon,
+.sortable.desc .sort-icon {
+    opacity: 1;
+    color: var(--bs-primary);
+}
+
+/* P&L Colors */
+.text-success, .positive {
+    color: var(--success-color) !important;
+}
+
+.text-danger, .negative {
+    color: var(--danger-color) !important;
+}
+
+/* Total Row */
+.total-row {
+    background-color: #f8f9fa !important;
+    border-top: 2px solid #dee2e6;
+    font-weight: 600;
+}
+
+/* Period Buttons */
+.period-btn.active {
+    font-weight: 600;
+}
+
+/* Custom Tooltip */
+.has-tooltip {
+    position: relative;
+    cursor: help;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+}
+
+.tooltip-custom {
+    position: fixed;
+    background-color: #212529;
+    color: white;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    white-space: pre-line;
+    z-index: 1100;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    max-width: 350px;
+}
+
+.tooltip-custom.visible {
+    opacity: 1;
+}
+
+/* Card hover effect */
+.card {
+    transition: box-shadow 0.2s ease;
+}
+
+.card:hover {
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Toast styles */
+.toast.bg-success {
+    background-color: var(--success-color) !important;
+}
+
+.toast.bg-danger {
+    background-color: var(--danger-color) !important;
+}
+
+/* Table responsive adjustments */
+@media (max-width: 768px) {
+    .chart-container {
+        height: 250px;
+    }
+
+    .pnl-chart-container {
+        height: 280px;
+    }
+
+    .btn-group-sm .btn {
+        padding: 0.25rem 0.4rem;
+        font-size: 0.7rem;
+    }
+}
+
+/* Empty state */
+.empty-state {
+    padding: 2rem;
+    text-align: center;
+    color: #6c757d;
+}
+
+/* Navbar brand */
+.navbar-brand {
+    font-weight: 600;
+}
+
+/* Summary card values */
+#totalValue, #costBasis, #unrealizedPnl, #totalReturn, #totalDividends {
+    transition: color 0.2s ease;
+}
+
+/* Auto-refresh spinning icon */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.spin {
+    display: inline-block;
+    animation: spin 1s linear infinite;
+}
+
+/* Last updated text */
+.last-updated {
+    font-size: 0.75rem;
+    opacity: 0.8;
+}

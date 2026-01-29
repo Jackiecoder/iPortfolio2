@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portfolio Tracker</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css?v=8">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-top shadow-sm">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="bi bi-graph-up-arrow me-2"></i>Portfolio Tracker
+            </a>
+            <div class="d-flex gap-2 align-items-center">
+                <div class="dropdown">
+                    <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        <i class="bi bi-clock-history me-1"></i>Auto: <span id="autoRefreshLabel">Off</span>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                        <li><a class="dropdown-item auto-refresh-option" href="#" data-interval="0">Off</a></li>
+                        <li><a class="dropdown-item auto-refresh-option" href="#" data-interval="30">30 seconds</a></li>
+                        <li><a class="dropdown-item auto-refresh-option" href="#" data-interval="60">1 minute</a></li>
+                        <li><a class="dropdown-item auto-refresh-option" href="#" data-interval="300">5 minutes</a></li>
+                    </ul>
+                </div>
+                <span id="refreshCountdown" class="badge bg-light text-dark d-none">
+                    <i class="bi bi-arrow-repeat spin me-1"></i><span id="countdownValue"></span>
+                </span>
+                <button id="refreshBtn" class="btn btn-light btn-sm">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                </button>
+                <label class="btn btn-outline-light btn-sm mb-0">
+                    <i class="bi bi-upload me-1"></i>Upload CSV
+                    <input type="file" id="fileInput" accept=".csv" hidden>
+                </label>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container-fluid py-4">
+        <!-- Portfolio Summary Cards -->
+        <div class="row g-3 mb-4">
+            <div class="col-6 col-md-4 col-lg">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body text-center">
+                        <h6 class="card-subtitle mb-2 text-muted">
+                            <i class="bi bi-wallet2 me-1"></i>Total Value
+                        </h6>
+                        <p class="card-text fs-4 fw-bold mb-0" id="totalValue">--</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body text-center">
+                        <h6 class="card-subtitle mb-2 text-muted">
+                            <i class="bi bi-cash-stack me-1"></i>Cost Basis
+                        </h6>
+                        <p class="card-text fs-4 fw-bold mb-0" id="costBasis">--</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body text-center">
+                        <h6 class="card-subtitle mb-2 text-muted">
+                            <i class="bi bi-graph-up me-1"></i>Unrealized P&L
+                        </h6>
+                        <p class="card-text fs-4 fw-bold mb-0" id="unrealizedPnl">--</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body text-center">
+                        <h6 class="card-subtitle mb-2 text-muted">
+                            <i class="bi bi-percent me-1"></i>Total Return
+                        </h6>
+                        <p class="card-text fs-4 fw-bold mb-0" id="totalReturn">--</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body text-center">
+                        <h6 class="card-subtitle mb-2 text-muted">
+                            <i class="bi bi-piggy-bank me-1"></i>Dividends
+                        </h6>
+                        <p class="card-text fs-4 fw-bold mb-0" id="totalDividends">--</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- P&L Chart -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h5 class="mb-0"><i class="bi bi-bar-chart-line me-2"></i>Investment P&L</h5>
+                <div class="btn-group btn-group-sm" role="group">
+                    <button class="btn btn-outline-secondary period-btn" data-period="3D">3D</button>
+                    <button class="btn btn-outline-secondary period-btn" data-period="1W">1W</button>
+                    <button class="btn btn-outline-secondary period-btn" data-period="1M">1M</button>
+                    <button class="btn btn-outline-secondary period-btn" data-period="3M">3M</button>
+                    <button class="btn btn-outline-secondary period-btn" data-period="6M">6M</button>
+                    <button class="btn btn-outline-secondary period-btn" data-period="YTD">YTD</button>
+                    <button class="btn btn-primary period-btn active" data-period="1Y">1Y</button>
+                    <button class="btn btn-outline-secondary period-btn" data-period="5Y">5Y</button>
+                    <button class="btn btn-outline-secondary period-btn" data-period="ALL">ALL</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="chart-container pnl-chart-container">
+                    <canvas id="pnlChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts Row -->
+        <div class="row g-4 mb-4">
+            <div class="col-lg-8">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header bg-white border-0">
+                        <h5 class="mb-0"><i class="bi bi-graph-up me-2"></i>Portfolio Value</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="performanceChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header bg-white border-0">
+                        <h5 class="mb-0"><i class="bi bi-pie-chart me-2"></i>Asset Allocation</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container allocation-chart">
+                            <canvas id="allocationChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Annual Performance Table -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0"><i class="bi bi-calendar3 me-2"></i>Annual Performance</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="annualTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Year</th>
+                                <th>Start Value</th>
+                                <th>End Value</th>
+                                <th>Net Invested</th>
+                                <th>P&L ($)</th>
+                                <th>P&L (%)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="annualBody">
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-4">
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                    Loading annual performance...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Holdings Table -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0"><i class="bi bi-briefcase me-2"></i>Holdings</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="holdingsTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th class="sortable" data-sort="symbol">Symbol <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="quantity">Quantity <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="avg_cost">Avg Cost <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="cost_basis">Cost Basis <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="current_price">Price <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="market_value">Market Value <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="unrealized_pnl">P&L ($) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="pnl_percent">P&L (%) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdingsBody">
+                            <tr>
+                                <td colspan="8" class="text-center text-muted py-4">
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                    Loading holdings...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Realized P&L Table -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0"><i class="bi bi-check2-circle me-2"></i>Realized P&L</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="soldTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th class="sortable" data-sort="symbol" data-table="sold">Symbol <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="quantity" data-table="sold">Qty Sold <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="avg_cost" data-table="sold">Avg Cost <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="cost_basis" data-table="sold">Cost Basis <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="avg_sell_price" data-table="sold">Avg Sell <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="proceeds" data-table="sold">Proceeds <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="pnl" data-table="sold">P&L ($) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="pnl_percent" data-table="sold">P&L (%) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                            </tr>
+                        </thead>
+                        <tbody id="soldBody">
+                            <tr>
+                                <td colspan="8" class="text-center text-muted py-4">
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                    Loading realized P&L...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Dividends Section -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0"><i class="bi bi-cash-coin me-2"></i>Dividends by Asset</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="dividendsTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Total Amount</th>
+                                <th>Payments</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dividendsBody">
+                            <tr>
+                                <td colspan="3" class="text-center text-muted py-4">
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                    Loading dividends...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-light py-3 mt-4">
+        <div class="container-fluid text-center text-muted">
+            <small>Portfolio Tracker &copy; 2024</small>
+        </div>
+    </footer>
+
+    <!-- Toast notification -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="toast" class="toast align-items-center border-0" role="alert">
+            <div class="d-flex">
+                <div class="toast-body" id="toastBody"></div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/app.js?v=13"></script>
+</body>
+</html>
