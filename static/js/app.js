@@ -4,6 +4,220 @@
 let performanceChart = null;
 let allocationChart = null;
 let pnlChart = null;
+let intradayChart = null;
+
+// Current intraday interval
+let currentInterval = '5m';
+
+// Anonymous mode
+let anonymousMode = localStorage.getItem('anonymousMode') === 'true';
+
+// Allocation view mode
+let allocationView = 'assets'; // 'assets' or 'sectors'
+let currentHoldingsForAllocation = null;
+
+// Sector mapping for common stocks/ETFs
+const symbolToSector = {
+    // Technology
+    'AAPL': 'Technology',
+    'MSFT': 'Technology',
+    'GOOGL': 'Technology',
+    'GOOG': 'Technology',
+    'META': 'Technology',
+    'NVDA': 'Technology',
+    'AMD': 'Technology',
+    'INTC': 'Technology',
+    'AVGO': 'Technology',
+    'QCOM': 'Technology',
+    'TXN': 'Technology',
+    'CSCO': 'Technology',
+    'ORCL': 'Technology',
+    'IBM': 'Technology',
+    'ADBE': 'Technology',
+    'CRM': 'Technology',
+    'NOW': 'Technology',
+    'PLTR': 'Technology',
+    'SNOW': 'Technology',
+    'NET': 'Technology',
+    'CRWD': 'Technology',
+    'ZS': 'Technology',
+    'DDOG': 'Technology',
+    'MDB': 'Technology',
+
+    // Consumer Discretionary
+    'AMZN': 'Consumer',
+    'TSLA': 'Consumer',
+    'HD': 'Consumer',
+    'NKE': 'Consumer',
+    'MCD': 'Consumer',
+    'SBUX': 'Consumer',
+    'LOW': 'Consumer',
+    'TGT': 'Consumer',
+    'BKNG': 'Consumer',
+    'ABNB': 'Consumer',
+    'UBER': 'Consumer',
+    'LYFT': 'Consumer',
+    'DIS': 'Consumer',
+    'NFLX': 'Consumer',
+    'ROKU': 'Consumer',
+    'SPOT': 'Consumer',
+
+    // Consumer Staples
+    'WMT': 'Consumer Staples',
+    'COST': 'Consumer Staples',
+    'PG': 'Consumer Staples',
+    'KO': 'Consumer Staples',
+    'PEP': 'Consumer Staples',
+    'PM': 'Consumer Staples',
+    'MO': 'Consumer Staples',
+
+    // Healthcare
+    'JNJ': 'Healthcare',
+    'UNH': 'Healthcare',
+    'PFE': 'Healthcare',
+    'MRK': 'Healthcare',
+    'ABBV': 'Healthcare',
+    'LLY': 'Healthcare',
+    'TMO': 'Healthcare',
+    'ABT': 'Healthcare',
+    'CVS': 'Healthcare',
+    'WBA': 'Healthcare',
+
+    // Financials
+    'JPM': 'Financials',
+    'BAC': 'Financials',
+    'WFC': 'Financials',
+    'C': 'Financials',
+    'GS': 'Financials',
+    'MS': 'Financials',
+    'BLK': 'Financials',
+    'SCHW': 'Financials',
+    'V': 'Financials',
+    'MA': 'Financials',
+    'AXP': 'Financials',
+    'PYPL': 'Financials',
+    'SQ': 'Financials',
+    'COIN': 'Financials',
+    'HOOD': 'Financials',
+
+    // Energy
+    'XOM': 'Energy',
+    'CVX': 'Energy',
+    'COP': 'Energy',
+    'SLB': 'Energy',
+    'EOG': 'Energy',
+
+    // Industrials
+    'BA': 'Industrials',
+    'CAT': 'Industrials',
+    'DE': 'Industrials',
+    'GE': 'Industrials',
+    'HON': 'Industrials',
+    'MMM': 'Industrials',
+    'UPS': 'Industrials',
+    'FDX': 'Industrials',
+    'LMT': 'Industrials',
+    'RTX': 'Industrials',
+
+    // Communication Services
+    'T': 'Communication',
+    'VZ': 'Communication',
+    'TMUS': 'Communication',
+    'CMCSA': 'Communication',
+
+    // Real Estate
+    'AMT': 'Real Estate',
+    'PLD': 'Real Estate',
+    'CCI': 'Real Estate',
+    'EQIX': 'Real Estate',
+    'O': 'Real Estate',
+
+    // Materials
+    'LIN': 'Materials',
+    'APD': 'Materials',
+    'FCX': 'Materials',
+    'NEM': 'Materials',
+
+    // Utilities
+    'NEE': 'Utilities',
+    'DUK': 'Utilities',
+    'SO': 'Utilities',
+
+    // Automotive
+    'F': 'Automotive',
+    'GM': 'Automotive',
+    'RIVN': 'Automotive',
+    'LCID': 'Automotive',
+
+    // ETFs - Index
+    'SPY': 'Index ETF',
+    'VOO': 'Index ETF',
+    'VTI': 'Index ETF',
+    'QQQ': 'Index ETF',
+    'QQQM': 'Index ETF',
+    'IWM': 'Index ETF',
+    'DIA': 'Index ETF',
+
+    // ETFs - Sector
+    'VGT': 'Tech ETF',
+    'XLK': 'Tech ETF',
+    'XLF': 'Financial ETF',
+    'XLE': 'Energy ETF',
+    'XLV': 'Healthcare ETF',
+    'ARKK': 'Innovation ETF',
+    'ARKW': 'Innovation ETF',
+
+    // ETFs - Bonds
+    'TLT': 'Bonds',
+    'BND': 'Bonds',
+    'AGG': 'Bonds',
+    'LQD': 'Bonds',
+    'HYG': 'Bonds',
+    'TIP': 'Bonds',
+
+    // ETFs - Commodities
+    'GLD': 'Commodities',
+    'SLV': 'Commodities',
+    'USO': 'Commodities',
+
+    // ETFs - Dividend
+    'SCHD': 'Dividend ETF',
+    'VYM': 'Dividend ETF',
+    'JEPI': 'Dividend ETF',
+    'DVY': 'Dividend ETF',
+
+    // ETFs - Real Estate
+    'VNQ': 'Real Estate ETF',
+    'IYR': 'Real Estate ETF',
+
+    // Crypto
+    'BTC-USD': 'Crypto',
+    'ETH-USD': 'Crypto',
+    'SOL-USD': 'Crypto',
+    'DOGE-USD': 'Crypto',
+    'ADA-USD': 'Crypto',
+    'XRP-USD': 'Crypto',
+    'DOT-USD': 'Crypto',
+    'AVAX-USD': 'Crypto',
+    'MATIC-USD': 'Crypto',
+    'LINK-USD': 'Crypto',
+    'UNI-USD': 'Crypto',
+    'ATOM-USD': 'Crypto',
+    'LTC-USD': 'Crypto',
+
+    // Crypto-related stocks
+    'MSTR': 'Crypto',
+    'RIOT': 'Crypto',
+    'MARA': 'Crypto',
+    'CLSK': 'Crypto',
+
+    // Cash
+    'CASH': 'Cash',
+};
+
+function getSector(symbol) {
+    return symbolToSector[symbol] || 'Other';
+}
 
 // Current selected period
 let currentPeriod = '1Y';
@@ -49,8 +263,41 @@ const apiCache = {
     }
 };
 
+function getAssetIconHtml(symbol) {
+    // Handle CASH - use Bootstrap icon
+    if (symbol === 'CASH') {
+        return '<i class="bi bi-cash-stack asset-icon-bi text-success"></i>';
+    }
+
+    // Check if it's a crypto symbol (ends with -USD)
+    if (symbol.endsWith('-USD')) {
+        // Extract the crypto symbol (e.g., ETH-USD -> eth)
+        const cryptoSym = symbol.replace('-USD', '').toLowerCase();
+        // Use cryptocurrency-icons from jsdelivr CDN (very reliable)
+        return `<img src="https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/32/color/${cryptoSym}.png"
+                     alt="${symbol}" class="asset-icon"
+                     onerror="this.style.display='none'">`;
+    }
+
+    // For stocks/ETFs, use Parqet's stock logo service
+    return `<img src="https://assets.parqet.com/logos/symbol/${symbol}"
+                 alt="${symbol}" class="asset-icon"
+                 onerror="this.style.display='none'">`;
+}
+
 // Utility functions
-function formatCurrency(value) {
+function formatCurrency(value, forceShow = false) {
+    if (value === null || value === undefined) return '--';
+    if (anonymousMode && !forceShow) return '***';
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    }).format(value);
+}
+
+function formatCurrencyAlways(value) {
     if (value === null || value === undefined) return '--';
     return new Intl.NumberFormat('en-US', {
         style: 'currency',
@@ -72,8 +319,32 @@ function formatNumber(value, decimals = 2) {
 
 function formatPercent(value) {
     if (value === null || value === undefined) return '--';
+    // Always show percentages even in anonymous mode
     const sign = value >= 0 ? '+' : '';
     return `${sign}${formatNumber(value)}%`;
+}
+
+function toggleAnonymousMode() {
+    anonymousMode = !anonymousMode;
+    localStorage.setItem('anonymousMode', anonymousMode);
+    updateAnonymousButton();
+    // Reload all data to apply the mode
+    loadAllData();
+}
+
+function updateAnonymousButton() {
+    const btn = document.getElementById('anonymousBtn');
+    if (btn) {
+        if (anonymousMode) {
+            btn.innerHTML = '<i class="bi bi-eye-slash"></i>';
+            btn.title = 'Show Values (Anonymous Mode On)';
+            btn.classList.add('active');
+        } else {
+            btn.innerHTML = '<i class="bi bi-eye"></i>';
+            btn.title = 'Hide Values (Anonymous Mode Off)';
+            btn.classList.remove('active');
+        }
+    }
 }
 
 function showToast(message, type = 'info') {
@@ -264,6 +535,25 @@ async function fetchSoldAssets(useCache = true) {
     }
 }
 
+async function fetchIntraday(interval = '5m', useCache = true) {
+    const cacheKey = `intraday_${interval}`;
+    if (useCache) {
+        const cached = apiCache.get(cacheKey);
+        if (cached) return cached;
+    }
+
+    try {
+        const response = await fetch(`/api/intraday?interval=${interval}`);
+        if (!response.ok) throw new Error('Failed to fetch intraday data');
+        const data = await response.json();
+        apiCache.set(cacheKey, data);
+        return data;
+    } catch (error) {
+        console.error('Error fetching intraday data:', error);
+        return null;
+    }
+}
+
 async function uploadFile(file) {
     const formData = new FormData();
     formData.append('file', file);
@@ -304,11 +594,15 @@ function updateSummaryCards(summary) {
 
     const pnlElement = document.getElementById('unrealizedPnl');
     pnlElement.textContent = formatCurrency(summary.total_unrealized_pnl);
-    pnlElement.className = `card-text fs-4 fw-bold mb-0 ${summary.total_unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}`;
+    pnlElement.className = `card-text fs-4 fw-bold mb-0 has-tooltip ${summary.total_unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}`;
+    const pnlTooltip = `Unrealized P&L = Investment Value - Cost Basis\n${formatCurrency(summary.investment_market_value)} - ${formatCurrency(summary.total_cost_basis)} = ${formatCurrency(summary.total_unrealized_pnl)}`;
+    pnlElement.dataset.tooltip = pnlTooltip;
 
     const returnElement = document.getElementById('totalReturn');
     returnElement.textContent = formatPercent(summary.total_pnl_percent);
-    returnElement.className = `card-text fs-4 fw-bold mb-0 ${summary.total_pnl_percent >= 0 ? 'text-success' : 'text-danger'}`;
+    returnElement.className = `card-text fs-4 fw-bold mb-0 has-tooltip ${summary.total_pnl_percent >= 0 ? 'text-success' : 'text-danger'}`;
+    const returnTooltip = `Total Return = (Realized + Unrealized + Dividends) / All-Time Cost\nRealized P&L: ${formatCurrency(summary.total_realized_pnl)}\nUnrealized P&L: ${formatCurrency(summary.total_unrealized_pnl)}\nDividends: ${formatCurrency(summary.total_dividends)}\nTotal P&L: ${formatCurrency(summary.total_pnl)}\nAll-Time Cost: ${formatCurrency(summary.all_time_cost_basis)}\n= ${formatPercent(summary.total_pnl_percent)}`;
+    returnElement.dataset.tooltip = returnTooltip;
 
     document.getElementById('totalDividends').textContent = formatCurrency(summary.total_dividends);
 }
@@ -357,7 +651,7 @@ function renderHoldingsTable(holdings) {
     if (!holdings || holdings.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="8" class="empty-state">
+                <td colspan="9" class="empty-state">
                     <p>No holdings found</p>
                     <p>Upload a CSV file to get started</p>
                 </td>
@@ -369,18 +663,31 @@ function renderHoldingsTable(holdings) {
     // Sort holdings
     const sortedHoldings = sortHoldings(holdings, holdingsSortColumn, holdingsSortDirection);
 
-    tbody.innerHTML = sortedHoldings.map(h => `
+    tbody.innerHTML = sortedHoldings.map(h => {
+        const dailyChangePct = h.daily_change_percent;
+        const dailyChangeAmt = h.daily_change_amount;
+        const dailyChangePctHtml = dailyChangePct !== null && dailyChangePct !== undefined
+            ? `<span class="${dailyChangePct >= 0 ? 'text-success' : 'text-danger'} daily-change">(${dailyChangePct >= 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%)</span>`
+            : '';
+        const dailyChangeAmtClass = dailyChangeAmt !== null && dailyChangeAmt !== undefined
+            ? (dailyChangeAmt >= 0 ? 'text-success' : 'text-danger')
+            : '';
+        const dailyChangeAmtText = dailyChangeAmt !== null && dailyChangeAmt !== undefined
+            ? `${dailyChangeAmt >= 0 ? '+' : ''}${formatCurrencyAlways(dailyChangeAmt)}`
+            : '--';
+        return `
         <tr>
-            <td><strong>${h.symbol}</strong></td>
-            <td>${formatNumber(h.quantity, 4)}</td>
+            <td>${getAssetIconHtml(h.symbol)}<strong>${h.symbol}</strong></td>
+            <td>${anonymousMode ? '***' : formatNumber(h.quantity, 4)}</td>
             <td>${formatCurrency(h.avg_cost)}</td>
             <td>${formatCurrency(h.cost_basis)}</td>
-            <td>${formatCurrency(h.current_price)}</td>
+            <td>${formatCurrencyAlways(h.current_price)} ${dailyChangePctHtml}</td>
+            <td class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
             <td>${formatCurrency(h.market_value)}</td>
             <td class="${h.unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(h.unrealized_pnl)}</td>
             <td class="${h.pnl_percent >= 0 ? 'text-success' : 'text-danger'}">${formatPercent(h.pnl_percent)}</td>
         </tr>
-    `).join('');
+    `}).join('');
 
     updateSortIndicators();
 }
@@ -405,7 +712,7 @@ function updateDividendsTable(dividends) {
 
     tbody.innerHTML = dividends.by_asset.map(d => `
         <tr>
-            <td><strong>${d.symbol}</strong></td>
+            <td>${getAssetIconHtml(d.symbol)}<strong>${d.symbol}</strong></td>
             <td>${formatCurrency(d.total_amount)}</td>
             <td>${d.payment_count}</td>
         </tr>
@@ -468,7 +775,7 @@ function renderSoldTable() {
     // Build rows
     let rows = sortedAssets.map(s => `
         <tr>
-            <td><strong>${s.symbol}</strong></td>
+            <td>${getAssetIconHtml(s.symbol)}<strong>${s.symbol}</strong></td>
             <td>${formatNumber(s.quantity, 4)}</td>
             <td>${formatCurrency(s.avg_cost)}</td>
             <td>${formatCurrency(s.cost_basis)}</td>
@@ -693,8 +1000,272 @@ function updatePnlChart(performance) {
     });
 }
 
-function updateAllocationChart(holdings) {
+// Plugin to draw vertical lines for market open/close and current P&L label
+const marketHoursPlugin = {
+    id: 'marketHours',
+    afterDraw: (chart) => {
+        const ctx = chart.ctx;
+        const xAxis = chart.scales.x;
+        const yAxis = chart.scales.y;
+        const labels = chart.data.labels;
+        const dataset = chart.data.datasets[0];
+        const data = dataset.data;
+
+        // Find indices for market open (09:30) and close (16:00)
+        const openIndex = labels.findIndex(l => l === '09:30');
+        const closeIndex = labels.findIndex(l => l === '16:00');
+
+        ctx.save();
+        ctx.setLineDash([5, 5]);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = '#9ca3af';
+        ctx.font = '11px sans-serif';
+        ctx.fillStyle = '#6b7280';
+
+        // Draw market open line
+        if (openIndex !== -1) {
+            const x = xAxis.getPixelForValue(openIndex);
+            ctx.beginPath();
+            ctx.moveTo(x, yAxis.top);
+            ctx.lineTo(x, yAxis.bottom);
+            ctx.stroke();
+            ctx.fillText('Open', x + 4, yAxis.top + 12);
+        }
+
+        // Draw market close line
+        if (closeIndex !== -1) {
+            const x = xAxis.getPixelForValue(closeIndex);
+            ctx.beginPath();
+            ctx.moveTo(x, yAxis.top);
+            ctx.lineTo(x, yAxis.bottom);
+            ctx.stroke();
+            ctx.fillText('Close', x + 4, yAxis.top + 12);
+        }
+
+        ctx.restore();
+
+        // Draw current P&L label at the last data point
+        if (dataset.lastDataIndex !== undefined && dataset.lastDataIndex >= 0) {
+            const lastIndex = dataset.lastDataIndex;
+            const lastValue = data[lastIndex];
+            if (lastValue !== null) {
+                const x = xAxis.getPixelForValue(lastIndex);
+                const y = yAxis.getPixelForValue(lastValue);
+
+                // Draw a dot at the last point
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                ctx.fillStyle = lastValue >= 0 ? '#10b981' : '#ef4444';
+                ctx.fill();
+
+                // Draw P&L label (always show amount, hide percentage in anonymous mode)
+                const sign = lastValue >= 0 ? '+' : '';
+                const pnlText = `${sign}${formatCurrencyAlways(lastValue)}`;
+
+                ctx.font = 'bold 12px sans-serif';
+                ctx.fillStyle = lastValue >= 0 ? '#10b981' : '#ef4444';
+                ctx.textAlign = 'left';
+                ctx.fillText(pnlText, x + 10, y - 5);
+
+                // Only show percentage if not in anonymous mode
+                if (!anonymousMode) {
+                    const pnlPercent = dataset.pnlPercentData[lastIndex];
+                    const percentText = `(${sign}${pnlPercent.toFixed(2)}%)`;
+                    ctx.font = '11px sans-serif';
+                    ctx.fillText(percentText, x + 10, y + 10);
+                }
+                ctx.restore();
+            }
+        }
+    }
+};
+
+// Generate all time labels for a full day based on interval
+function generateFullDayLabels(interval) {
+    const labels = [];
+    const intervalMinutes = parseInt(interval);
+
+    for (let hour = 0; hour < 24; hour++) {
+        for (let minute = 0; minute < 60; minute += intervalMinutes) {
+            const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+            labels.push(timeStr);
+        }
+    }
+    return labels;
+}
+
+function updateIntradayChart(intraday, interval = '5m') {
+    const ctx = document.getElementById('intradayChart').getContext('2d');
+
+    if (intradayChart) {
+        intradayChart.destroy();
+    }
+
+    if (!intraday || !intraday.intraday || intraday.intraday.length === 0) {
+        ctx.font = '14px sans-serif';
+        ctx.fillStyle = '#6b7280';
+        ctx.textAlign = 'center';
+        ctx.fillText('No intraday data available', ctx.canvas.width / 2, ctx.canvas.height / 2);
+        return;
+    }
+
+    const rawData = intraday.intraday;
+
+    // Create a map of time -> data for quick lookup
+    const dataMap = {};
+    rawData.forEach(d => {
+        dataMap[d.time] = d;
+    });
+
+    // Generate full day labels based on interval
+    const intervalMinutes = parseInt(interval);
+    const fullDayLabels = generateFullDayLabels(intervalMinutes);
+
+    // Map data to full day labels, fill with null for missing times
+    const pnlData = [];
+    const pnlPercentData = [];
+    const baselineData = [];
+    const assetChangesData = [];
+    let lastDataIndex = -1;
+    let lastPnl = 0;
+
+    fullDayLabels.forEach((time, index) => {
+        if (dataMap[time]) {
+            pnlData.push(dataMap[time].daily_pnl);
+            pnlPercentData.push(dataMap[time].daily_pnl_percent);
+            baselineData.push(dataMap[time].baseline_value);
+            assetChangesData.push(dataMap[time].asset_changes || []);
+            lastDataIndex = index;
+            lastPnl = dataMap[time].daily_pnl;
+        } else {
+            pnlData.push(null);
+            pnlPercentData.push(null);
+            baselineData.push(null);
+            assetChangesData.push(null);
+        }
+    });
+
+    // Determine if current P&L is positive or negative for coloring
+    const lineColor = lastPnl >= 0 ? '#10b981' : '#ef4444';
+    const bgColor = lastPnl >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+
+    intradayChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: fullDayLabels,
+            datasets: [{
+                label: "Daily P&L",
+                data: pnlData,
+                pnlPercentData: pnlPercentData,
+                baselineData: baselineData,
+                assetChangesData: assetChangesData,
+                lastDataIndex: lastDataIndex,
+                borderColor: lineColor,
+                backgroundColor: bgColor,
+                fill: true,
+                tension: 0.2,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                spanGaps: true
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                intersect: false,
+                mode: 'index'
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    filter: (context) => context.raw !== null,
+                    callbacks: {
+                        title: (context) => `Time: ${context[0].label}`,
+                        label: (context) => {
+                            const pnl = context.raw;
+                            if (pnl === null) return [];
+                            const dataIndex = context.dataIndex;
+                            const pnlPercent = context.dataset.pnlPercentData[dataIndex];
+                            if (pnlPercent === null) return [];
+                            const sign = pnl >= 0 ? '+' : '';
+                            // Always show P&L amount, hide percentage in anonymous mode
+                            const lines = [`Daily P&L: ${sign}${formatCurrencyAlways(pnl)}`];
+                            if (!anonymousMode) {
+                                const pctSign = pnlPercent >= 0 ? '+' : '';
+                                lines.push(`Daily P&L %: ${pctSign}${pnlPercent.toFixed(2)}%`);
+                            }
+                            return lines;
+                        },
+                        afterBody: (context) => {
+                            if (!context || !context[0]) return [];
+                            const dataIndex = context[0].dataIndex;
+                            const assetChanges = context[0].dataset.assetChangesData[dataIndex];
+                            if (!assetChanges || assetChanges.length === 0) return [];
+
+                            const lines = ['', '── Top Movers ──'];
+                            assetChanges.forEach(asset => {
+                                const sign = asset.pnl >= 0 ? '+' : '';
+                                // Show amount always, hide percentage in anonymous mode
+                                if (anonymousMode) {
+                                    lines.push(`${asset.symbol}: ${sign}${formatCurrencyAlways(asset.pnl)}`);
+                                } else {
+                                    const pctSign = asset.pnl_percent >= 0 ? '+' : '';
+                                    lines.push(`${asset.symbol}: ${sign}${formatCurrencyAlways(asset.pnl)} (${pctSign}${asset.pnl_percent.toFixed(2)}%)`);
+                                }
+                            });
+                            return lines;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: {
+                        display: false
+                    },
+                    ticks: {
+                        maxTicksLimit: 12,
+                        callback: function(value, index) {
+                            // Show fewer labels for readability
+                            const label = this.getLabelForValue(value);
+                            // Show labels at every 2 hours
+                            if (label && (label.endsWith(':00') && parseInt(label.split(':')[0]) % 2 === 0)) {
+                                return label;
+                            }
+                            return '';
+                        }
+                    }
+                },
+                y: {
+                    grid: {
+                        color: '#e5e7eb'
+                    },
+                    ticks: {
+                        callback: (value) => {
+                            const sign = value >= 0 ? '+' : '';
+                            return sign + formatCurrencyAlways(value);
+                        }
+                    }
+                }
+            }
+        },
+        plugins: [marketHoursPlugin]
+    });
+}
+
+function updateAllocationChart(holdings, view = 'assets') {
     const ctx = document.getElementById('allocationChart').getContext('2d');
+
+    // Store holdings for view switching
+    if (holdings) {
+        currentHoldingsForAllocation = holdings;
+    } else {
+        holdings = currentHoldingsForAllocation;
+    }
 
     if (allocationChart) {
         allocationChart.destroy();
@@ -719,48 +1290,94 @@ function updateAllocationChart(holdings) {
         return;
     }
 
-    // Calculate total and threshold
+    // Calculate total
     const total = validHoldings.reduce((sum, h) => sum + h.market_value, 0);
     const threshold = 0.03; // 3%
 
-    // Separate holdings into major (>= 3%) and minor (< 3%)
-    const majorHoldings = [];
-    let otherValue = 0;
+    let labels, data, chartColors;
 
-    validHoldings.forEach(h => {
-        const percent = h.market_value / total;
-        if (percent >= threshold) {
-            majorHoldings.push(h);
-        } else {
-            otherValue += h.market_value;
+    if (view === 'sectors') {
+        // Group by sector
+        const sectorTotals = {};
+        validHoldings.forEach(h => {
+            const sector = getSector(h.symbol);
+            sectorTotals[sector] = (sectorTotals[sector] || 0) + h.market_value;
+        });
+
+        // Convert to array and sort by value (show all sectors)
+        const sectorArray = Object.entries(sectorTotals)
+            .map(([sector, value]) => ({ sector, value }))
+            .sort((a, b) => b.value - a.value);
+
+        labels = sectorArray.map(s => s.sector);
+        data = sectorArray.map(s => s.value);
+
+        // Sector colors
+        const sectorColors = {
+            'Technology': '#2563eb',
+            'Consumer': '#f59e0b',
+            'Consumer Staples': '#84cc16',
+            'Healthcare': '#ef4444',
+            'Financials': '#10b981',
+            'Energy': '#78716c',
+            'Industrials': '#6366f1',
+            'Communication': '#ec4899',
+            'Real Estate': '#14b8a6',
+            'Materials': '#a855f7',
+            'Utilities': '#64748b',
+            'Automotive': '#f97316',
+            'Index ETF': '#0ea5e9',
+            'Tech ETF': '#3b82f6',
+            'Financial ETF': '#22c55e',
+            'Energy ETF': '#a3a3a3',
+            'Healthcare ETF': '#f87171',
+            'Innovation ETF': '#a78bfa',
+            'Bonds': '#94a3b8',
+            'Commodities': '#fbbf24',
+            'Dividend ETF': '#34d399',
+            'Real Estate ETF': '#2dd4bf',
+            'Crypto': '#f59e0b',
+            'Cash': '#6b7280',
+            'Other': '#9ca3af',
+        };
+
+        chartColors = labels.map(label => sectorColors[label] || '#9ca3af');
+
+    } else {
+        // Assets view (original logic)
+        const majorHoldings = [];
+        let otherValue = 0;
+
+        validHoldings.forEach(h => {
+            const percent = h.market_value / total;
+            if (percent >= threshold) {
+                majorHoldings.push(h);
+            } else {
+                otherValue += h.market_value;
+            }
+        });
+
+        majorHoldings.sort((a, b) => b.market_value - a.market_value);
+
+        labels = majorHoldings.map(h => h.symbol);
+        data = majorHoldings.map(h => h.market_value);
+
+        if (otherValue > 0) {
+            labels.push('OTHER');
+            data.push(otherValue);
         }
-    });
 
-    // Sort major holdings by value descending
-    majorHoldings.sort((a, b) => b.market_value - a.market_value);
-
-    // Prepare chart data
-    const labels = majorHoldings.map(h => h.symbol);
-    const data = majorHoldings.map(h => h.market_value);
-
-    // Add "OTHER" category if there are minor holdings
-    if (otherValue > 0) {
-        labels.push('OTHER');
-        data.push(otherValue);
+        const colors = [
+            '#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+            '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'
+        ];
+        chartColors = data.map((_, i) => {
+            if (i === data.length - 1 && otherValue > 0) {
+                return '#9ca3af';
+            }
+            return colors[i % colors.length];
+        });
     }
-
-    // Generate colors
-    const colors = [
-        '#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
-        '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'
-    ];
-    // Use gray for "OTHER"
-    const chartColors = data.map((_, i) => {
-        if (i === data.length - 1 && otherValue > 0) {
-            return '#9ca3af'; // Gray for OTHER
-        }
-        return colors[i % colors.length];
-    });
 
     allocationChart = new Chart(ctx, {
         type: 'doughnut',
@@ -788,7 +1405,10 @@ function updateAllocationChart(holdings) {
                     callbacks: {
                         label: (context) => {
                             const percent = ((context.raw / total) * 100).toFixed(1);
-                            return `${context.label}: ${formatCurrency(context.raw)} (${percent}%)`;
+                            if (anonymousMode) {
+                                return `${context.label}: *** (${percent}%)`;
+                            }
+                            return `${context.label}: ${formatCurrencyAlways(context.raw)} (${percent}%)`;
                         }
                     }
                 }
@@ -915,21 +1535,47 @@ async function loadPerformanceData(period) {
     }
 }
 
+// Load intraday data for a specific interval
+async function loadIntradayData(interval) {
+    currentInterval = interval;
+
+    // Update button states for Bootstrap
+    document.querySelectorAll('.interval-btn').forEach(btn => {
+        if (btn.dataset.interval === interval) {
+            btn.classList.remove('btn-outline-secondary');
+            btn.classList.add('btn-primary', 'active');
+        } else {
+            btn.classList.remove('btn-primary', 'active');
+            btn.classList.add('btn-outline-secondary');
+        }
+    });
+
+    const intraday = await fetchIntraday(interval);
+    if (intraday) {
+        updateIntradayChart(intraday, interval);
+    }
+}
+
 // Main data loading function
 async function loadAllData() {
     // Fetch all data in parallel
-    const [summary, performance, allPerformance, dividends, sold] = await Promise.all([
+    const [summary, performance, allPerformance, dividends, sold, intraday] = await Promise.all([
         fetchSummary(),
         fetchPerformance(currentPeriod),
         fetchPerformance('ALL'),  // Fetch all data for annual table
         fetchDividends(),
-        fetchSoldAssets()
+        fetchSoldAssets(),
+        fetchIntraday(currentInterval)
     ]);
 
     if (summary) {
         updateSummaryCards(summary);
         updateHoldingsTable(summary.holdings);
-        updateAllocationChart(summary.holdings);
+        updateAllocationChart(summary.holdings, allocationView);
+    }
+
+    if (intraday) {
+        updateIntradayChart(intraday, currentInterval);
     }
 
     if (performance) {
@@ -1052,6 +1698,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Interval button event handlers (for intraday chart)
+    document.querySelectorAll('.interval-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const interval = btn.dataset.interval;
+            loadIntradayData(interval);
+        });
+    });
+
     // Holdings table sort event handlers
     document.querySelectorAll('#holdingsTable th.sortable').forEach(th => {
         th.addEventListener('click', () => {
@@ -1099,6 +1753,42 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Anonymous mode button
+    document.getElementById('anonymousBtn').addEventListener('click', toggleAnonymousMode);
+    updateAnonymousButton();
+
+    // Allocation view buttons
+    document.querySelectorAll('.allocation-view-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const view = btn.dataset.view;
+            allocationView = view;
+
+            // Update button states
+            document.querySelectorAll('.allocation-view-btn').forEach(b => {
+                if (b.dataset.view === view) {
+                    b.classList.remove('btn-outline-secondary');
+                    b.classList.add('btn-primary', 'active');
+                } else {
+                    b.classList.remove('btn-primary', 'active');
+                    b.classList.add('btn-outline-secondary');
+                }
+            });
+
+            // Re-render chart with new view
+            updateAllocationChart(null, view);
+        });
+    });
+
     // Load data
     loadAllData();
+
+    // Auto-start 5-minute refresh
+    startAutoRefresh(300);
+    // Mark the 5 minutes option as active
+    document.querySelectorAll('.auto-refresh-option').forEach(opt => {
+        opt.classList.remove('active');
+        if (opt.dataset.interval === '300') {
+            opt.classList.add('active');
+        }
+    });
 });

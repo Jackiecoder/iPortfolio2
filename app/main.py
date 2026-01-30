@@ -103,6 +103,8 @@ async def get_holdings():
                     "market_value": float(h.market_value) if h.market_value else None,
                     "unrealized_pnl": float(h.unrealized_pnl) if h.unrealized_pnl else None,
                     "pnl_percent": float(h.pnl_percent) if h.pnl_percent else None,
+                    "daily_change_percent": float(h.daily_change_percent) if h.daily_change_percent else None,
+                    "daily_change_amount": float(h.daily_change_amount) if h.daily_change_amount else None,
                 }
                 for h in holdings
             ]
@@ -123,10 +125,14 @@ async def get_summary():
         return {
             "total_cost_basis": float(summary.total_cost_basis),
             "total_market_value": float(summary.total_market_value),
+            "investment_market_value": float(summary.investment_market_value),
             "total_unrealized_pnl": float(summary.total_unrealized_pnl),
+            "total_realized_pnl": float(summary.total_realized_pnl),
+            "total_pnl": float(summary.total_pnl),
             "total_pnl_percent": float(summary.total_pnl_percent),
             "total_dividends": float(summary.total_dividends),
             "total_fees": float(summary.total_fees),
+            "all_time_cost_basis": float(summary.all_time_cost_basis),
             "holdings": [
                 {
                     "symbol": h.symbol,
@@ -137,6 +143,8 @@ async def get_summary():
                     "market_value": float(h.market_value) if h.market_value else None,
                     "unrealized_pnl": float(h.unrealized_pnl) if h.unrealized_pnl else None,
                     "pnl_percent": float(h.pnl_percent) if h.pnl_percent else None,
+                    "daily_change_percent": float(h.daily_change_percent) if h.daily_change_percent else None,
+                    "daily_change_amount": float(h.daily_change_amount) if h.daily_change_amount else None,
                 }
                 for h in summary.holdings
             ],
@@ -296,4 +304,28 @@ async def list_files():
         return {"files": files}
     except Exception as e:
         logger.error(f"Error listing files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/intraday")
+async def get_intraday(
+    interval: str = Query("5m", description="Data interval (1m, 5m, 15m, 30m, 60m)"),
+):
+    """Get intraday portfolio performance for today."""
+    if portfolio is None:
+        load_portfolio()
+
+    # Validate interval
+    valid_intervals = ["1m", "2m", "5m", "15m", "30m", "60m", "90m"]
+    if interval not in valid_intervals:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid interval. Must be one of: {', '.join(valid_intervals)}"
+        )
+
+    try:
+        intraday_data = portfolio.get_intraday_values(interval=interval)
+        return {"intraday": intraday_data}
+    except Exception as e:
+        logger.error(f"Error fetching intraday data: {e}")
         raise HTTPException(status_code=500, detail=str(e))

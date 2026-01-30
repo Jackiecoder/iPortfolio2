@@ -98,8 +98,11 @@ class Holding(BaseModel):
     market_value: Optional[Decimal] = None
     unrealized_pnl: Optional[Decimal] = None
     pnl_percent: Optional[Decimal] = None
+    prev_close: Optional[Decimal] = None
+    daily_change_percent: Optional[Decimal] = None
+    daily_change_amount: Optional[Decimal] = None
 
-    def update_with_price(self, price: Decimal) -> None:
+    def update_with_price(self, price: Decimal, prev_close: Optional[Decimal] = None) -> None:
         """Update holding with current market price."""
         self.current_price = price
         self.market_value = self.quantity * price
@@ -109,6 +112,12 @@ class Holding(BaseModel):
         else:
             # For gifts with zero cost basis
             self.pnl_percent = Decimal("100") if self.market_value > 0 else Decimal("0")
+
+        # Daily price change
+        if prev_close is not None and prev_close > 0:
+            self.prev_close = prev_close
+            self.daily_change_percent = ((price - prev_close) / prev_close) * 100
+            self.daily_change_amount = (price - prev_close) * self.quantity
 
 
 class DividendSummary(BaseModel):
@@ -121,10 +130,14 @@ class DividendSummary(BaseModel):
 class PortfolioSummary(BaseModel):
     """Overall portfolio summary."""
     total_cost_basis: Decimal
-    total_market_value: Decimal
+    total_market_value: Decimal  # includes cash
+    investment_market_value: Decimal  # excludes cash
     total_unrealized_pnl: Decimal
-    total_pnl_percent: Decimal
+    total_realized_pnl: Decimal
+    total_pnl: Decimal  # realized + unrealized + dividends
+    total_pnl_percent: Decimal  # total_pnl / all_time_cost_basis
     total_dividends: Decimal
     total_fees: Decimal
+    all_time_cost_basis: Decimal  # includes sold assets
     holdings: list[Holding]
     dividend_summaries: list[DividendSummary]

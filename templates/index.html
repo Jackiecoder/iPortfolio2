@@ -9,7 +9,7 @@
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=8">
+    <link rel="stylesheet" href="/static/css/style.css?v=12">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -21,6 +21,9 @@
                 <i class="bi bi-graph-up-arrow me-2"></i>Portfolio Tracker
             </a>
             <div class="d-flex gap-2 align-items-center">
+                <button id="anonymousBtn" class="btn btn-outline-light btn-sm" title="Toggle Anonymous Mode">
+                    <i class="bi bi-eye"></i>
+                </button>
                 <div class="dropdown">
                     <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
                         <i class="bi bi-clock-history me-1"></i>Auto: <span id="autoRefreshLabel">Off</span>
@@ -101,6 +104,24 @@
             </div>
         </div>
 
+        <!-- Intraday P&L Chart -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Intraday P&L</h5>
+                <div class="btn-group btn-group-sm" role="group">
+                    <button class="btn btn-outline-secondary interval-btn" data-interval="1m">1m</button>
+                    <button class="btn btn-primary interval-btn active" data-interval="5m">5m</button>
+                    <button class="btn btn-outline-secondary interval-btn" data-interval="15m">15m</button>
+                    <button class="btn btn-outline-secondary interval-btn" data-interval="30m">30m</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="chart-container pnl-chart-container">
+                    <canvas id="intradayChart"></canvas>
+                </div>
+            </div>
+        </div>
+
         <!-- P&L Chart -->
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -140,14 +161,52 @@
             </div>
             <div class="col-lg-4">
                 <div class="card border-0 shadow-sm h-100">
-                    <div class="card-header bg-white border-0">
+                    <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
                         <h5 class="mb-0"><i class="bi bi-pie-chart me-2"></i>Asset Allocation</h5>
+                        <div class="btn-group btn-group-sm" role="group">
+                            <button class="btn btn-primary allocation-view-btn active" data-view="assets">Assets</button>
+                            <button class="btn btn-outline-secondary allocation-view-btn" data-view="sectors">Sectors</button>
+                        </div>
                     </div>
                     <div class="card-body">
                         <div class="chart-container allocation-chart">
                             <canvas id="allocationChart"></canvas>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Holdings Table -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0"><i class="bi bi-briefcase me-2"></i>Holdings</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="holdingsTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th class="sortable" data-sort="symbol">Symbol <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="quantity">Quantity <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="avg_cost">Avg Cost <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="cost_basis">Cost Basis <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="current_price">Price <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="daily_change_amount">Today <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="market_value">Market Value <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="unrealized_pnl">P&L ($) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="pnl_percent">P&L (%) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdingsBody">
+                            <tr>
+                                <td colspan="9" class="text-center text-muted py-4">
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                    Loading holdings...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -175,39 +234,6 @@
                                 <td colspan="6" class="text-center text-muted py-4">
                                     <div class="spinner-border spinner-border-sm me-2" role="status"></div>
                                     Loading annual performance...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- Holdings Table -->
-        <div class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white border-0">
-                <h5 class="mb-0"><i class="bi bi-briefcase me-2"></i>Holdings</h5>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0" id="holdingsTable">
-                        <thead class="table-light">
-                            <tr>
-                                <th class="sortable" data-sort="symbol">Symbol <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="quantity">Quantity <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="avg_cost">Avg Cost <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="cost_basis">Cost Basis <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="current_price">Price <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="market_value">Market Value <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="unrealized_pnl">P&L ($) <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="pnl_percent">P&L (%) <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                            </tr>
-                        </thead>
-                        <tbody id="holdingsBody">
-                            <tr>
-                                <td colspan="8" class="text-center text-muted py-4">
-                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
-                                    Loading holdings...
                                 </td>
                             </tr>
                         </tbody>
@@ -296,6 +322,6 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/app.js?v=13"></script>
+    <script src="/static/js/app.js?v=39"></script>
 </body>
 </html>

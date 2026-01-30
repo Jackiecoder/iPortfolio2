@@ -172,3 +172,31 @@ body {
     font-size: 0.75rem;
     opacity: 0.8;
 }
+
+/* Asset icons in tables */
+.asset-icon {
+    width: 20px;
+    height: 20px;
+    margin-right: 8px;
+    vertical-align: middle;
+    border-radius: 4px;
+    object-fit: contain;
+}
+
+.asset-icon-bi {
+    font-size: 18px;
+    margin-right: 8px;
+    vertical-align: middle;
+}
+
+/* Anonymous mode button */
+#anonymousBtn.active {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Daily change percentage in holdings table */
+.daily-change {
+    font-size: 0.85em;
+    margin-left: 4px;
+    white-space: nowrap;
+}

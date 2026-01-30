@@ -234,10 +234,12 @@ class Portfolio:
 
         if fetch_prices and symbols:
             prices = price_service.get_prices_batch(symbols)
+            prev_closes = price_service.get_previous_close_batch(symbols)
             for holding in holdings:
                 price = prices.get(holding.symbol)
+                prev_close = prev_closes.get(holding.symbol)
                 if price is not None:
-                    holding.update_with_price(price)
+                    holding.update_with_price(price, prev_close)
 
         # Add cash as a holding if we have cash snapshots
         cash_balance = self.get_cash_balance()
@@ -368,9 +370,27 @@ class Portfolio:
             h.unrealized_pnl for h in investments if h.unrealized_pnl is not None
         )
 
+        # Calculate realized P&L from sold assets
+        total_realized_pnl = Decimal("0")
+        sold_cost_basis = Decimal("0")
+        for symbol, sales in self._sales.items():
+            for sale in sales:
+                total_realized_pnl += sale["proceeds"] - sale["cost_basis"]
+                sold_cost_basis += sale["cost_basis"]
+
+        # Total dividends
+        total_dividends = self.get_total_dividends()
+
+        # All-time cost basis includes current holdings and sold assets
+        all_time_cost_basis = investment_cost_basis + sold_cost_basis
+
+        # Total P&L = realized + unrealized + dividends
+        total_pnl = total_realized_pnl + total_unrealized_pnl + total_dividends
+
+        # Total return % based on all-time invested amount
         total_pnl_percent = Decimal("0")
-        if investment_cost_basis > 0:
-            total_pnl_percent = (total_unrealized_pnl / investment_cost_basis) * 100
+        if all_time_cost_basis > 0:
+            total_pnl_percent = (total_pnl / all_time_cost_basis) * 100
 
         # Total market value includes cash for overall portfolio value
         cash_value = cash_holding.market_value if cash_holding and cash_holding.market_value else Decimal("0")
@@ -379,10 +399,14 @@ class Portfolio:
         return PortfolioSummary(
             total_cost_basis=investment_cost_basis,
             total_market_value=total_market_value,
+            investment_market_value=investment_market_value,
             total_unrealized_pnl=total_unrealized_pnl,
+            total_realized_pnl=total_realized_pnl,
+            total_pnl=total_pnl,
             total_pnl_percent=total_pnl_percent,
-            total_dividends=self.get_total_dividends(),
+            total_dividends=total_dividends,
             total_fees=self._total_fees,
+            all_time_cost_basis=all_time_cost_basis,
             holdings=holdings,
             dividend_summaries=dividend_summaries,
         )
@@ -479,4 +503,161 @@ class Portfolio:
 
             current_date += timedelta(days=1)
 
+        return results
+
+    def get_intraday_values(self, interval: str = "5m") -> list[dict]:
+        """Calculate intraday portfolio values for today.
+
+        Args:
+            interval: Data interval (1m, 2m, 5m, 15m, 30m, 60m)
+
+        Returns:
+            List of {time, value, pnl, pnl_percent} dictionaries
+        """
+        from datetime import datetime
+
+        # Get current holdings (excluding cash for P&L calculation)
+        holdings = self.get_holdings(fetch_prices=False)
+        investment_holdings = [h for h in holdings if h.symbol != "CASH"]
+
+        logger.info(f"Intraday: Found {len(investment_holdings)} investment holdings")
+
+        if not investment_holdings:
+            return []
+
+        # Get symbols and their quantities
+        symbols = [h.symbol for h in investment_holdings]
+        quantities = {h.symbol: h.quantity for h in investment_holdings}
+        cost_basis = sum(h.cost_basis for h in investment_holdings)
+
+        logger.info(f"Intraday: Symbols={symbols}, Cost basis={cost_basis}")
+
+        # Get previous close prices for pre-market baseline
+        prev_close_prices = price_service.get_previous_close_batch(symbols)
+        logger.info(f"Intraday: Previous close prices: {prev_close_prices}")
+
+        # Calculate baseline value using previous close
+        baseline_value = Decimal("0")
+        for symbol in symbols:
+            if symbol in prev_close_prices and prev_close_prices[symbol] is not None:
+                baseline_value += quantities[symbol] * prev_close_prices[symbol]
+
+        logger.info(f"Intraday: Baseline value (prev close): {baseline_value}")
+
+        # Fetch intraday prices for all symbols
+        intraday_prices = price_service.get_intraday_prices_batch(symbols, interval)
+
+        # Find all timestamps from intraday data
+        all_times = set()
+        for symbol, prices in intraday_prices.items():
+            logger.info(f"Intraday: {symbol} has {len(prices)} price points")
+            for p in prices:
+                all_times.add(p["time"])
+
+        # Generate time slots from market open (or earlier for pre-market context)
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
+
+        # Add market hours markers if we have baseline (for drawing vertical lines)
+        if baseline_value > 0:
+            all_times.add("00:00")
+            all_times.add("09:30")  # Market open
+            all_times.add("16:00")  # Market close
+            # Add current time if after market close to show after-hours data
+            all_times.add(current_time)
+
+        logger.info(f"Intraday: Found {len(all_times)} unique time points")
+
+        if not all_times:
+            return []
+
+        # Sort times chronologically
+        sorted_times = sorted(all_times)
+
+        # Get real-time current prices (same as holdings table uses)
+        current_realtime_prices = price_service.get_prices_batch(symbols)
+        logger.info(f"Intraday: Real-time prices: {current_realtime_prices}")
+
+        # Calculate portfolio value at each time point
+        results = []
+        # Track last known price for each symbol (initialize with previous close)
+        last_prices = {symbol: prev_close_prices.get(symbol) for symbol in symbols}
+
+        # Use baseline_value (previous close) as the zero point for daily P&L
+        zero_point_value = baseline_value
+
+        # Check if we're at the last time point (use real-time prices for consistency)
+        is_last_time_point = False
+
+        for idx, time_str in enumerate(sorted_times):
+            # Skip future times
+            if time_str > current_time:
+                continue
+
+            # Check if this is the last valid time point
+            is_last_time_point = (idx == len(sorted_times) - 1) or (sorted_times[idx + 1] > current_time if idx + 1 < len(sorted_times) else True)
+
+            total_value = Decimal("0")
+            has_data = False
+
+            for symbol in symbols:
+                price_at_time = None
+
+                # For the last time point, use real-time prices to match holdings table
+                if is_last_time_point and current_realtime_prices.get(symbol) is not None:
+                    price_at_time = current_realtime_prices[symbol]
+                    last_prices[symbol] = price_at_time
+                else:
+                    # Check if we have intraday data for this time
+                    symbol_prices = intraday_prices.get(symbol, [])
+                    for p in symbol_prices:
+                        if p["time"] == time_str:
+                            price_at_time = p["price"]
+                            last_prices[symbol] = price_at_time
+                            break
+
+                # Use last known price (starts with previous close)
+                if price_at_time is None:
+                    price_at_time = last_prices.get(symbol)
+
+                if price_at_time is not None:
+                    total_value += quantities[symbol] * price_at_time
+                    has_data = True
+
+            if has_data and total_value > 0:
+                # Daily P&L: change from midnight (previous close)
+                daily_pnl = total_value - zero_point_value
+                daily_pnl_percent = (daily_pnl / zero_point_value * 100) if zero_point_value > 0 else Decimal("0")
+
+                # Calculate per-asset P&L changes using previous close (same as holdings table)
+                asset_changes = []
+                for symbol in symbols:
+                    current_price = last_prices.get(symbol)
+                    prev_price = prev_close_prices.get(symbol)  # Use same prev_close as holdings
+                    qty = quantities[symbol]
+
+                    if current_price is not None and prev_price is not None and prev_price > 0:
+                        asset_pnl = (current_price - prev_price) * qty
+                        asset_pnl_percent = ((current_price - prev_price) / prev_price) * 100
+                        asset_changes.append({
+                            "symbol": symbol,
+                            "pnl": float(asset_pnl),
+                            "pnl_percent": float(asset_pnl_percent),
+                            "prev_price": float(prev_price),
+                            "current_price": float(current_price),
+                        })
+
+                # Sort by absolute P&L (largest movers first)
+                asset_changes.sort(key=lambda x: abs(x["pnl"]), reverse=True)
+
+                results.append({
+                    "time": time_str,
+                    "value": float(total_value),
+                    "baseline_value": float(zero_point_value),
+                    "daily_pnl": float(daily_pnl),
+                    "daily_pnl_percent": float(daily_pnl_percent),
+                    "asset_changes": asset_changes[:10],  # Top 10 movers
+                })
+
+        logger.info(f"Intraday: Returning {len(results)} data points")
         return results
