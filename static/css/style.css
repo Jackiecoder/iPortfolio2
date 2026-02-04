@@ -200,3 +200,48 @@ body {
     margin-left: 4px;
     white-space: nowrap;
 }
+
+/* Category tabs for allocation drill-down */
+#categoryTabs {
+    margin-top: 8px;
+}
+
+#categoryTabs .btn {
+    flex: 1;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+}
+
+/* Custom category button colors */
+/* Crypto - Orange */
+.btn-outline-crypto {
+    color: #f59e0b;
+    border-color: #f59e0b;
+}
+.btn-outline-crypto:hover, .btn-outline-crypto.active, .btn-crypto {
+    color: #fff;
+    background-color: #f59e0b;
+    border-color: #f59e0b;
+}
+
+/* Index - Blue */
+.btn-outline-index {
+    color: #2563eb;
+    border-color: #2563eb;
+}
+.btn-outline-index:hover, .btn-outline-index.active, .btn-index {
+    color: #fff;
+    background-color: #2563eb;
+    border-color: #2563eb;
+}
+
+/* Individual Stocks - Purple */
+.btn-outline-stocks {
+    color: #8b5cf6;
+    border-color: #8b5cf6;
+}
+.btn-outline-stocks:hover, .btn-outline-stocks.active, .btn-stocks {
+    color: #fff;
+    background-color: #8b5cf6;
+    border-color: #8b5cf6;
+}

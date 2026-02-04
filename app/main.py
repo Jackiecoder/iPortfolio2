@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+from .cache_service import cache_service
 from .csv_parser import CSVParseError, parse_csv_content, parse_csv_file
 from .portfolio import Portfolio
 from .price_service import price_service
@@ -55,10 +56,12 @@ def load_portfolio() -> Portfolio:
         logger.info("No CSV files found in data directory")
         return portfolio
 
+    # Collect all transactions from all files first
+    all_transactions = []
     for csv_file in csv_files:
         try:
             transactions = parse_csv_file(csv_file)
-            portfolio.add_transactions(transactions)
+            all_transactions.extend(transactions)
             # Show relative path from data directory
             relative_path = csv_file.relative_to(DATA_DIR)
             logger.info(f"Loaded {len(transactions)} transactions from {relative_path}")
@@ -68,6 +71,11 @@ def load_portfolio() -> Portfolio:
         except Exception as e:
             relative_path = csv_file.relative_to(DATA_DIR)
             logger.error(f"Unexpected error loading {relative_path}: {e}")
+
+    # Add all transactions at once (will be sorted globally by date)
+    if all_transactions:
+        portfolio.add_transactions(all_transactions)
+        logger.info(f"Total: {len(all_transactions)} transactions loaded and sorted by date")
 
     return portfolio
 
@@ -105,6 +113,9 @@ async def get_holdings():
                     "pnl_percent": float(h.pnl_percent) if h.pnl_percent else None,
                     "daily_change_percent": float(h.daily_change_percent) if h.daily_change_percent else None,
                     "daily_change_amount": float(h.daily_change_amount) if h.daily_change_amount else None,
+                    "holding_days": h.holding_days,
+                    "annualized_return": float(h.annualized_return) if h.annualized_return else None,
+                    "weighted_annualized_return": float(h.weighted_annualized_return) if h.weighted_annualized_return else None,
                 }
                 for h in holdings
             ]
@@ -133,6 +144,7 @@ async def get_summary():
             "total_dividends": float(summary.total_dividends),
             "total_fees": float(summary.total_fees),
             "all_time_cost_basis": float(summary.all_time_cost_basis),
+            "weighted_annualized_return": float(summary.weighted_annualized_return) if summary.weighted_annualized_return else None,
             "holdings": [
                 {
                     "symbol": h.symbol,
@@ -145,6 +157,9 @@ async def get_summary():
                     "pnl_percent": float(h.pnl_percent) if h.pnl_percent else None,
                     "daily_change_percent": float(h.daily_change_percent) if h.daily_change_percent else None,
                     "daily_change_amount": float(h.daily_change_amount) if h.daily_change_amount else None,
+                    "holding_days": h.holding_days,
+                    "annualized_return": float(h.annualized_return) if h.annualized_return else None,
+                    "weighted_annualized_return": float(h.weighted_annualized_return) if h.weighted_annualized_return else None,
                 }
                 for h in summary.holdings
             ],
@@ -278,11 +293,13 @@ async def upload_csv(file: UploadFile = File(...)):
 
 
 @app.post("/api/reload")
-async def reload_portfolio():
+async def reload_portfolio(clear_history_cache: bool = Query(False, description="Also clear historical data cache")):
     """Reload portfolio from CSV files."""
     try:
         load_portfolio()
         price_service.clear_cache()
+        if clear_history_cache:
+            cache_service.clear_cache()
         return {"message": "Portfolio reloaded successfully"}
     except Exception as e:
         logger.error(f"Error reloading portfolio: {e}")
@@ -328,4 +345,60 @@ async def get_intraday(
         return {"intraday": intraday_data}
     except Exception as e:
         logger.error(f"Error fetching intraday data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/investments")
+async def get_investments(
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+):
+    """Get historical investment amounts (cost basis) from transactions only.
+
+    This endpoint does NOT require yfinance data - it only uses transaction records.
+    Much faster and more reliable for showing investment history.
+    """
+    if portfolio is None:
+        load_portfolio()
+
+    try:
+        from datetime import datetime
+
+        start = None
+        end = None
+
+        if start_date:
+            start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        if end_date:
+            end = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+        history = portfolio.get_investment_history(start_date=start, end_date=end)
+        return {"investments": history}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+    except Exception as e:
+        logger.error(f"Error fetching investment history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/cache/stats")
+async def get_cache_stats():
+    """Get cache statistics."""
+    try:
+        stats = cache_service.get_cache_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/cache/clear")
+async def clear_cache():
+    """Clear all cached data."""
+    try:
+        cache_service.clear_cache()
+        price_service.clear_cache()
+        return {"message": "Cache cleared successfully"}
+    except Exception as e:
+        logger.error(f"Error clearing cache: {e}")
         raise HTTPException(status_code=500, detail=str(e))

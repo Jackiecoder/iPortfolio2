@@ -1,11 +1,13 @@
 """Price service for fetching market data using yfinance."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
 import yfinance as yf
+
+from .cache_service import cache_service
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +142,7 @@ class PriceService:
         symbol: str,
         start_date: datetime,
         end_date: Optional[datetime] = None
-    ) -> dict[datetime, Decimal]:
+    ) -> dict[date, Decimal]:
         """Get historical prices for a symbol.
 
         Args:
@@ -154,30 +156,65 @@ class PriceService:
         if end_date is None:
             end_date = datetime.now()
 
-        cache_key = f"{symbol}_{start_date.date()}_{end_date.date()}"
+        start_d = start_date.date() if isinstance(start_date, datetime) else start_date
+        end_d = end_date.date() if isinstance(end_date, datetime) else end_date
 
-        # Check cache
-        if cache_key in self._history_cache:
-            data, cached_at = self._history_cache[cache_key]
-            if datetime.now() - cached_at < self.cache_ttl:
-                return data
+        # Try to get cached prices first (for dates older than 7 days)
+        cached_prices = cache_service.get_historical_prices(symbol, start_d, end_d)
+
+        # Determine which dates we still need to fetch
+        # We need to fetch: dates not in cache AND dates within last 7 days
+        cutoff_date = cache_service._get_cache_cutoff_date()
+
+        # If all requested dates are cached, return early
+        if end_d < cutoff_date and len(cached_prices) > 0:
+            # Check if we have all dates (approximately)
+            cache_key = f"{symbol}_{start_d}_{end_d}"
+            if cache_key in self._history_cache:
+                data, cached_at = self._history_cache[cache_key]
+                if datetime.now() - cached_at < self.cache_ttl:
+                    return data
+
+        # Determine the fetch range - only fetch what's needed
+        if cached_prices:
+            # Check if cache covers the requested start_date
+            earliest_cached = min(cached_prices.keys())
+            if earliest_cached <= start_d:
+                # Cache has all historical data, only fetch recent dates
+                fetch_start = max(start_d, cutoff_date - timedelta(days=7))
+            else:
+                # Cache doesn't have all data, fetch from start
+                fetch_start = start_d
+        else:
+            fetch_start = start_d
 
         try:
             ticker = yf.Ticker(symbol)
-            history = ticker.history(start=start_date, end=end_date)
+            history = ticker.history(start=fetch_start, end=end_d + timedelta(days=1))
 
-            prices = {}
+            fetched_prices = {}
             for date_idx, row in history.iterrows():
                 # Convert pandas Timestamp to datetime.date
                 date_key = date_idx.to_pydatetime().date()
-                prices[date_key] = Decimal(str(row["Close"]))
+                fetched_prices[date_key] = Decimal(str(row["Close"]))
 
-            self._history_cache[cache_key] = (prices, datetime.now())
-            return prices
+            # Save newly fetched prices to persistent cache (only dates > 7 days old)
+            if fetched_prices:
+                cache_service.save_historical_prices_batch(symbol, fetched_prices)
+
+            # Merge cached and fetched prices
+            all_prices = {**cached_prices, **fetched_prices}
+
+            # Update memory cache
+            cache_key = f"{symbol}_{start_d}_{end_d}"
+            self._history_cache[cache_key] = (all_prices, datetime.now())
+
+            return all_prices
 
         except Exception as e:
             logger.error(f"Error fetching historical prices for {symbol}: {e}")
-            return {}
+            # Return cached data if available, even on error
+            return cached_prices if cached_prices else {}
 
     def get_previous_close(self, symbol: str) -> Optional[Decimal]:
         """Get previous trading day's closing price for a symbol.
@@ -296,19 +333,38 @@ class PriceService:
 
             # Get the most recent trading date
             history.index = pd.to_datetime(history.index)
-            latest_date = history.index[-1].date()
-            logger.info(f"Latest trading date for {symbol}: {latest_date}")
+
+            # For crypto (24/7), use today's date; for stocks, use the latest date in data
+            today = date.today()
+            is_crypto = symbol.endswith('-USD')
+
+            if is_crypto:
+                # For crypto, filter to today's data (in local time)
+                target_date = today
+            else:
+                # For stocks, use the most recent trading day in the data
+                # Convert to local time for comparison
+                last_timestamp = history.index[-1].to_pydatetime()
+                if last_timestamp.tzinfo is not None:
+                    # Convert to local timezone
+                    local_tz = datetime.now().astimezone().tzinfo
+                    last_timestamp = last_timestamp.astimezone(local_tz).replace(tzinfo=None)
+                target_date = last_timestamp.date()
+
+            logger.info(f"Target date for {symbol}: {target_date} (crypto: {is_crypto})")
 
             prices = []
             for date_idx, row in history.iterrows():
                 try:
                     timestamp = date_idx.to_pydatetime()
-                    # Handle timezone-aware timestamps
+                    # Handle timezone-aware timestamps - convert to local time
                     if timestamp.tzinfo is not None:
-                        timestamp = timestamp.replace(tzinfo=None)
+                        # Convert to local timezone
+                        local_tz = datetime.now().astimezone().tzinfo
+                        timestamp = timestamp.astimezone(local_tz).replace(tzinfo=None)
 
-                    # Only include data from the most recent trading day
-                    if timestamp.date() != latest_date:
+                    # Only include data from the target date
+                    if timestamp.date() != target_date:
                         continue
 
                     close_price = row["Close"]

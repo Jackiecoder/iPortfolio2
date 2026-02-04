@@ -101,6 +101,9 @@ class Holding(BaseModel):
     prev_close: Optional[Decimal] = None
     daily_change_percent: Optional[Decimal] = None
     daily_change_amount: Optional[Decimal] = None
+    holding_days: Optional[int] = None
+    annualized_return: Optional[Decimal] = None
+    weighted_annualized_return: Optional[Decimal] = None  # Per-lot cost-basis weighted CAGR
 
     def update_with_price(self, price: Decimal, prev_close: Optional[Decimal] = None) -> None:
         """Update holding with current market price."""
@@ -139,5 +142,6 @@ class PortfolioSummary(BaseModel):
     total_dividends: Decimal
     total_fees: Decimal
     all_time_cost_basis: Decimal  # includes sold assets
+    weighted_annualized_return: Optional[Decimal] = None  # market-value weighted
     holdings: list[Holding]
     dividend_summaries: list[DividendSummary]

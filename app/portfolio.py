@@ -13,6 +13,7 @@ from .models import (
     PortfolioSummary,
     Transaction,
 )
+from .cache_service import cache_service
 from .price_service import price_service
 from .split_service import split_service
 
@@ -241,6 +242,44 @@ class Portfolio:
                 if price is not None:
                     holding.update_with_price(price, prev_close)
 
+        # Calculate holding days and annualized return for each holding
+        import math
+        today = date.today()
+        for holding in holdings:
+            holding_days = self.get_holding_days(holding.symbol)
+            holding.holding_days = holding_days
+
+            if holding_days > 0 and holding.pnl_percent is not None:
+                years = Decimal(str(holding_days)) / Decimal("365")
+                # Use minimum 1 year for annualized calculation
+                years_for_calc = max(years, Decimal("1"))
+                holding.annualized_return = holding.pnl_percent / years_for_calc
+
+            # Calculate per-lot cost-basis weighted CAGR
+            if holding.current_price and holding.symbol in self._lots:
+                lots = self._lots[holding.symbol]
+                weighted_sum = Decimal("0")
+                total_cost_basis_weight = Decimal("0")
+
+                for lot in lots:
+                    if lot.quantity <= 0 or lot.total_cost <= 0:
+                        continue
+
+                    lot_holding_days = (today - lot.purchase_date).days
+                    lot_years = Decimal(str(max(lot_holding_days, 1))) / Decimal("365")
+                    lot_years_for_calc = max(lot_years, Decimal("1"))
+
+                    lot_current_value = lot.quantity * holding.current_price
+                    growth_factor = lot_current_value / lot.total_cost
+
+                    if growth_factor > 0:
+                        cagr = (Decimal(str(math.pow(float(growth_factor), float(1 / lot_years_for_calc)))) - 1) * 100
+                        weighted_sum += lot.total_cost * cagr
+                        total_cost_basis_weight += lot.total_cost
+
+                if total_cost_basis_weight > 0:
+                    holding.weighted_annualized_return = weighted_sum / total_cost_basis_weight
+
         # Add cash as a holding if we have cash snapshots
         cash_balance = self.get_cash_balance()
         if cash_balance > 0:
@@ -282,6 +321,63 @@ class Portfolio:
 
         latest_date = max(applicable_dates)
         return self._cash_snapshots[latest_date]
+
+    def get_holding_days(self, symbol: str) -> int:
+        """Calculate the number of days a position has been held.
+
+        Only counts days when quantity > 0. If position was closed and reopened,
+        the gap period is not counted.
+
+        Args:
+            symbol: Asset symbol
+
+        Returns:
+            Number of holding days
+        """
+        # Get all transactions for this symbol sorted by date
+        symbol_txns = sorted(
+            [t for t in self._transactions if t.asset == symbol],
+            key=lambda t: t.date
+        )
+
+        if not symbol_txns:
+            return 0
+
+        # Track periods when position was open
+        holding_periods = []  # List of (start_date, end_date) tuples
+        current_qty = Decimal("0")
+        period_start = None
+
+        for txn in symbol_txns:
+            prev_qty = current_qty
+
+            if txn.action == ActionType.BUY or txn.action == ActionType.GIFT:
+                current_qty += txn.quantity or Decimal("0")
+            elif txn.action == ActionType.SELL:
+                current_qty -= txn.quantity or Decimal("0")
+            elif txn.action == ActionType.GAS:
+                current_qty -= txn.quantity or Decimal("0")
+
+            # Position opened
+            if prev_qty <= 0 and current_qty > 0:
+                period_start = txn.date
+
+            # Position closed
+            if prev_qty > 0 and current_qty <= 0 and period_start is not None:
+                holding_periods.append((period_start, txn.date))
+                period_start = None
+
+        # If still holding, add current period
+        if current_qty > 0 and period_start is not None:
+            holding_periods.append((period_start, date.today()))
+
+        # Calculate total holding days
+        total_days = 0
+        for start, end in holding_periods:
+            total_days += (end - start).days
+
+        # Minimum 1 day if we have any holding
+        return max(total_days, 1) if holding_periods else 0
 
     def get_dividend_summaries(self) -> list[DividendSummary]:
         """Get dividend summaries by symbol.
@@ -396,6 +492,48 @@ class Portfolio:
         cash_value = cash_holding.market_value if cash_holding and cash_holding.market_value else Decimal("0")
         total_market_value = investment_market_value + cash_value
 
+        # Calculate per-lot cost-basis weighted CAGR
+        # This weights each lot's annualized return by its cost basis
+        weighted_annualized_return = None
+        if fetch_prices:
+            import math
+            today = date.today()
+            weighted_sum = Decimal("0")
+            total_cost_basis_weight = Decimal("0")
+
+            # Build a price lookup from holdings
+            price_lookup = {h.symbol: h.current_price for h in investments if h.current_price}
+
+            for symbol, lots in self._lots.items():
+                if symbol == "CASH":
+                    continue
+
+                current_price = price_lookup.get(symbol)
+                if current_price is None:
+                    continue
+
+                for lot in lots:
+                    if lot.quantity <= 0 or lot.total_cost <= 0:
+                        continue
+
+                    # Calculate holding period
+                    holding_days = (today - lot.purchase_date).days
+                    years = Decimal(str(max(holding_days, 1))) / Decimal("365")
+                    years_for_calc = max(years, Decimal("1"))  # Minimum 1 year to avoid extrapolation
+
+                    # Calculate lot's current value and growth factor
+                    lot_current_value = lot.quantity * current_price
+                    growth_factor = lot_current_value / lot.total_cost
+
+                    # CAGR = growth_factor^(1/years) - 1, as percentage
+                    if growth_factor > 0:
+                        cagr = (Decimal(str(math.pow(float(growth_factor), float(1 / years_for_calc)))) - 1) * 100
+                        weighted_sum += lot.total_cost * cagr
+                        total_cost_basis_weight += lot.total_cost
+
+            if total_cost_basis_weight > 0:
+                weighted_annualized_return = weighted_sum / total_cost_basis_weight
+
         return PortfolioSummary(
             total_cost_basis=investment_cost_basis,
             total_market_value=total_market_value,
@@ -407,6 +545,7 @@ class Portfolio:
             total_dividends=total_dividends,
             total_fees=self._total_fees,
             all_time_cost_basis=all_time_cost_basis,
+            weighted_annualized_return=weighted_annualized_return,
             holdings=holdings,
             dividend_summaries=dividend_summaries,
         )
@@ -433,6 +572,31 @@ class Portfolio:
         if end_date is None:
             end_date = date.today()
 
+        # Try to get cached portfolio values first (for dates older than 7 days)
+        cached_values = cache_service.get_portfolio_values(start_date, end_date)
+        logger.info(f"Found {len(cached_values)} cached portfolio values")
+
+        # Determine cutoff date for caching
+        cutoff_date = cache_service._get_cache_cutoff_date()
+
+        # If we have cached data and only need recent dates, optimize the calculation
+        if cached_values:
+            # Find the earliest cached date
+            earliest_cached = min(cached_values.keys())
+
+            # Check if cache covers the requested start_date
+            if earliest_cached <= start_date:
+                # Cache has all historical data, only calculate recent dates
+                calc_start = max(start_date, cutoff_date - timedelta(days=7))
+                logger.info(f"Cache covers start_date, calculating from {calc_start}")
+            else:
+                # Cache doesn't have all data, need to calculate from start
+                calc_start = start_date
+                logger.info(f"Cache incomplete (earliest: {earliest_cached}), calculating from {calc_start}")
+        else:
+            calc_start = start_date
+            logger.info(f"No cache, calculating from {calc_start}")
+
         # Get all unique symbols
         symbols = set()
         for txn in self._transactions:
@@ -441,8 +605,8 @@ class Portfolio:
 
         # Fetch historical prices for all symbols
         # Note: yfinance returns split-adjusted prices (adjusted to today)
-        # Fetch from a few days before start_date to handle weekends/holidays
-        fetch_start = start_date - timedelta(days=7)
+        # Fetch from a few days before calc_start to handle weekends/holidays
+        fetch_start = calc_start - timedelta(days=7)
         historical_prices: dict[str, dict[date, Decimal]] = {}
         for symbol in symbols:
             prices = price_service.get_historical_prices(
@@ -452,15 +616,23 @@ class Portfolio:
             )
             historical_prices[symbol] = prices
 
-        # Calculate portfolio value for each date
-        results = []
-        current_date = start_date
+        # Calculate portfolio value for each date (starting from calc_start)
+        calculated_results = []
+        current_date = calc_start
         # Use same split adjustment setting - quantities will be adjusted at transaction time
         temp_portfolio = Portfolio(adjust_splits=self._adjust_splits)
 
         # Sort transactions by date
         sorted_txns = sorted(self._transactions, key=lambda t: t.date)
+
+        # Fast-forward to transactions before calc_start
         txn_idx = 0
+        for txn in sorted_txns:
+            if txn.date < calc_start:
+                temp_portfolio._process_transaction(txn)
+                txn_idx += 1
+            else:
+                break
 
         while current_date <= end_date:
             # Process transactions up to current date
@@ -493,15 +665,196 @@ class Portfolio:
             total_value = investment_value + cash_balance
 
             if total_value > 0 or txn_idx > 0:
-                results.append({
-                    "date": current_date.isoformat(),
-                    "value": float(total_value),
-                    "investment_value": float(investment_value),
-                    "cost_basis": float(cost_basis),
-                    "cash": float(cash_balance),
+                calculated_results.append({
+                    "date": current_date,
+                    "total_value": total_value,
+                    "investment_value": investment_value,
+                    "cost_basis": cost_basis,
+                    "cash_value": cash_balance,
                 })
 
             current_date += timedelta(days=1)
+
+        # Save newly calculated values to cache (only dates > 7 days old)
+        if calculated_results:
+            cache_service.save_portfolio_values_batch(calculated_results)
+
+        # Merge cached and calculated results
+        all_results = []
+
+        # Add cached results for dates before calc_start
+        for d in sorted(cached_values.keys()):
+            if d < calc_start:
+                v = cached_values[d]
+                all_results.append({
+                    "date": d.isoformat(),
+                    "value": float(v["total_value"]),
+                    "investment_value": float(v["investment_value"]),
+                    "cost_basis": float(v["cost_basis"]),
+                    "cash": float(v["cash_value"]),
+                })
+
+        # Add calculated results
+        for r in calculated_results:
+            if r["date"] >= start_date:
+                all_results.append({
+                    "date": r["date"].isoformat(),
+                    "value": float(r["total_value"]),
+                    "investment_value": float(r["investment_value"]),
+                    "cost_basis": float(r["cost_basis"]),
+                    "cash": float(r["cash_value"]),
+                })
+
+        return all_results
+
+    def get_investment_history(
+        self,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> list[dict]:
+        """Calculate monthly investment amounts from transactions only.
+
+        This method does NOT require yfinance data - it only uses transaction records.
+
+        Args:
+            start_date: Start date (defaults to first transaction)
+            end_date: End date (defaults to today)
+
+        Returns:
+            List of {month, cost_basis, net_investment, transactions} dictionaries
+        """
+        if not self._transactions:
+            return []
+
+        if start_date is None:
+            start_date = min(t.date for t in self._transactions)
+        if end_date is None:
+            end_date = date.today()
+
+        # Category classification (matching frontend logic)
+        def get_category(symbol: str) -> str:
+            symbol_to_category = {
+                'BTC-USD': 'Crypto', 'ETH-USD': 'Crypto', 'MSTR': 'Crypto', 'CRCL': 'Crypto',
+                'VOO': 'Index', 'QQQM': 'Index', 'QQQ': 'Index', 'BRK-B': 'Index',
+                'CASH': 'Cash',
+            }
+            if symbol in symbol_to_category:
+                return symbol_to_category[symbol]
+            if symbol.endswith('-USD'):
+                return 'Crypto'
+            return 'Individual Stocks'
+
+        # Sort transactions by date
+        sorted_txns = sorted(self._transactions, key=lambda t: t.date)
+
+        # Group transactions by month and calculate monthly data
+        monthly_data: dict[str, dict] = {}
+
+        for txn in sorted_txns:
+            if txn.date < start_date or txn.date > end_date:
+                continue
+
+            month_key = txn.date.strftime("%Y-%m")
+
+            if month_key not in monthly_data:
+                monthly_data[month_key] = {
+                    "transactions": [],
+                    "buys": {},  # symbol -> total amount
+                    "sells": {},  # symbol -> total amount
+                    "by_category": {},  # category -> net amount
+                }
+
+            # Track BUY and SELL transactions for tooltip
+            if txn.action == ActionType.BUY:
+                amount = float(txn.amount) if txn.amount else 0
+                if txn.asset not in monthly_data[month_key]["buys"]:
+                    monthly_data[month_key]["buys"][txn.asset] = 0
+                monthly_data[month_key]["buys"][txn.asset] += amount
+                # Track by category
+                category = get_category(txn.asset)
+                if category not in monthly_data[month_key]["by_category"]:
+                    monthly_data[month_key]["by_category"][category] = 0
+                monthly_data[month_key]["by_category"][category] += amount
+            elif txn.action == ActionType.SELL:
+                amount = float(txn.amount) if txn.amount else 0
+                if txn.asset not in monthly_data[month_key]["sells"]:
+                    monthly_data[month_key]["sells"][txn.asset] = 0
+                monthly_data[month_key]["sells"][txn.asset] += amount
+                # Track by category (negative for sells)
+                category = get_category(txn.asset)
+                if category not in monthly_data[month_key]["by_category"]:
+                    monthly_data[month_key]["by_category"][category] = 0
+                monthly_data[month_key]["by_category"][category] -= amount
+
+        # Calculate cost_basis at end of each month
+        temp_portfolio = Portfolio(adjust_splits=self._adjust_splits)
+        txn_idx = 0
+
+        # First, process all transactions BEFORE start_date to get initial cost_basis
+        while txn_idx < len(sorted_txns) and sorted_txns[txn_idx].date < start_date:
+            temp_portfolio._process_transaction(sorted_txns[txn_idx])
+            txn_idx += 1
+
+        # Calculate initial cost_basis (from before the selected period)
+        prev_cost_basis = Decimal("0")
+        for symbol, lots in temp_portfolio._lots.items():
+            lot_cost_basis = sum(lot.total_cost for lot in lots)
+            prev_cost_basis += lot_cost_basis
+
+        # Get all months in order
+        all_months = sorted(monthly_data.keys())
+
+        results = []
+        for month_key in all_months:
+            # Parse month to get the last day
+            year, month = map(int, month_key.split("-"))
+            if month == 12:
+                next_month_start = date(year + 1, 1, 1)
+            else:
+                next_month_start = date(year, month + 1, 1)
+            month_end = next_month_start - timedelta(days=1)
+
+            # Process all transactions up to end of month
+            while txn_idx < len(sorted_txns) and sorted_txns[txn_idx].date <= month_end:
+                temp_portfolio._process_transaction(sorted_txns[txn_idx])
+                txn_idx += 1
+
+            # Calculate total cost basis
+            cost_basis = Decimal("0")
+            for symbol, lots in temp_portfolio._lots.items():
+                lot_cost_basis = sum(lot.total_cost for lot in lots)
+                cost_basis += lot_cost_basis
+
+            # Calculate net investment for this month only
+            net_investment = cost_basis - prev_cost_basis
+
+            # Build transaction details for tooltip
+            month_info = monthly_data[month_key]
+            tx_details = []
+            for symbol, amount in sorted(month_info["buys"].items()):
+                if amount > 0:
+                    tx_details.append({"symbol": symbol, "action": "BUY", "amount": amount})
+            for symbol, amount in sorted(month_info["sells"].items()):
+                if amount > 0:
+                    tx_details.append({"symbol": symbol, "action": "SELL", "amount": amount})
+
+            # Sort categories by absolute amount (descending)
+            by_category = month_info["by_category"]
+            sorted_categories = sorted(
+                by_category.items(),
+                key=lambda x: abs(x[1]),
+                reverse=True
+            )
+
+            results.append({
+                "month": month_key,
+                "cost_basis": float(cost_basis),
+                "net_investment": float(net_investment),
+                "transactions": tx_details,
+                "by_category": {cat: amt for cat, amt in sorted_categories},
+            })
+
+            prev_cost_basis = cost_basis
 
         return results
 
@@ -563,7 +916,26 @@ class Portfolio:
             all_times.add("00:00")
             all_times.add("09:30")  # Market open
             all_times.add("16:00")  # Market close
-            # Add current time if after market close to show after-hours data
+
+            # Add time points after market close up to current time (for after-hours/crypto)
+            # This ensures the line continues to be drawn
+            current_hour = int(current_time.split(":")[0])
+            current_minute = int(current_time.split(":")[1])
+
+            # Add intermediate points between 16:00 and current time based on interval
+            # Parse interval to get minutes
+            interval_minutes = 5  # Default
+            if interval.endswith("m"):
+                interval_minutes = int(interval[:-1])
+
+            # Add points from 16:00 to current time
+            for hour in range(16, 24):
+                for minute in range(0, 60, interval_minutes):
+                    time_str = f"{hour:02d}:{minute:02d}"
+                    if time_str <= current_time:
+                        all_times.add(time_str)
+
+            # Add current time as final point
             all_times.add(current_time)
 
         logger.info(f"Intraday: Found {len(all_times)} unique time points")
