@@ -24,6 +24,9 @@ class PriceService:
         self.cache_ttl = timedelta(seconds=cache_ttl_seconds)
         self._price_cache: dict[str, tuple[Decimal, datetime]] = {}
         self._history_cache: dict[str, tuple[dict, datetime]] = {}
+        self._prev_close_cache: dict[str, tuple[dict, datetime]] = {}
+        self._crypto_midnight_cache: dict[str, tuple[dict, datetime]] = {}
+        self._intraday_cache: dict[str, tuple[list, datetime]] = {}
 
     def get_current_price(self, symbol: str) -> Optional[Decimal]:
         """Get current price for a symbol.
@@ -216,6 +219,155 @@ class PriceService:
             # Return cached data if available, even on error
             return cached_prices if cached_prices else {}
 
+    def _is_crypto_symbol(self, symbol: str) -> bool:
+        """Return True if this symbol is a 24/7 crypto asset."""
+        return any(symbol.endswith(s) for s in ('-USD', '-USDT', '-BTC', '-ETH'))
+
+    def _get_crypto_est_midnight_price_batch(self, symbols: list[str]) -> dict[str, Optional[Decimal]]:
+        """For crypto, return the price at the most recent EST midnight using 1h data."""
+        import pytz
+        from datetime import datetime as dt
+
+        cache_key = str(sorted(symbols))
+        if cache_key in self._crypto_midnight_cache:
+            data, cached_at = self._crypto_midnight_cache[cache_key]
+            if datetime.now() - cached_at < self.cache_ttl:
+                return data
+
+        est = pytz.timezone('US/Eastern')
+        now_est = dt.now(est)
+        # Today's midnight in EST (start of today)
+        midnight_est = est.localize(dt(now_est.year, now_est.month, now_est.day, 0, 0, 0))
+        midnight_utc = midnight_est.astimezone(pytz.utc)
+
+        logger.info(f"Crypto baseline: using EST midnight = {midnight_est} (UTC: {midnight_utc})")
+
+        results = {}
+        for symbol in symbols:
+            try:
+                ticker = yf.Ticker(symbol)
+                history = ticker.history(period="2d", interval="1h")
+
+                if history.empty:
+                    results[symbol] = None
+                    continue
+
+                # Normalise index to UTC
+                if history.index.tzinfo is None:
+                    history.index = history.index.tz_localize('UTC')
+                else:
+                    history.index = history.index.tz_convert(pytz.utc)
+
+                # Find the last candle whose open time is <= midnight UTC
+                before = history[history.index <= midnight_utc]
+                if before.empty:
+                    results[symbol] = Decimal(str(history['Close'].iloc[0]))
+                else:
+                    results[symbol] = Decimal(str(before['Close'].iloc[-1]))
+
+                logger.info(f"Crypto EST midnight price for {symbol}: {results[symbol]}")
+
+            except Exception as e:
+                logger.error(f"Error fetching EST midnight price for {symbol}: {e}")
+                results[symbol] = None
+
+        self._crypto_midnight_cache[cache_key] = (results, datetime.now())
+        return results
+
+    def get_historical_prices_est_midnight_batch(
+        self, symbols: list[str], num_days: int = 16
+    ) -> dict[str, dict]:
+        """Return prices at EST midnight for each of the past num_days days.
+
+        Crypto (24/7): sampled from 1h intraday at midnight ET.
+        Stocks: use daily close (market closes ~4 pm ET, well before midnight).
+
+        Returns: {symbol: {date: Decimal}}
+        """
+        import pytz
+        from datetime import datetime as dt, timedelta
+
+        est = pytz.timezone('US/Eastern')
+        now_est = dt.now(est)
+        results: dict[str, dict] = {s: {} for s in symbols}
+
+        crypto = [s for s in symbols if self._is_crypto_symbol(s)]
+        stocks  = [s for s in symbols if not self._is_crypto_symbol(s)]
+
+        # Crypto: 1-hour data sampled at midnight ET
+        for symbol in crypto:
+            try:
+                ticker = yf.Ticker(symbol)
+                history = ticker.history(period=f"{num_days + 3}d", interval="1h")
+                if history.empty:
+                    continue
+                if history.index.tzinfo is None:
+                    history.index = history.index.tz_localize('UTC')
+                else:
+                    history.index = history.index.tz_convert(pytz.utc)
+
+                for i in range(num_days):
+                    target_date = now_est.date() - timedelta(days=i)
+                    midnight_utc = est.localize(
+                        dt(target_date.year, target_date.month, target_date.day, 0, 0, 0)
+                    ).astimezone(pytz.utc)
+
+                    before = history[history.index <= midnight_utc]
+                    if not before.empty:
+                        results[symbol][target_date] = Decimal(str(before['Close'].iloc[-1]))
+            except Exception as e:
+                logger.error(f"Error fetching EST midnight history for {symbol}: {e}")
+
+        # Stocks: daily close
+        if stocks:
+            try:
+                data = yf.download(
+                    stocks, period=f"{num_days + 7}d", progress=False,
+                    group_by="ticker" if len(stocks) > 1 else None,
+                )
+                for symbol in stocks:
+                    try:
+                        sd = data if len(stocks) == 1 else (
+                            data[symbol] if symbol in data.columns.get_level_values(0) else None
+                        )
+                        if sd is None or sd.empty:
+                            continue
+                        for ts, price in sd["Close"].dropna().items():
+                            d = ts.date() if hasattr(ts, "date") else ts
+                            results[symbol][d] = Decimal(str(price))
+                    except Exception as e:
+                        logger.error(f"Error processing daily close for {symbol}: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching stock daily closes: {e}")
+
+        return results
+
+    def _get_prev_close_from_series(self, close_series, today_date) -> Optional[Decimal]:
+        """Return the most recent completed trading day's close.
+
+        When the market is open, yfinance includes today's partial bar as the
+        last row, so the previous close is iloc[-2].  When the market is closed
+        (e.g. overnight, weekends) today has no bar yet, so iloc[-1] is already
+        the most recent completed session — use that directly.
+        """
+        close_series = close_series.dropna()
+        if close_series.empty:
+            return None
+
+        last_date = close_series.index[-1]
+        # Normalize to a plain date for comparison
+        if hasattr(last_date, "date"):
+            last_date = last_date.date()
+
+        if last_date == today_date:
+            # Today's bar is present → previous completed session is iloc[-2]
+            if len(close_series) >= 2:
+                return Decimal(str(close_series.iloc[-2]))
+            return Decimal(str(close_series.iloc[-1]))
+        else:
+            # No bar for today yet → iloc[-1] is already yesterday's close
+            return Decimal(str(close_series.iloc[-1]))
+
     def get_previous_close(self, symbol: str) -> Optional[Decimal]:
         """Get previous trading day's closing price for a symbol.
 
@@ -226,18 +378,15 @@ class PriceService:
             Previous close price as Decimal, or None if not available
         """
         try:
+            from datetime import date as _date
             ticker = yf.Ticker(symbol)
             # Get last 5 days of daily data
             history = ticker.history(period="5d")
 
-            if history.empty or len(history) < 2:
-                # If less than 2 days, return the most recent close
-                if not history.empty:
-                    return Decimal(str(history["Close"].iloc[-1]))
+            if history.empty:
                 return None
 
-            # Return the second-to-last close (previous trading day)
-            return Decimal(str(history["Close"].iloc[-2]))
+            return self._get_prev_close_from_series(history["Close"], _date.today())
 
         except Exception as e:
             logger.error(f"Error fetching previous close for {symbol}: {e}")
@@ -246,84 +395,107 @@ class PriceService:
     def get_previous_close_batch(self, symbols: list[str]) -> dict[str, Optional[Decimal]]:
         """Get previous trading day's closing prices for multiple symbols.
 
+        Crypto symbols (24/7 markets) use the price at the most recent EST
+        midnight so the intraday baseline aligns with the calendar day in
+        Eastern time.  Stock symbols use the last official daily close.
+
         Args:
             symbols: List of Yahoo Finance ticker symbols
 
         Returns:
             Dictionary mapping symbols to previous close prices
         """
+        from datetime import date as _date
+        today = _date.today()
         results = {}
 
         if not symbols:
             return results
 
-        try:
-            # Fetch data for all symbols
-            data = yf.download(
-                symbols,
-                period="5d",
-                progress=False,
-                group_by="ticker" if len(symbols) > 1 else None
-            )
+        cache_key = str(sorted(symbols))
+        if cache_key in self._prev_close_cache:
+            data, cached_at = self._prev_close_cache[cache_key]
+            if datetime.now() - cached_at < self.cache_ttl:
+                return data
 
-            for symbol in symbols:
-                try:
-                    if len(symbols) == 1:
-                        symbol_data = data
-                    else:
-                        if symbol not in data.columns.get_level_values(0):
-                            results[symbol] = None
-                            continue
-                        symbol_data = data[symbol]
+        crypto_symbols = [s for s in symbols if self._is_crypto_symbol(s)]
+        stock_symbols  = [s for s in symbols if not self._is_crypto_symbol(s)]
 
-                    if not symbol_data.empty and len(symbol_data) >= 2:
-                        # Get second-to-last close (previous trading day)
-                        close_series = symbol_data["Close"].dropna()
-                        if len(close_series) >= 2:
-                            results[symbol] = Decimal(str(close_series.iloc[-2]))
-                        elif len(close_series) == 1:
-                            results[symbol] = Decimal(str(close_series.iloc[-1]))
+        # --- Crypto: use EST midnight price ---
+        if crypto_symbols:
+            crypto_results = self._get_crypto_est_midnight_price_batch(crypto_symbols)
+            results.update(crypto_results)
+
+        # --- Stocks: use last daily close ---
+        if stock_symbols:
+            try:
+                data = yf.download(
+                    stock_symbols,
+                    period="5d",
+                    progress=False,
+                    group_by="ticker" if len(stock_symbols) > 1 else None
+                )
+
+                for symbol in stock_symbols:
+                    try:
+                        if len(stock_symbols) == 1:
+                            symbol_data = data
                         else:
+                            if symbol not in data.columns.get_level_values(0):
+                                results[symbol] = None
+                                continue
+                            symbol_data = data[symbol]
+
+                        if symbol_data.empty:
                             results[symbol] = None
-                    elif not symbol_data.empty:
-                        results[symbol] = Decimal(str(symbol_data["Close"].dropna().iloc[-1]))
-                    else:
+                        else:
+                            results[symbol] = self._get_prev_close_from_series(
+                                symbol_data["Close"], today
+                            )
+
+                    except Exception as e:
+                        logger.error(f"Error processing previous close for {symbol}: {e}")
                         results[symbol] = None
 
-                except Exception as e:
-                    logger.error(f"Error processing previous close for {symbol}: {e}")
-                    results[symbol] = None
+            except Exception as e:
+                logger.error(f"Error in batch previous close fetch for stocks: {e}")
+                for symbol in stock_symbols:
+                    if symbol not in results:
+                        results[symbol] = self.get_previous_close(symbol)
 
-        except Exception as e:
-            logger.error(f"Error in batch previous close fetch: {e}")
-            # Fall back to individual fetching
-            for symbol in symbols:
-                if symbol not in results:
-                    results[symbol] = self.get_previous_close(symbol)
-
+        self._prev_close_cache[cache_key] = (results, datetime.now())
         return results
 
     def get_intraday_prices(
         self,
         symbol: str,
-        interval: str = "5m"
+        interval: str = "5m",
+        days: int = 1
     ) -> list[dict]:
         """Get intraday prices for a symbol.
 
         Args:
             symbol: Yahoo Finance ticker symbol
             interval: Data interval (1m, 2m, 5m, 15m, 30m, 60m, 90m)
+            days: Number of days of data to return (1 = today only, 3 = last 3 days)
 
         Returns:
-            List of {time, price} dictionaries for the most recent trading day
+            List of {time, price} dictionaries
         """
         import pandas as pd
-        from datetime import date
+        from datetime import date, timedelta
+
+        intraday_key = f"{symbol}_{interval}_{days}"
+        if intraday_key in self._intraday_cache:
+            data, cached_at = self._intraday_cache[intraday_key]
+            if datetime.now() - cached_at < self.cache_ttl:
+                return data
 
         try:
             ticker = yf.Ticker(symbol)
-            # Get recent intraday data (last 5 days to ensure we get data)
-            history = ticker.history(period="5d", interval=interval)
+            # Get recent intraday data (fetch more days to ensure we have enough)
+            fetch_period = f"{max(days + 2, 5)}d"
+            history = ticker.history(period=fetch_period, interval=interval)
 
             logger.info(f"Intraday data for {symbol}: {len(history)} total rows")
 
@@ -339,19 +511,26 @@ class PriceService:
             is_crypto = symbol.endswith('-USD')
 
             if is_crypto:
-                # For crypto, filter to today's data (in local time)
-                target_date = today
+                # For crypto, filter from today back N days
+                end_date = today
             else:
                 # For stocks, use the most recent trading day in the data
-                # Convert to local time for comparison
                 last_timestamp = history.index[-1].to_pydatetime()
                 if last_timestamp.tzinfo is not None:
-                    # Convert to local timezone
                     local_tz = datetime.now().astimezone().tzinfo
                     last_timestamp = last_timestamp.astimezone(local_tz).replace(tzinfo=None)
-                target_date = last_timestamp.date()
+                end_date = last_timestamp.date()
 
-            logger.info(f"Target date for {symbol}: {target_date} (crypto: {is_crypto})")
+                # For single-day intraday view (days=1), only return data if it's today
+                # On weekends/holidays, stocks should show no intraday data (use prev close)
+                if days == 1 and end_date != today:
+                    logger.info(f"Skipping intraday data for {symbol}: last trading day {end_date} != today {today}")
+                    return []
+
+            # Calculate start date based on days parameter
+            start_date = end_date - timedelta(days=days - 1)
+
+            logger.info(f"Date range for {symbol}: {start_date} to {end_date} (crypto: {is_crypto})")
 
             prices = []
             for date_idx, row in history.iterrows():
@@ -359,18 +538,18 @@ class PriceService:
                     timestamp = date_idx.to_pydatetime()
                     # Handle timezone-aware timestamps - convert to local time
                     if timestamp.tzinfo is not None:
-                        # Convert to local timezone
                         local_tz = datetime.now().astimezone().tzinfo
                         timestamp = timestamp.astimezone(local_tz).replace(tzinfo=None)
 
-                    # Only include data from the target date
-                    if timestamp.date() != target_date:
+                    # Only include data within the date range
+                    if timestamp.date() < start_date or timestamp.date() > end_date:
                         continue
 
                     close_price = row["Close"]
                     if pd.notna(close_price):
                         prices.append({
                             "time": timestamp.strftime("%H:%M"),
+                            "date": timestamp.strftime("%Y-%m-%d"),
                             "timestamp": timestamp.isoformat(),
                             "price": Decimal(str(close_price))
                         })
@@ -379,6 +558,7 @@ class PriceService:
                     continue
 
             logger.info(f"Returning {len(prices)} intraday prices for {symbol}")
+            self._intraday_cache[intraday_key] = (prices, datetime.now())
             return prices
 
         except Exception as e:
@@ -388,13 +568,15 @@ class PriceService:
     def get_intraday_prices_batch(
         self,
         symbols: list[str],
-        interval: str = "5m"
+        interval: str = "5m",
+        days: int = 1
     ) -> dict[str, list[dict]]:
         """Get intraday prices for multiple symbols.
 
         Args:
             symbols: List of Yahoo Finance ticker symbols
             interval: Data interval (1m, 2m, 5m, 15m, 30m, 60m, 90m)
+            days: Number of days of data to return
 
         Returns:
             Dictionary mapping symbols to list of {time, price} dictionaries
@@ -404,11 +586,11 @@ class PriceService:
         if not symbols:
             return results
 
-        logger.info(f"Fetching intraday data for symbols: {symbols}")
+        logger.info(f"Fetching intraday data for symbols: {symbols}, days: {days}")
 
         # Use individual fetching for more reliable results
         for symbol in symbols:
-            results[symbol] = self.get_intraday_prices(symbol, interval)
+            results[symbol] = self.get_intraday_prices(symbol, interval, days)
             logger.info(f"Got {len(results[symbol])} intraday prices for {symbol}")
 
         return results
@@ -417,6 +599,9 @@ class PriceService:
         """Clear all cached data."""
         self._price_cache.clear()
         self._history_cache.clear()
+        self._prev_close_cache.clear()
+        self._crypto_midnight_cache.clear()
+        self._intraday_cache.clear()
 
 
 # Global price service instance

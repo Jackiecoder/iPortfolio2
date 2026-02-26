@@ -10,7 +10,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Cache data older than this many days
-CACHE_THRESHOLD_DAYS = 7
+CACHE_THRESHOLD_DAYS = 2
 
 
 class CacheService:
@@ -73,7 +73,7 @@ class CacheService:
             logger.info(f"Cache database initialized at {self.db_path}")
 
     def _get_cache_cutoff_date(self) -> date:
-        """Get the cutoff date for caching (7 days ago)."""
+        """Get the cutoff date for caching (2 days ago)."""
         return date.today() - timedelta(days=CACHE_THRESHOLD_DAYS)
 
     def is_cacheable_date(self, check_date: date) -> bool:

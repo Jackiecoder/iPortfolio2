@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -43,6 +44,30 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 # Global portfolio instance (reloaded from CSV files)
 portfolio: Optional[Portfolio] = None
+
+# API-level response cache
+_api_cache: dict[str, tuple[dict, datetime]] = {}
+_API_TTL = {
+    "holdings": timedelta(seconds=30),
+    "summary": timedelta(seconds=30),
+    "daily-pnl": timedelta(seconds=60),
+    "intraday": timedelta(seconds=30),
+    "intraday-multiday": timedelta(seconds=60),
+}
+
+
+def _get_api_cache(key: str) -> Optional[dict]:
+    if key in _api_cache:
+        data, cached_at = _api_cache[key]
+        ttl_key = key.split("_")[0]
+        ttl = _API_TTL.get(ttl_key, timedelta(seconds=30))
+        if datetime.now() - cached_at < ttl:
+            return data
+    return None
+
+
+def _set_api_cache(key: str, data: dict) -> None:
+    _api_cache[key] = (data, datetime.now())
 
 
 def load_portfolio() -> Portfolio:
@@ -98,9 +123,13 @@ async def get_holdings():
     if portfolio is None:
         load_portfolio()
 
+    cached = _get_api_cache("holdings")
+    if cached is not None:
+        return cached
+
     try:
         holdings = portfolio.get_holdings(fetch_prices=True)
-        return {
+        result = {
             "holdings": [
                 {
                     "symbol": h.symbol,
@@ -120,6 +149,8 @@ async def get_holdings():
                 for h in holdings
             ]
         }
+        _set_api_cache("holdings", result)
+        return result
     except Exception as e:
         logger.error(f"Error fetching holdings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -131,9 +162,13 @@ async def get_summary():
     if portfolio is None:
         load_portfolio()
 
+    cached = _get_api_cache("summary")
+    if cached is not None:
+        return cached
+
     try:
         summary = portfolio.get_portfolio_summary(fetch_prices=True)
-        return {
+        result = {
             "total_cost_basis": float(summary.total_cost_basis),
             "total_market_value": float(summary.total_market_value),
             "investment_market_value": float(summary.investment_market_value),
@@ -172,6 +207,8 @@ async def get_summary():
                 for d in summary.dividend_summaries
             ],
         }
+        _set_api_cache("summary", result)
+        return result
     except Exception as e:
         logger.error(f"Error fetching summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -203,6 +240,26 @@ async def get_performance(
         raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
     except Exception as e:
         logger.error(f"Error fetching performance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/daily-pnl")
+async def get_daily_pnl():
+    """Get daily P&L for the last 14 days using EST midnight as the daily boundary."""
+    if portfolio is None:
+        load_portfolio()
+
+    cached = _get_api_cache("daily-pnl")
+    if cached is not None:
+        return cached
+
+    try:
+        data = portfolio.get_daily_pnl_history(num_days=15)
+        result = {"daily_pnl": data}
+        _set_api_cache("daily-pnl", result)
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching daily P&L: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -298,6 +355,7 @@ async def reload_portfolio(clear_history_cache: bool = Query(False, description=
     try:
         load_portfolio()
         price_service.clear_cache()
+        _api_cache.clear()
         if clear_history_cache:
             cache_service.clear_cache()
         return {"message": "Portfolio reloaded successfully"}
@@ -340,11 +398,57 @@ async def get_intraday(
             detail=f"Invalid interval. Must be one of: {', '.join(valid_intervals)}"
         )
 
+    cache_key = f"intraday_{interval}"
+    cached = _get_api_cache(cache_key)
+    if cached is not None:
+        return cached
+
     try:
         intraday_data = portfolio.get_intraday_values(interval=interval)
-        return {"intraday": intraday_data}
+        result = {"intraday": intraday_data}
+        _set_api_cache(cache_key, result)
+        return result
     except Exception as e:
         logger.error(f"Error fetching intraday data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/intraday-multiday")
+async def get_intraday_multiday(
+    interval: str = Query("15m", description="Data interval (15m, 30m, 60m)"),
+    days: int = Query(3, description="Number of days (1-7)"),
+):
+    """Get multi-day intraday portfolio performance."""
+    if portfolio is None:
+        load_portfolio()
+
+    # Validate interval
+    valid_intervals = ["15m", "30m", "60m"]
+    if interval not in valid_intervals:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid interval. Must be one of: {', '.join(valid_intervals)}"
+        )
+
+    # Validate days
+    if days < 1 or days > 7:
+        raise HTTPException(
+            status_code=400,
+            detail="Days must be between 1 and 7"
+        )
+
+    cache_key = f"intraday-multiday_{interval}_{days}"
+    cached = _get_api_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        data = portfolio.get_multiday_intraday_values(interval=interval, days=days)
+        result = {"data": data, "interval": interval, "days": days}
+        _set_api_cache(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching multi-day intraday data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

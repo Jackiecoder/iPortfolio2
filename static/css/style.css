@@ -201,6 +201,44 @@ body {
     white-space: nowrap;
 }
 
+/* Daily P&L List */
+.daily-pnl-list {
+    max-height: 390px;
+    overflow-y: auto;
+}
+
+.daily-pnl-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 0.875rem;
+}
+
+.daily-pnl-item:last-child {
+    border-bottom: none;
+}
+
+.daily-pnl-item .date {
+    color: #6b7280;
+    font-size: 0.8rem;
+    min-width: 90px;
+}
+
+.daily-pnl-item .values {
+    text-align: right;
+}
+
+.daily-pnl-item .pnl-amount {
+    font-weight: 600;
+}
+
+.daily-pnl-item .pnl-percent {
+    font-size: 0.75rem;
+    margin-left: 4px;
+}
+
 /* Category tabs for allocation drill-down */
 #categoryTabs {
     margin-top: 8px;

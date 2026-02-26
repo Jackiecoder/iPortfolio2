@@ -88,6 +88,16 @@
                 <div class="card h-100 border-0 shadow-sm">
                     <div class="card-body text-center">
                         <h6 class="card-subtitle mb-2 text-muted">
+                            <i class="bi bi-graph-up-arrow me-1"></i>Total P&L
+                        </h6>
+                        <p class="card-text fs-4 fw-bold mb-0" id="totalPnl">--</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body text-center">
+                        <h6 class="card-subtitle mb-2 text-muted">
                             <i class="bi bi-percent me-1"></i>Total Return
                         </h6>
                         <p class="card-text fs-4 fw-bold mb-0" id="totalReturn">--</p>
@@ -124,25 +134,45 @@
             </div>
         </div>
 
-        <!-- P&L Chart -->
-        <div class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h5 class="mb-0"><i class="bi bi-bar-chart-line me-2"></i>Investment P&L</h5>
-                <div class="btn-group btn-group-sm" role="group">
-                    <button class="btn btn-outline-secondary period-btn" data-period="3D">3D</button>
-                    <button class="btn btn-outline-secondary period-btn" data-period="1W">1W</button>
-                    <button class="btn btn-outline-secondary period-btn" data-period="1M">1M</button>
-                    <button class="btn btn-outline-secondary period-btn" data-period="3M">3M</button>
-                    <button class="btn btn-outline-secondary period-btn" data-period="6M">6M</button>
-                    <button class="btn btn-outline-secondary period-btn" data-period="YTD">YTD</button>
-                    <button class="btn btn-primary period-btn active" data-period="1Y">1Y</button>
-                    <button class="btn btn-outline-secondary period-btn" data-period="5Y">5Y</button>
-                    <button class="btn btn-outline-secondary period-btn" data-period="ALL">ALL</button>
+        <!-- P&L Chart Row -->
+        <div class="row g-4 mb-4">
+            <div class="col-lg-9">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <h5 class="mb-0"><i class="bi bi-bar-chart-line me-2"></i>Investment P&L</h5>
+                        <div class="btn-group btn-group-sm" role="group">
+                            <button class="btn btn-outline-secondary period-btn" data-period="3D">3D</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="1W">1W</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="1M">1M</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="3M">3M</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="6M">6M</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="YTD">YTD</button>
+                            <button class="btn btn-primary period-btn active" data-period="1Y">1Y</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="3Y">3Y</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="5Y">5Y</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="ALL">ALL</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container pnl-chart-container">
+                            <canvas id="pnlChart"></canvas>
+                        </div>
+                    </div>
                 </div>
             </div>
-            <div class="card-body">
-                <div class="chart-container pnl-chart-container">
-                    <canvas id="pnlChart"></canvas>
+            <div class="col-lg-3">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header bg-white border-0">
+                        <h5 class="mb-0"><i class="bi bi-calendar-day me-2"></i>Daily P&L</h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="dailyPnlList" class="daily-pnl-list">
+                            <div class="text-center text-muted py-4">
+                                <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                Loading...
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -153,7 +183,7 @@
                 <div class="card border-0 shadow-sm h-100">
                     <div class="card-header bg-white border-0">
                         <div class="d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0"><i class="bi bi-graph-up me-2"></i><span id="portfolioChartTitle">Portfolio Value</span></h5>
+                            <h5 class="mb-0"><i class="bi bi-graph-up me-2"></i><span id="portfolioChartTitle">Monthly Investment</span></h5>
                             <div class="d-flex gap-2">
                                 <div class="btn-group btn-group-sm" role="group">
                                     <button class="btn btn-primary portfolio-period-btn active" data-period="1Y">1Y</button>
@@ -162,17 +192,17 @@
                                     <button class="btn btn-outline-secondary portfolio-period-btn" data-period="ALL">ALL</button>
                                 </div>
                                 <div class="btn-group btn-group-sm" role="group">
-                                    <button class="btn btn-primary portfolio-view-btn active" data-view="value">Value</button>
-                                    <button class="btn btn-outline-secondary portfolio-view-btn" data-view="investment">Investment</button>
+                                    <button class="btn btn-primary portfolio-view-btn active" data-view="investment">Investment</button>
+                                    <button class="btn btn-outline-secondary portfolio-view-btn" data-view="value">Value</button>
                                 </div>
                             </div>
                         </div>
                     </div>
                     <div class="card-body">
-                        <div class="chart-container" id="performanceChartContainer">
+                        <div class="chart-container" id="performanceChartContainer" style="display: none;">
                             <canvas id="performanceChart"></canvas>
                         </div>
-                        <div class="chart-container" id="investmentChartContainer" style="display: none;">
+                        <div class="chart-container" id="investmentChartContainer">
                             <canvas id="investmentChart"></canvas>
                         </div>
                     </div>
@@ -223,7 +253,7 @@
                                 <th class="sortable" data-sort="unrealized_pnl">P&L ($) <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th class="sortable" data-sort="pnl_percent">P&L (%) <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th class="sortable" data-sort="annualized_return">Annual % <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="weighted_annualized_return">Weighted Annual % <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="weighted_annualized_return" title="Weighted Annualized Return&#10;&#10;For each lot: CAGR = (current_value / cost)^(1/years) - 1&#10;Then weighted avg by each lot's cost basis.&#10;Holds < 1yr are treated as 1yr to avoid inflated returns.">W-Annual % <i class="bi bi-arrow-down-up sort-icon"></i></th>
                             </tr>
                         </thead>
                         <tbody id="holdingsBody">

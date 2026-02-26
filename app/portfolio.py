@@ -1,5 +1,6 @@
 """Portfolio calculation logic."""
 
+import bisect
 import logging
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -480,8 +481,8 @@ class Portfolio:
         # All-time cost basis includes current holdings and sold assets
         all_time_cost_basis = investment_cost_basis + sold_cost_basis
 
-        # Total P&L = realized + unrealized + dividends
-        total_pnl = total_realized_pnl + total_unrealized_pnl + total_dividends
+        # Total P&L = realized + unrealized (dividends tracked separately, already in cash records)
+        total_pnl = total_realized_pnl + total_unrealized_pnl
 
         # Total return % based on all-time invested amount
         total_pnl_percent = Decimal("0")
@@ -616,6 +617,9 @@ class Portfolio:
             )
             historical_prices[symbol] = prices
 
+        # Pre-sort price keys once per symbol for efficient bisect lookups
+        sorted_price_keys = {sym: sorted(prices.keys()) for sym, prices in historical_prices.items()}
+
         # Calculate portfolio value for each date (starting from calc_start)
         calculated_results = []
         current_date = calc_start
@@ -650,15 +654,11 @@ class Portfolio:
                 cost_basis += lot_cost_basis
 
                 if total_quantity > 0 and symbol in historical_prices:
-                    # Find closest price on or before current date
-                    symbol_prices = historical_prices[symbol]
-                    price = None
-                    for d in sorted(symbol_prices.keys(), reverse=True):
-                        if d <= current_date:
-                            price = symbol_prices[d]
-                            break
-                    if price is not None:
-                        investment_value += total_quantity * price
+                    # Find closest price on or before current date using bisect
+                    keys = sorted_price_keys[symbol]
+                    idx = bisect.bisect_right(keys, current_date) - 1
+                    if idx >= 0:
+                        investment_value += total_quantity * historical_prices[symbol][keys[idx]]
 
             # Get cash balance for this date
             cash_balance = temp_portfolio.get_cash_balance(current_date)
@@ -707,6 +707,92 @@ class Portfolio:
 
         return all_results
 
+    def get_daily_pnl_history(self, num_days: int = 15) -> list[dict]:
+        """Daily P&L for the last num_days days.
+
+        Uses EST midnight as the day boundary for crypto so the numbers
+        align with the intraday P&L chart baseline.
+        """
+        if not self._transactions:
+            return []
+
+        today = date.today()
+        start_date = today - timedelta(days=num_days)
+
+        symbols = list({
+            txn.asset for txn in self._transactions
+            if txn.action in (ActionType.BUY, ActionType.SELL, ActionType.GIFT, ActionType.GAS)
+        })
+
+        fetch_start = start_date - timedelta(days=7)
+        prices_by_date: dict[str, dict[date, Decimal]] = {}
+        for symbol in symbols:
+            prices_by_date[symbol] = price_service.get_historical_prices(
+                symbol,
+                datetime.combine(fetch_start, datetime.min.time()),
+                datetime.combine(today, datetime.max.time()),
+            )
+
+        sorted_txns = sorted(self._transactions, key=lambda t: t.date)
+        temp_portfolio = Portfolio(adjust_splits=self._adjust_splits)
+
+        txn_idx = 0
+        for txn in sorted_txns:
+            if txn.date < start_date:
+                temp_portfolio._process_transaction(txn)
+                txn_idx += 1
+            else:
+                break
+
+        # Pre-sort price keys once per symbol for efficient bisect lookups
+        sorted_pbd_keys = {sym: sorted(prices.keys()) for sym, prices in prices_by_date.items()}
+
+        daily_values = []
+        current_date = start_date
+        while current_date <= today:
+            while txn_idx < len(sorted_txns) and sorted_txns[txn_idx].date <= current_date:
+                temp_portfolio._process_transaction(sorted_txns[txn_idx])
+                txn_idx += 1
+
+            investment_value = Decimal("0")
+            cost_basis = Decimal("0")
+            for symbol, lots in temp_portfolio._lots.items():
+                total_qty = sum(lot.quantity for lot in lots)
+                if total_qty <= 0:
+                    continue
+                if symbol in prices_by_date:
+                    keys = sorted_pbd_keys[symbol]
+                    idx = bisect.bisect_right(keys, current_date) - 1
+                    if idx >= 0:
+                        investment_value += total_qty * prices_by_date[symbol][keys[idx]]
+                cost_basis += sum(lot.quantity * lot.cost_per_share for lot in lots if lot.quantity > 0)
+
+            unrealized_pnl = investment_value - cost_basis
+            cash = temp_portfolio.get_cash_balance(current_date)
+            daily_values.append({
+                "date": current_date.isoformat(),
+                "value": float(investment_value + cash),
+                "unrealized_pnl": float(unrealized_pnl),
+            })
+            current_date += timedelta(days=1)
+
+        result = []
+        for i in range(1, len(daily_values)):
+            curr = daily_values[i]
+            prev = daily_values[i - 1]
+            # Daily P&L = change in unrealized P&L (investment_value - cost_basis)
+            # This matches the Investment P&L chart and excludes new purchases / cash changes
+            change = curr["unrealized_pnl"] - prev["unrealized_pnl"]
+            pct = (change / prev["value"] * 100) if prev["value"] else 0
+            result.append({
+                "date": curr["date"],
+                "value": curr["value"],
+                "daily_pnl": change,
+                "daily_pnl_percent": pct,
+            })
+
+        return result
+
     def get_investment_history(
         self,
         start_date: Optional[date] = None,
@@ -734,8 +820,8 @@ class Portfolio:
         # Category classification (matching frontend logic)
         def get_category(symbol: str) -> str:
             symbol_to_category = {
-                'BTC-USD': 'Crypto', 'ETH-USD': 'Crypto', 'MSTR': 'Crypto', 'CRCL': 'Crypto',
-                'VOO': 'Index', 'QQQM': 'Index', 'QQQ': 'Index', 'BRK-B': 'Index',
+                'BTC-USD': 'Crypto', 'ETH-USD': 'Crypto', 'MSTR': 'Crypto', 'CRCL': 'Crypto', 'IBIT': 'Crypto',
+                'VOO': 'Index', 'QQQM': 'Index', 'QQQ': 'Index', 'BRK-B': 'Index', 'SOXX': 'Index',
                 'CASH': 'Cash',
             }
             if symbol in symbol_to_category:
@@ -764,27 +850,17 @@ class Portfolio:
                     "by_category": {},  # category -> net amount
                 }
 
-            # Track BUY and SELL transactions for tooltip
+            # Track BUY transactions only for chart display (exclude SELL)
             if txn.action == ActionType.BUY:
                 amount = float(txn.amount) if txn.amount else 0
                 if txn.asset not in monthly_data[month_key]["buys"]:
                     monthly_data[month_key]["buys"][txn.asset] = 0
                 monthly_data[month_key]["buys"][txn.asset] += amount
-                # Track by category
+                # Track by category (BUY only)
                 category = get_category(txn.asset)
                 if category not in monthly_data[month_key]["by_category"]:
                     monthly_data[month_key]["by_category"][category] = 0
                 monthly_data[month_key]["by_category"][category] += amount
-            elif txn.action == ActionType.SELL:
-                amount = float(txn.amount) if txn.amount else 0
-                if txn.asset not in monthly_data[month_key]["sells"]:
-                    monthly_data[month_key]["sells"][txn.asset] = 0
-                monthly_data[month_key]["sells"][txn.asset] += amount
-                # Track by category (negative for sells)
-                category = get_category(txn.asset)
-                if category not in monthly_data[month_key]["by_category"]:
-                    monthly_data[month_key]["by_category"][category] = 0
-                monthly_data[month_key]["by_category"][category] -= amount
 
         # Calculate cost_basis at end of each month
         temp_portfolio = Portfolio(adjust_splits=self._adjust_splits)
@@ -828,15 +904,12 @@ class Portfolio:
             # Calculate net investment for this month only
             net_investment = cost_basis - prev_cost_basis
 
-            # Build transaction details for tooltip
+            # Build transaction details for tooltip (BUY only)
             month_info = monthly_data[month_key]
             tx_details = []
             for symbol, amount in sorted(month_info["buys"].items()):
                 if amount > 0:
                     tx_details.append({"symbol": symbol, "action": "BUY", "amount": amount})
-            for symbol, amount in sorted(month_info["sells"].items()):
-                if amount > 0:
-                    tx_details.append({"symbol": symbol, "action": "SELL", "amount": amount})
 
             # Sort categories by absolute amount (descending)
             by_category = month_info["by_category"]
@@ -974,9 +1047,11 @@ class Portfolio:
 
             for symbol in symbols:
                 price_at_time = None
+                has_intraday_data = len(intraday_prices.get(symbol, [])) > 0
 
                 # For the last time point, use real-time prices to match holdings table
-                if is_last_time_point and current_realtime_prices.get(symbol) is not None:
+                # But only for symbols that have intraday data today (i.e., trading today)
+                if is_last_time_point and has_intraday_data and current_realtime_prices.get(symbol) is not None:
                     price_at_time = current_realtime_prices[symbol]
                     last_prices[symbol] = price_at_time
                 else:
@@ -1032,4 +1107,90 @@ class Portfolio:
                 })
 
         logger.info(f"Intraday: Returning {len(results)} data points")
+        return results
+
+    def get_multiday_intraday_values(self, interval: str = "15m", days: int = 3) -> list[dict]:
+        """Calculate multi-day intraday portfolio values.
+
+        Args:
+            interval: Data interval (15m, 30m, 60m)
+            days: Number of days of data to return
+
+        Returns:
+            List of {datetime, value} dictionaries sorted chronologically
+        """
+        from datetime import datetime
+
+        # Get current holdings (excluding cash)
+        holdings = self.get_holdings(fetch_prices=False)
+        investment_holdings = [h for h in holdings if h.symbol != "CASH"]
+
+        logger.info(f"Multi-day intraday: Found {len(investment_holdings)} investment holdings")
+
+        if not investment_holdings:
+            return []
+
+        # Get symbols and their quantities
+        symbols = [h.symbol for h in investment_holdings]
+        quantities = {h.symbol: h.quantity for h in investment_holdings}
+        cost_basis = sum(h.cost_basis for h in investment_holdings)
+
+        # Get previous close prices to initialize stock prices for off-hours
+        prev_close_prices = price_service.get_previous_close_batch(symbols)
+        logger.info(f"Multi-day intraday: Previous close prices: {prev_close_prices}")
+
+        # Fetch multi-day intraday prices for all symbols
+        intraday_prices = price_service.get_intraday_prices_batch(symbols, interval, days)
+
+        # Collect all unique timestamps across all symbols
+        all_timestamps = {}  # timestamp_str -> datetime obj
+        for symbol, prices in intraday_prices.items():
+            logger.info(f"Multi-day intraday: {symbol} has {len(prices)} price points")
+            for p in prices:
+                ts = p["timestamp"]
+                if ts not in all_timestamps:
+                    all_timestamps[ts] = datetime.fromisoformat(ts)
+
+        if not all_timestamps:
+            return []
+
+        # Sort timestamps chronologically
+        sorted_timestamps = sorted(all_timestamps.keys(), key=lambda x: all_timestamps[x])
+
+        # Build price lookup: {symbol: {timestamp: price}}
+        price_lookup = {}
+        for symbol, prices in intraday_prices.items():
+            price_lookup[symbol] = {p["timestamp"]: p["price"] for p in prices}
+
+        # Calculate portfolio value at each timestamp
+        results = []
+        # Initialize last_prices with previous close (for stocks during off-hours)
+        last_prices = {symbol: prev_close_prices.get(symbol) for symbol in symbols}
+
+        for ts in sorted_timestamps:
+            total_value = Decimal("0")
+            has_data = False
+
+            for symbol in symbols:
+                price_at_time = price_lookup.get(symbol, {}).get(ts)
+
+                if price_at_time is not None:
+                    last_prices[symbol] = price_at_time
+                elif last_prices[symbol] is not None:
+                    price_at_time = last_prices[symbol]
+
+                if price_at_time is not None:
+                    total_value += quantities[symbol] * price_at_time
+                    has_data = True
+
+            if has_data and total_value > 0:
+                dt = all_timestamps[ts]
+                results.append({
+                    "datetime": ts,
+                    "date": dt.strftime("%Y-%m-%d"),
+                    "time": dt.strftime("%H:%M"),
+                    "value": float(total_value),
+                })
+
+        logger.info(f"Multi-day intraday: Returning {len(results)} data points")
         return results

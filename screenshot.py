@@ -1,6 +1,7 @@
 """Take periodic screenshots of the portfolio dashboard."""
 
 import asyncio
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -14,14 +15,24 @@ URL = "http://localhost:8000"
 INTERVAL_MINUTES = 5
 
 
-def archive_existing_screenshots():
-    """Move existing screenshots to archive folder."""
+def save_to_archive(filepath):
+    """Save screenshot to archive, keeping only the last one per day per mode.
+
+    Archive stores one file per day per mode with a fixed name like
+    ``portfolio_20260207_normal.png``.  Each new save overwrites the
+    previous one for the same day+mode so the archive stays clean.
+    """
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
-    for png_file in SCREENSHOT_DIR.glob("portfolio_*.png"):
-        dest = ARCHIVE_DIR / png_file.name
-        shutil.move(str(png_file), str(dest))
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Archived: {png_file.name}")
+    pattern = re.compile(r"portfolio_\d{8}_\d{6}_(normal|anonymous)\.png")
+    match = pattern.match(filepath.name)
+    if not match:
+        return
+    mode = match.group(1)
+    date_str = datetime.now().strftime("%Y%m%d")
+    dest = ARCHIVE_DIR / f"portfolio_{date_str}_{mode}.png"
+    shutil.copy2(str(filepath), str(dest))
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Archived: {dest.name}")
 
 
 async def wait_for_data(page):
@@ -39,8 +50,9 @@ async def take_screenshots(browser):
     """Take screenshots in both normal and anonymous modes."""
     SCREENSHOT_DIR.mkdir(exist_ok=True)
 
-    # Archive existing screenshots first
-    archive_existing_screenshots()
+    # Remove previous screenshots (they will be replaced)
+    for old in SCREENSHOT_DIR.glob("portfolio_*.png"):
+        old.unlink()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -66,6 +78,10 @@ async def take_screenshots(browser):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Anonymous mode: {filepath_anon.name}")
 
     await page.close()
+
+    # Save latest screenshots to archive (one per day per mode)
+    save_to_archive(filepath_normal)
+    save_to_archive(filepath_anon)
 
 
 async def main():
