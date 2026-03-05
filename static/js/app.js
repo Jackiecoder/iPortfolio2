@@ -18,6 +18,9 @@ let currentInterval = '5m';
 // Anonymous mode
 let anonymousMode = localStorage.getItem('anonymousMode') === 'true';
 
+// Transaction detail cache (symbol -> array of transactions)
+const transactionCache = {};
+
 // Allocation view mode
 let allocationView = 'assets'; // 'assets', 'category', or a specific category name
 let selectedCategory = null; // When drilling into a specific category
@@ -130,7 +133,7 @@ function getCategory(symbol) {
 }
 
 // Current selected period
-let currentPeriod = '1Y';
+let currentPeriod = '1M';
 
 // Holdings data and sort state
 let holdingsData = [];
@@ -141,6 +144,73 @@ let holdingsSortDirection = 'desc';
 let soldData = null;
 let soldSortColumn = 'pnl';
 let soldSortDirection = 'desc';
+
+// Target allocation data
+let targetAllocations = {};
+
+// Symbol groups that share a single target allocation
+// Key = canonical name (used in targets.json), Value = array of symbols in the group
+const targetGroups = {
+    'QQQM': ['QQQM', 'QQQ'],
+    'BTC-USD': ['BTC-USD', 'IBIT'],
+};
+
+// Reverse lookup: symbol -> canonical group key
+const symbolToGroup = {};
+for (const [key, members] of Object.entries(targetGroups)) {
+    for (const s of members) {
+        symbolToGroup[s] = key;
+    }
+}
+
+// Get the canonical target key for a symbol (itself or group key)
+function getTargetKey(symbol) {
+    return symbolToGroup[symbol] || symbol;
+}
+
+// Get target % for a symbol (checks group key)
+function getTargetPct(symbol) {
+    const key = getTargetKey(symbol);
+    return targetAllocations[key];
+}
+
+// Get combined market value for a symbol's group from holdings array
+function getGroupMarketValue(symbol, holdings) {
+    const key = getTargetKey(symbol);
+    const members = targetGroups[key];
+    if (!members) return null; // not in a group
+    return members.reduce((sum, s) => {
+        const h = holdings.find(x => x.symbol === s);
+        return sum + (h ? (h.market_value || 0) : 0);
+    }, 0);
+}
+
+async function fetchTargets() {
+    try {
+        const response = await fetch('/api/targets');
+        if (!response.ok) throw new Error('Failed to fetch targets');
+        targetAllocations = await response.json();
+    } catch (error) {
+        console.error('Error fetching targets:', error);
+        targetAllocations = {};
+    }
+}
+
+async function saveTarget(symbol, pct) {
+    try {
+        const response = await fetch('/api/targets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol, target_pct: pct || null })
+        });
+        if (!response.ok) throw new Error('Failed to save target');
+        targetAllocations = await response.json();
+        renderHoldingsTable(holdingsData);
+    } catch (error) {
+        console.error('Error saving target:', error);
+        showToast('Error saving target allocation', 'error');
+    }
+}
 
 // Auto-refresh settings
 let autoRefreshInterval = 0; // 0 = off, otherwise seconds
@@ -564,9 +634,29 @@ function updateSummaryCards(summary) {
 }
 
 function sortHoldings(holdings, column, direction) {
+    // Pre-compute total portfolio value for computed columns
+    const totalInvValue = holdings
+        .reduce((sum, h) => sum + (h.market_value || 0), 0);
+
     return [...holdings].sort((a, b) => {
         let aVal = a[column];
         let bVal = b[column];
+
+        // Computed columns for target allocation
+        if (column === 'alloc_pct') {
+            aVal = totalInvValue > 0 ? ((a.market_value || 0) / totalInvValue * 100) : 0;
+            bVal = totalInvValue > 0 ? ((b.market_value || 0) / totalInvValue * 100) : 0;
+        } else if (column === 'target_pct') {
+            aVal = getTargetPct(a.symbol) ?? -Infinity;
+            bVal = getTargetPct(b.symbol) ?? -Infinity;
+        } else if (column === 'delta_target') {
+            const aTgt = getTargetPct(a.symbol);
+            const bTgt = getTargetPct(b.symbol);
+            const aMV = getGroupMarketValue(a.symbol, holdings) ?? (a.market_value || 0);
+            const bMV = getGroupMarketValue(b.symbol, holdings) ?? (b.market_value || 0);
+            aVal = aTgt != null ? (aTgt / 100 * totalInvValue - aMV) : -Infinity;
+            bVal = bTgt != null ? (bTgt / 100 * totalInvValue - bMV) : -Infinity;
+        }
 
         // Handle null/undefined values
         if (aVal === null || aVal === undefined) aVal = -Infinity;
@@ -607,7 +697,7 @@ function renderHoldingsTable(holdings) {
     if (!holdings || holdings.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="11" class="empty-state">
+                <td colspan="14" class="empty-state">
                     <p>No holdings found</p>
                     <p>Upload a CSV file to get started</p>
                 </td>
@@ -616,10 +706,29 @@ function renderHoldingsTable(holdings) {
         return;
     }
 
+    // Compute total portfolio value (including CASH) for allocation %
+    const totalInvValue = holdings
+        .reduce((sum, h) => sum + (h.market_value || 0), 0);
+
+    // Pre-compute category target sums
+    const categoryTargetSums = {};
+    // Collect unique target keys to avoid double-counting groups
+    const seenTargetKeys = new Set();
+    holdings.forEach(h => {
+        const tKey = getTargetKey(h.symbol);
+        if (seenTargetKeys.has(tKey)) return;
+        seenTargetKeys.add(tKey);
+        const pct = targetAllocations[tKey];
+        if (pct != null && pct > 0) {
+            const cat = getCategory(h.symbol);
+            categoryTargetSums[cat] = (categoryTargetSums[cat] || 0) + pct;
+        }
+    });
+
     // Sort holdings
     const sortedHoldings = sortHoldings(holdings, holdingsSortColumn, holdingsSortDirection);
 
-    tbody.innerHTML = sortedHoldings.map(h => {
+    let rows = sortedHoldings.map(h => {
         const dailyChangePct = h.daily_change_percent;
         const dailyChangeAmt = h.daily_change_amount;
         const dailyChangePctHtml = dailyChangePct !== null && dailyChangePct !== undefined
@@ -662,23 +771,192 @@ function renderHoldingsTable(holdings) {
             : '--';
         const weightedAnnualTooltip = 'title="Per-lot cost-basis weighted CAGR"';
 
+        // Allocation %, Target %, Δ Target (group-aware)
+        const targetKey = getTargetKey(h.symbol);
+        const isGrouped = !!targetGroups[targetKey];
+        const groupMV = isGrouped ? getGroupMarketValue(h.symbol, holdings) : (h.market_value || 0);
+        const allocPct = totalInvValue > 0 ? (h.market_value || 0) / totalInvValue * 100 : 0;
+        const groupAllocPct = totalInvValue > 0 ? groupMV / totalInvValue * 100 : 0;
+        const targetPct = getTargetPct(h.symbol);
+        const hasTarget = targetPct != null && targetPct > 0;
+        // For grouped symbols, only show Δ Target on the canonical row (first member)
+        const isCanonical = !isGrouped || targetKey === h.symbol;
+        const deltaTarget = hasTarget && isCanonical ? (targetPct / 100 * totalInvValue - groupMV) : null;
+
+        const allocPctText = `${allocPct.toFixed(1)}%`;
+        // Show group alloc in tooltip for grouped symbols
+        const allocTitle = isGrouped ? `title="${targetKey} group: ${groupAllocPct.toFixed(1)}%"` : '';
+        const category = getCategory(h.symbol);
+        const catTargetSum = categoryTargetSums[category];
+        const catSumHtml = catTargetSum != null ? `<span class="cat-target-sum" title="${category} target total">${catTargetSum.toFixed(1)}%</span>` : '';
+        const targetPctText = hasTarget ? `${targetPct.toFixed(1)}%` : '--';
+        // Non-canonical grouped members show a subtle indicator instead of duplicate target
+        const targetCellContent = hasTarget && !isCanonical
+            ? `<span class="text-muted" title="Target set on ${targetKey}">${targetPct.toFixed(1)}%</span> ${catSumHtml}`
+            : `${targetPctText} ${catSumHtml}`;
+        let deltaTargetHtml = '';
+        if (deltaTarget !== null) {
+            const targetAmt = targetPct / 100 * totalInvValue;
+            const dtSign = deltaTarget >= 0 ? '+' : '';
+            const dtClass = deltaTarget >= 0 ? 'delta-buy' : 'delta-sell';
+            deltaTargetHtml = `<div class="delta-target-wrap"><span class="delta-target-amt">${formatCurrencyAlways(targetAmt)}</span><span class="${dtClass}">${dtSign}${formatCurrencyAlways(deltaTarget)}</span></div>`;
+        } else if (hasTarget && !isCanonical) {
+            deltaTargetHtml = `<span class="text-muted" title="See ${targetKey}">--</span>`;
+        } else {
+            deltaTargetHtml = '<span class="text-muted">--</span>';
+        }
+
         return `
-        <tr>
-            <td>${getAssetIconHtml(h.symbol)}<strong>${h.symbol}</strong></td>
-            <td>${anonymousMode ? '***' : formatNumber(h.quantity, 4)}</td>
-            <td>${formatCurrency(h.avg_cost)}</td>
-            <td>${formatCurrency(h.cost_basis)}</td>
-            <td>${formatCurrencyAlways(h.current_price)} ${dailyChangePctHtml}</td>
-            <td class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
-            <td>${formatCurrency(h.market_value)}</td>
-            <td class="${h.unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(h.unrealized_pnl)}</td>
-            <td class="${h.pnl_percent >= 0 ? 'text-success' : 'text-danger'}">${formatPercent(h.pnl_percent)}</td>
-            <td class="${annualReturnClass}" ${annualTooltip}>${annualReturnText}</td>
-            <td class="${weightedAnnualReturnClass}" ${weightedAnnualTooltip}>${weightedAnnualReturnText}</td>
+        <tr class="holding-row" data-symbol="${h.symbol}" style="cursor:pointer;">
+            <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${h.symbol}</strong></td>
+            <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}</td>
+            <td data-col="2">${formatCurrency(h.avg_cost)}</td>
+            <td data-col="3">${formatCurrency(h.cost_basis)}</td>
+            <td data-col="4">${formatCurrencyAlways(h.current_price)} ${dailyChangePctHtml}</td>
+            <td data-col="5" class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
+            <td data-col="6">${formatCurrency(h.market_value)}</td>
+            <td data-col="7" ${allocTitle}>${allocPctText}</td>
+            <td data-col="8" class="target-pct-cell" data-symbol="${targetKey}">${targetCellContent}</td>
+            <td data-col="9">${deltaTargetHtml}</td>
+            <td data-col="10" class="${h.unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(h.unrealized_pnl)}</td>
+            <td data-col="11" class="${h.pnl_percent >= 0 ? 'text-success' : 'text-danger'}">${formatPercent(h.pnl_percent)}</td>
+            <td data-col="12" class="${annualReturnClass}" ${annualTooltip}>${annualReturnText}</td>
+            <td data-col="13" class="${weightedAnnualReturnClass}" ${weightedAnnualTooltip}>${weightedAnnualReturnText}</td>
         </tr>
     `}).join('');
 
+    // Total row
+    const totalMV = holdings.reduce((s, h) => s + (h.market_value || 0), 0);
+    const totalCost = holdings.reduce((s, h) => s + (h.cost_basis || 0), 0);
+    const totalPnl = holdings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0);
+    const totalDaily = holdings.reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost * 100) : 0;
+
+    const targetSum = Object.values(targetAllocations).reduce((s, v) => s + v, 0);
+    const targetSumText = targetSum > 0 ? `${targetSum.toFixed(1)}%` : '--';
+    const targetWarn = targetSum > 0 && Math.abs(targetSum - 100) > 0.1
+        ? `<span class="target-warn" title="Targets don't sum to 100%">&#9888;</span>` : '';
+
+    const netDelta = Object.entries(targetAllocations).reduce((s, [key, pct]) => {
+        const members = targetGroups[key];
+        const mv = members
+            ? members.reduce((sum, m) => { const x = holdings.find(h => h.symbol === m); return sum + (x ? (x.market_value || 0) : 0); }, 0)
+            : (holdings.find(h => h.symbol === key)?.market_value || 0);
+        return s + (pct / 100 * totalInvValue - mv);
+    }, 0);
+    const hasAnyTarget = Object.keys(targetAllocations).length > 0;
+    const netDeltaClass = netDelta >= 0 ? 'delta-buy' : 'delta-sell';
+    const netDeltaSign = netDelta >= 0 ? '+' : '';
+    const netDeltaHtml = hasAnyTarget
+        ? `<span class="${netDeltaClass}">${netDeltaSign}${formatCurrencyAlways(netDelta)}</span>` : '--';
+
+    const totalDailyClass = totalDaily >= 0 ? 'text-success' : 'text-danger';
+    const totalDailySign = totalDaily >= 0 ? '+' : '';
+    const totalPnlClass = totalPnl >= 0 ? 'text-success' : 'text-danger';
+
+    rows += `
+        <tr class="total-row">
+            <td data-col="0"><strong>TOTAL</strong></td>
+            <td data-col="1"></td><td data-col="2"></td>
+            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong></td>
+            <td data-col="4"></td>
+            <td data-col="5" class="${totalDailyClass}"><strong>${totalDailySign}${formatCurrencyAlways(totalDaily)}</strong></td>
+            <td data-col="6"><strong>${formatCurrency(totalMV)}</strong></td>
+            <td data-col="7"><strong>100.0%</strong></td>
+            <td data-col="8"><strong>${targetSumText}</strong>${targetWarn}</td>
+            <td data-col="9">${netDeltaHtml}</td>
+            <td data-col="10" class="${totalPnlClass}"><strong>${formatCurrency(totalPnl)}</strong></td>
+            <td data-col="11" class="${totalPnlClass}"><strong>${formatPercent(totalPnlPct)}</strong></td>
+            <td data-col="12"></td><td data-col="13"></td>
+        </tr>
+    `;
+
+    tbody.innerHTML = rows;
     updateSortIndicators();
+}
+
+async function toggleTransactionDetail(holdingRow) {
+    const symbol = holdingRow.dataset.symbol;
+    const tbody = holdingRow.closest('tbody');
+
+    // Check if detail row already exists (toggle off)
+    const existingDetail = tbody.querySelector(`.txn-detail-row[data-symbol="${symbol}"]`);
+    if (existingDetail) {
+        existingDetail.remove();
+        holdingRow.querySelector('.holding-chevron').classList.remove('rotated');
+        return;
+    }
+
+    // Close any other open detail rows
+    tbody.querySelectorAll('.txn-detail-row').forEach(r => r.remove());
+    tbody.querySelectorAll('.holding-row').forEach(r => {
+        r.querySelector('.holding-chevron')?.classList.remove('rotated');
+    });
+
+    // Rotate chevron
+    holdingRow.querySelector('.holding-chevron').classList.add('rotated');
+
+    // Insert placeholder row
+    const detailRow = document.createElement('tr');
+    detailRow.className = 'txn-detail-row';
+    detailRow.dataset.symbol = symbol;
+    detailRow.innerHTML = `<td colspan="14"><div class="txn-detail-container"><span class="text-muted small">Loading...</span></div></td>`;
+    holdingRow.insertAdjacentElement('afterend', detailRow);
+
+    // Fetch (use cache if available)
+    if (!transactionCache[symbol]) {
+        try {
+            const res = await fetch(`/api/transactions/${symbol}?limit=20&actions=BUY,SELL`);
+            if (!res.ok) throw new Error('Failed to fetch');
+            const data = await res.json();
+            transactionCache[symbol] = data.transactions;
+        } catch (e) {
+            detailRow.querySelector('.txn-detail-container').innerHTML = `<span class="text-danger small">Error loading transactions</span>`;
+            return;
+        }
+    }
+
+    const txns = transactionCache[symbol];
+    if (!txns || txns.length === 0) {
+        detailRow.querySelector('.txn-detail-container').innerHTML = `<span class="text-muted small">No transactions found</span>`;
+        return;
+    }
+
+    const actionClass = (action) => {
+        switch (action) {
+            case 'BUY': case 'GIFT': return 'txn-buy';
+            case 'SELL': return 'txn-sell';
+            case 'DIV': return 'txn-div';
+            default: return 'txn-other';
+        }
+    };
+
+    const rows = txns.map(t => {
+        const qty = t.quantity !== null ? formatNumber(t.quantity, 4) : '--';
+        const price = t.ave_price !== null ? formatCurrency(t.ave_price) : '--';
+        const amount = t.amount !== null ? formatCurrencyAlways(t.amount) : '--';
+        return `<tr>
+            <td>${t.date}</td>
+            <td><span class="txn-action ${actionClass(t.action)}">${t.action}</span></td>
+            <td>${qty}</td>
+            <td>${price}</td>
+            <td>${amount}</td>
+        </tr>`;
+    }).join('');
+
+    detailRow.querySelector('.txn-detail-container').innerHTML = `
+        <table class="table table-sm txn-detail-table mb-0">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Action</th>
+                    <th>Quantity</th>
+                    <th>Price</th>
+                    <th>Amount</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>`;
 }
 
 function updateHoldingsTable(holdings) {
@@ -1293,17 +1571,23 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         const dateStr = (entry.date || '').substring(0, 10);
         let change = entry.daily_pnl;
         let changePct = entry.daily_pnl_percent;
+        let assetChanges = entry.asset_changes || [];
 
         // Override today's entry with live intraday P&L (finer granularity)
         if (dateStr === todayStr && todayDailyPnl !== null) {
             change = todayDailyPnl;
             changePct = todayDailyPnlPct;
+            // Use intraday asset_changes for today if available
+            if (intraday?.intraday?.length) {
+                const lastPoint = intraday.intraday[intraday.intraday.length - 1];
+                if (lastPoint.asset_changes?.length) assetChanges = lastPoint.asset_changes;
+            }
         }
 
         // Skip today if no data yet
         if (change === 0 && dateStr === todayStr && todayDailyPnl === null) return null;
 
-        return { date: entry.date, change, changePct };
+        return { date: entry.date, change, changePct, assetChanges };
     }).filter(Boolean);
 
     if (days.length === 0) {
@@ -1311,7 +1595,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         return;
     }
 
-    container.innerHTML = days.map(d => {
+    container.innerHTML = days.map((d, i) => {
         const dateStr = d.date.length > 10 ? d.date.substring(0, 10) : d.date;
         const [y, m, day] = dateStr.split('-');
         const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -1321,14 +1605,37 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         const amountStr = `${sign}${formatCurrencyAlways(d.change)}`;
         const pctStr = `${sign}${d.changePct.toFixed(2)}%`;
 
-        return `<div class="daily-pnl-item">
-            <span class="date">${label}</span>
-            <span class="values ${colorClass}">
-                <span class="pnl-amount">${amountStr}</span>
-                ${anonymousMode ? '' : `<span class="pnl-percent">(${pctStr})</span>`}
-            </span>
+        const breakdownRows = d.assetChanges.map(a => {
+            const aSign = a.pnl >= 0 ? '+' : '';
+            const aClass = a.pnl >= 0 ? 'text-success' : 'text-danger';
+            return `<div class="daily-pnl-breakdown-row">
+                <span class="breakdown-symbol">${getAssetIconHtml(a.symbol)}${a.symbol}</span>
+                <span class="${aClass}">${anonymousMode ? '***' : aSign + formatCurrencyAlways(a.pnl)}</span>
+            </div>`;
+        }).join('');
+
+        return `<div class="daily-pnl-item" data-idx="${i}" style="cursor:pointer;flex-direction:column;align-items:stretch;">
+            <div class="daily-pnl-item-row">
+                <span class="date"><i class="bi bi-chevron-right daily-pnl-chevron me-1"></i>${label}</span>
+                <span class="values ${colorClass}">
+                    <span class="pnl-amount">${amountStr}</span>
+                    ${anonymousMode ? '' : `<span class="pnl-percent">(${pctStr})</span>`}
+                </span>
+            </div>
+            <div class="daily-pnl-breakdown" style="display:none;">${breakdownRows}</div>
         </div>`;
     }).join('');
+
+    // Click to expand breakdown
+    container.querySelectorAll('.daily-pnl-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const breakdown = item.querySelector('.daily-pnl-breakdown');
+            const chevron = item.querySelector('.daily-pnl-chevron');
+            const isOpen = breakdown.style.display !== 'none';
+            breakdown.style.display = isOpen ? 'none' : 'block';
+            chevron.classList.toggle('rotated', !isOpen);
+        });
+    });
 }
 
 function updatePnlChart(performance) {
@@ -1389,6 +1696,11 @@ function updatePnlChart(performance) {
             const baseline = dataset.baselineValue;
             const startingValue = dataset.startingInvestmentValue;
             const data = dataset.data;
+            const isTime = xAxis.type === 'time';
+
+            // Helper to get Y value from data point (handles both {x,y} and scalar)
+            const getY = (d) => (d && typeof d === 'object' && d.y !== undefined) ? d.y : d;
+            const getX = (d) => (d && typeof d === 'object' && d.x !== undefined) ? d.x : null;
 
             if (baseline === undefined) return;
 
@@ -1405,30 +1717,90 @@ function updatePnlChart(performance) {
             ctx.restore();
 
             // Draw vertical day dividers for multi-day (3D/1W) views
-            // Detected when labels are datetime strings containing 'T'
-            const labels = chart.data.labels;
-            if (labels && labels.length > 1 && labels[0] && labels[0].includes('T')) {
-                let prevDate = labels[0].substring(0, 10);
-                for (let i = 1; i < labels.length; i++) {
-                    const currDate = labels[i].substring(0, 10);
-                    if (currDate !== prevDate) {
-                        const x = xAxis.getPixelForValue(i);
-                        ctx.save();
-                        ctx.beginPath();
-                        ctx.setLineDash([4, 4]);
-                        ctx.strokeStyle = 'rgba(156, 163, 175, 0.5)';
-                        ctx.lineWidth = 1;
-                        ctx.moveTo(x, yAxis.top);
-                        ctx.lineTo(x, yAxis.bottom);
-                        ctx.stroke();
-                        // Date label at top
-                        ctx.setLineDash([]);
-                        ctx.font = '11px sans-serif';
-                        ctx.fillStyle = '#9ca3af';
-                        ctx.textAlign = 'left';
-                        ctx.fillText(currDate.substring(5), x + 4, yAxis.top + 12);
-                        ctx.restore();
-                        prevDate = currDate;
+            if (isTime && data.length > 1) {
+                // Collect unique dates and draw dividers at midnight boundaries
+                const dates = [...new Set(data.map(d => getX(d)?.substring(0, 10)).filter(Boolean))];
+
+                // Compute daily P&L from chart data (boundary differences)
+                const firstValByDate = {};
+                for (const d of data) {
+                    const dateStr = getX(d)?.substring(0, 10);
+                    const val = getY(d);
+                    if (dateStr && val != null && !(dateStr in firstValByDate)) {
+                        firstValByDate[dateStr] = val;
+                    }
+                }
+                const chartDailyPnl = {};
+                for (let i = 0; i < dates.length; i++) {
+                    const nextFirst = i < dates.length - 1 ? firstValByDate[dates[i + 1]] : null;
+                    const thisFirst = firstValByDate[dates[i]];
+                    if (nextFirst != null && thisFirst != null) {
+                        chartDailyPnl[dates[i]] = nextFirst - thisFirst;
+                    }
+                }
+
+                // Helper to draw date label + daily P&L at a given x position
+                const drawDayLabel = (x, dateStr) => {
+                    ctx.save();
+                    ctx.setLineDash([]);
+                    ctx.font = '11px sans-serif';
+                    ctx.fillStyle = '#9ca3af';
+                    ctx.textAlign = 'left';
+                    ctx.fillText(dateStr.substring(5), x + 4, yAxis.top + 12);
+                    const dailyChange = chartDailyPnl[dateStr];
+                    if (dailyChange != null) {
+                        const sign = dailyChange >= 0 ? '+' : '';
+                        ctx.font = 'bold 10px sans-serif';
+                        ctx.fillStyle = dailyChange >= 0 ? '#10b981' : '#ef4444';
+                        ctx.fillText(anonymousMode ? '***' : sign + formatCurrencyAlways(dailyChange), x + 4, yAxis.top + 26);
+                    }
+                    ctx.restore();
+                };
+
+                // First day label at left edge of chart
+                drawDayLabel(xAxis.left, dates[0]);
+
+                // Dividers and labels for subsequent days
+                for (let di = 1; di < dates.length; di++) {
+                    const midnightStr = dates[di] + 'T00:00:00';
+                    const x = xAxis.getPixelForValue(new Date(midnightStr));
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.setLineDash([4, 4]);
+                    ctx.strokeStyle = 'rgba(156, 163, 175, 0.5)';
+                    ctx.lineWidth = 1;
+                    ctx.moveTo(x, yAxis.top);
+                    ctx.lineTo(x, yAxis.bottom);
+                    ctx.stroke();
+                    ctx.restore();
+                    // Date label + P&L for THIS day (under its own date)
+                    drawDayLabel(x, dates[di]);
+                }
+            } else if (!isTime) {
+                // Category-based dividers (legacy)
+                const labels = chart.data.labels;
+                if (labels && labels.length > 1 && labels[0] && labels[0].includes('T')) {
+                    let prevDate = labels[0].substring(0, 10);
+                    for (let i = 1; i < labels.length; i++) {
+                        const currDate = labels[i].substring(0, 10);
+                        if (currDate !== prevDate) {
+                            const x = xAxis.getPixelForValue(i);
+                            ctx.save();
+                            ctx.beginPath();
+                            ctx.setLineDash([4, 4]);
+                            ctx.strokeStyle = 'rgba(156, 163, 175, 0.5)';
+                            ctx.lineWidth = 1;
+                            ctx.moveTo(x, yAxis.top);
+                            ctx.lineTo(x, yAxis.bottom);
+                            ctx.stroke();
+                            ctx.setLineDash([]);
+                            ctx.font = '11px sans-serif';
+                            ctx.fillStyle = '#9ca3af';
+                            ctx.textAlign = 'left';
+                            ctx.fillText(currDate.substring(5), x + 4, yAxis.top + 12);
+                            ctx.restore();
+                            prevDate = currDate;
+                        }
                     }
                 }
             }
@@ -1436,9 +1808,11 @@ function updatePnlChart(performance) {
             // Draw vs Start label at the last data point
             if (data.length > 0) {
                 const lastIndex = data.length - 1;
-                const lastValue = data[lastIndex];
+                const lastRaw = data[lastIndex];
+                const lastValue = getY(lastRaw);
+                const lastXVal = isTime ? new Date(getX(lastRaw)) : lastIndex;
                 if (lastValue !== null && lastValue !== undefined) {
-                    const x = xAxis.getPixelForValue(lastIndex);
+                    const x = xAxis.getPixelForValue(lastXVal);
                     const y = yAxis.getPixelForValue(lastValue);
 
                     // Calculate vs Start
@@ -1479,16 +1853,26 @@ function updatePnlChart(performance) {
         }
     };
 
+    // Detect if data uses datetime labels (3D/1W views)
+    const isTimeScale = data.length > 0 && data[0].date && data[0].date.includes('T');
+
+    // For time scale, use {x, y} format; for category, use labels + data arrays
+    const chartData = isTimeScale
+        ? pnlData.map((y, i) => ({ x: data[i].date, y }))
+        : pnlData;
+    const chartLabels = isTimeScale ? undefined : data.map(d => d.date);
+
     pnlChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: data.map(d => d.date),
+            ...(chartLabels ? { labels: chartLabels } : {}),
             datasets: [{
                 label: 'P&L',
-                data: pnlData,
+                data: chartData,
                 costBasisData: costBasisData,
                 baselineValue: baselineValue,
                 startingInvestmentValue: startingInvestmentValue,
+                dailyPnlMap: performance.dailyPnlMap || null,
                 segment: {
                     borderColor: segmentColor,
                     backgroundColor: segmentBgColor
@@ -1500,7 +1884,7 @@ function updatePnlChart(performance) {
                     above: 'rgba(16, 185, 129, 0.15)',
                     below: 'rgba(239, 68, 68, 0.15)'
                 },
-                tension: 0.2,
+                tension: isTimeScale ? 0 : 0.2,
                 pointRadius: 0,
                 pointHoverRadius: 4
             }]
@@ -1510,7 +1894,8 @@ function updatePnlChart(performance) {
             maintainAspectRatio: false,
             interaction: {
                 intersect: false,
-                mode: 'index'
+                mode: 'nearest',
+                axis: 'x'
             },
             plugins: {
                 legend: {
@@ -1521,16 +1906,22 @@ function updatePnlChart(performance) {
                 },
                 tooltip: {
                     callbacks: {
-                        title: (context) => context[0].label,
+                        title: (context) => {
+                            const raw = context[0].raw;
+                            if (raw && raw.x) {
+                                const d = raw.x;
+                                return d.substring(5, 10) + ' ' + d.substring(11, 16);
+                            }
+                            return context[0].label;
+                        },
                         label: (context) => {
-                            const pnl = context.raw;
+                            const pnl = isTimeScale ? context.raw.y : context.raw;
                             const dataIndex = context.dataIndex;
                             const costBasis = context.dataset.costBasisData[dataIndex];
                             const baseline = context.dataset.baselineValue;
                             const startingValue = context.dataset.startingInvestmentValue;
                             const pnlPercent = costBasis !== 0 ? (pnl / costBasis) * 100 : 0;
                             const changeFromBaseline = pnl - baseline;
-                            // Calculate percentage change vs start based on starting portfolio value
                             const changePercent = startingValue !== 0 ? (changeFromBaseline / startingValue) * 100 : 0;
                             const sign = pnl >= 0 ? '+' : '';
                             const changeSign = changeFromBaseline >= 0 ? '+' : '';
@@ -1544,12 +1935,29 @@ function updatePnlChart(performance) {
                 }
             },
             scales: {
-                x: {
-                    grid: {
-                        display: false
+                x: isTimeScale ? {
+                    type: 'time',
+                    time: {
+                        unit: 'hour',
+                        displayFormats: {
+                            hour: 'MM-dd HH:mm'
+                        },
+                        tooltipFormat: 'MM-dd HH:mm'
                     },
+                    grid: { display: false },
+                    ticks: { maxTicksLimit: 8 }
+                } : {
+                    grid: { display: false },
                     ticks: {
-                        maxTicksLimit: 8
+                        maxTicksLimit: 8,
+                        callback: function(value, index) {
+                            const label = this.getLabelForValue(index);
+                            if (!label) return label;
+                            if (label.length >= 10 && label[4] === '-') {
+                                return label.substring(5, 10);
+                            }
+                            return label;
+                        }
                     }
                 },
                 y: {
@@ -2290,39 +2698,46 @@ async function loadPerformanceData(period) {
         }
     });
 
-    // For 3D period, use multi-day intraday API with 15-minute intervals
-    // For 1W period, use multi-day intraday API with 1-hour intervals
+    // For 3D/1W: use intraday-multiday API for evenly-spaced data across all days.
     if (period === '3D' || period === '1W') {
+        const days = period === '3D' ? 4 : 8;
         const interval = period === '3D' ? '15m' : '60m';
-        const days = period === '3D' ? 3 : 7;
 
-        const intradayData = await fetchIntradayMultiday(interval, days);
-        // Also fetch summary to get actual cost_basis
-        const summary = await fetchSummary();
+        const [multidayData, summary, dailyPnlData] = await Promise.all([
+            fetchIntradayMultiday(interval, days),
+            fetchSummary(),
+            fetchDailyPnl(false)
+        ]);
 
-        if (intradayData && intradayData.data && intradayData.data.length > 0) {
-            // Get investment cost basis (excluding cash) from summary holdings
-            let actualCostBasis = 0;
-            if (summary && summary.holdings) {
-                actualCostBasis = summary.holdings
-                    .filter(h => h.symbol !== 'CASH')
-                    .reduce((sum, h) => sum + (h.cost_basis || 0), 0);
-            }
+        if (!multidayData?.data?.length) return;
 
-            // Transform multi-day intraday data to performance format
-            const performance = {
-                performance: intradayData.data.map(d => ({
-                    date: d.datetime,
-                    value: d.value,
-                    investment_value: d.value,
-                    cost_basis: actualCostBasis
-                }))
-            };
+        let actualCostBasis = 0;
+        if (summary?.holdings) {
+            actualCostBasis = summary.holdings
+                .filter(h => h.symbol !== 'CASH')
+                .reduce((sum, h) => sum + (h.cost_basis || 0), 0);
+        }
 
+        // Build daily P&L lookup from backend data (keyed by date)
+        const dailyPnlMap = {};
+        if (dailyPnlData?.daily_pnl) {
+            dailyPnlData.daily_pnl.forEach(r => {
+                dailyPnlMap[r.date] = r.daily_pnl;
+            });
+        }
+
+        const performancePoints = multidayData.data.map(d => ({
+            date: d.datetime,
+            investment_value: d.value,
+            cost_basis: actualCostBasis
+        }));
+
+        if (performancePoints.length > 0) {
+            const performance = { performance: performancePoints, dailyPnlMap };
             updatePnlChart(performance);
             updatePerformanceChart(performance);
-            return;
         }
+        return;
     }
 
     const performance = await fetchPerformance(period);
@@ -2355,6 +2770,9 @@ async function loadIntradayData(interval) {
 
 // Main data loading function
 async function loadAllData() {
+    // Fetch targets alongside other data
+    fetchTargets();
+
     // Fetch all data in parallel
     const fetchList = [
         fetchSummary(),
@@ -2364,14 +2782,13 @@ async function loadAllData() {
         fetchIntraday(currentInterval)
     ];
 
-    // For 3D/1W, fetch intraday multi-day data; otherwise fetch regular performance
+    // For 3D/1W the P&L chart is built from dailyPnl + intraday (fetched below).
+    // For other periods fetch the regular performance data.
     const useIntradayForPnl = currentPeriod === '3D' || currentPeriod === '1W';
-    if (useIntradayForPnl) {
-        const interval = currentPeriod === '3D' ? '15m' : '60m';
-        const days = currentPeriod === '3D' ? 3 : 7;
-        fetchList.push(fetchIntradayMultiday(interval, days));
-    } else {
+    if (!useIntradayForPnl) {
         fetchList.push(fetchPerformance(currentPeriod));
+    } else {
+        fetchList.push(Promise.resolve(null)); // placeholder to keep index alignment
     }
 
     // Add separate fetch for portfolio chart if period is different from ALL
@@ -2398,28 +2815,11 @@ async function loadAllData() {
         updateIntradayChart(intraday, currentInterval);
     }
 
-    // Handle P&L chart - transform intraday data if needed
-    if (pnlData) {
-        let performance = pnlData;
-        if (useIntradayForPnl && pnlData.data && pnlData.data.length > 0) {
-            // Get investment cost basis (excluding cash) from summary holdings
-            let actualCostBasis = 0;
-            if (summary && summary.holdings) {
-                actualCostBasis = summary.holdings
-                    .filter(h => h.symbol !== 'CASH')
-                    .reduce((sum, h) => sum + (h.cost_basis || 0), 0);
-            }
-            // Transform multi-day intraday data to performance format
-            performance = {
-                performance: pnlData.data.map(d => ({
-                    date: d.datetime,
-                    value: d.value,
-                    investment_value: d.value,
-                    cost_basis: actualCostBasis
-                }))
-            };
-        }
-        updatePnlChart(performance);
+    // Handle P&L chart - always delegate to loadPerformanceData for consistent behavior
+    if (useIntradayForPnl) {
+        loadPerformanceData(currentPeriod);
+    } else if (pnlData) {
+        updatePnlChart(pnlData);
     }
 
     // Update daily P&L list
@@ -2499,6 +2899,7 @@ function updateCountdownDisplay() {
 async function refreshData() {
     // Clear cache and reload data
     apiCache.clear();
+    Object.keys(transactionCache).forEach(k => delete transactionCache[k]);
     await loadAllData();
 }
 
@@ -2510,6 +2911,7 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
 
     try {
         await reloadPortfolio();
+        Object.keys(transactionCache).forEach(k => delete transactionCache[k]);
         await loadAllData();
         showToast('Data refreshed successfully', 'success');
 
@@ -2558,6 +2960,45 @@ document.addEventListener('DOMContentLoaded', () => {
             const interval = btn.dataset.interval;
             loadIntradayData(interval);
         });
+    });
+
+    // Holdings row expand/collapse transaction detail
+    document.getElementById('holdingsBody').addEventListener('click', (e) => {
+        // Handle target % inline editing
+        const targetCell = e.target.closest('.target-pct-cell');
+        if (targetCell && !targetCell.querySelector('input')) {
+            e.stopPropagation();
+            const symbol = targetCell.dataset.symbol;
+            const currentVal = targetAllocations[symbol] || '';
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.className = 'target-pct-input';
+            input.value = currentVal;
+            input.min = '0';
+            input.max = '100';
+            input.step = '0.1';
+            targetCell.textContent = '';
+            targetCell.appendChild(input);
+            input.focus();
+            input.select();
+
+            const commit = () => {
+                const val = parseFloat(input.value);
+                saveTarget(symbol, isNaN(val) || val <= 0 ? 0 : val);
+            };
+            input.addEventListener('blur', commit);
+            input.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter') input.blur();
+                if (ev.key === 'Escape') {
+                    input.removeEventListener('blur', commit);
+                    renderHoldingsTable(holdingsData);
+                }
+            });
+            return;
+        }
+
+        const holdingRow = e.target.closest('.holding-row');
+        if (holdingRow) toggleTransactionDetail(holdingRow);
     });
 
     // Holdings table sort event handlers
@@ -2741,6 +3182,68 @@ document.addEventListener('DOMContentLoaded', () => {
             updateAllocationChart(null, category);
         });
     });
+
+    // Column visibility toggle for Holdings table
+    const colDefs = [
+        { col: 0, label: 'Symbol', locked: true },
+        { col: 1, label: 'Quantity' },
+        { col: 2, label: 'Avg Cost' },
+        { col: 3, label: 'Cost Basis' },
+        { col: 4, label: 'Price' },
+        { col: 5, label: 'Today' },
+        { col: 6, label: 'Market Value' },
+        { col: 7, label: 'Alloc %' },
+        { col: 8, label: 'Target %' },
+        { col: 9, label: '\u0394 Target' },
+        { col: 10, label: 'P&L ($)' },
+        { col: 11, label: 'P&L (%)' },
+        { col: 12, label: 'Annual %' },
+        { col: 13, label: 'W-Annual %' },
+    ];
+
+    // Load saved prefs (default: all visible)
+    let hiddenCols = JSON.parse(localStorage.getItem('holdingsHiddenCols') || '[]');
+
+    function applyColumnVisibility() {
+        const style = document.getElementById('col-visibility-style') || (() => {
+            const s = document.createElement('style');
+            s.id = 'col-visibility-style';
+            document.head.appendChild(s);
+            return s;
+        })();
+        const rules = hiddenCols.map(c =>
+            `#holdingsTable th[data-col="${c}"], #holdingsTable td[data-col="${c}"] { display: none; }`
+        ).join('\n');
+        style.textContent = rules;
+    }
+
+    const menu = document.getElementById('colToggleMenu');
+    colDefs.forEach(def => {
+        const li = document.createElement('li');
+        const label = document.createElement('label');
+        label.className = 'dropdown-item d-flex align-items-center gap-2 mb-0';
+        label.style.cursor = def.locked ? 'default' : 'pointer';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input mt-0';
+        cb.checked = !hiddenCols.includes(def.col);
+        cb.disabled = !!def.locked;
+        cb.addEventListener('change', () => {
+            if (cb.checked) {
+                hiddenCols = hiddenCols.filter(c => c !== def.col);
+            } else {
+                hiddenCols.push(def.col);
+            }
+            localStorage.setItem('holdingsHiddenCols', JSON.stringify(hiddenCols));
+            applyColumnVisibility();
+        });
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(def.label));
+        li.appendChild(label);
+        menu.appendChild(li);
+    });
+
+    applyColumnVisibility();
 
     // Load data
     loadAllData();

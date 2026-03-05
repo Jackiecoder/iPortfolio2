@@ -756,23 +756,38 @@ class Portfolio:
 
             investment_value = Decimal("0")
             cost_basis = Decimal("0")
+            symbol_pnl: dict[str, float] = {}
             for symbol, lots in temp_portfolio._lots.items():
                 total_qty = sum(lot.quantity for lot in lots)
                 if total_qty <= 0:
                     continue
+                sym_cost = sum(lot.quantity * lot.cost_per_share for lot in lots if lot.quantity > 0)
+                sym_value = Decimal("0")
                 if symbol in prices_by_date:
                     keys = sorted_pbd_keys[symbol]
                     idx = bisect.bisect_right(keys, current_date) - 1
                     if idx >= 0:
-                        investment_value += total_qty * prices_by_date[symbol][keys[idx]]
-                cost_basis += sum(lot.quantity * lot.cost_per_share for lot in lots if lot.quantity > 0)
+                        sym_value = total_qty * prices_by_date[symbol][keys[idx]]
+                investment_value += sym_value
+                cost_basis += sym_cost
+                symbol_pnl[symbol] = float(sym_value - sym_cost)
 
             unrealized_pnl = investment_value - cost_basis
+
+            # Cumulative realized P&L from all sales processed so far
+            cumulative_realized = sum(
+                s["proceeds"] - s["cost_basis"]
+                for sales in temp_portfolio._sales.values()
+                for s in sales
+            )
+
             cash = temp_portfolio.get_cash_balance(current_date)
             daily_values.append({
                 "date": current_date.isoformat(),
                 "value": float(investment_value + cash),
                 "unrealized_pnl": float(unrealized_pnl),
+                "cumulative_realized": float(cumulative_realized),
+                "symbol_pnl": symbol_pnl,
             })
             current_date += timedelta(days=1)
 
@@ -780,15 +795,39 @@ class Portfolio:
         for i in range(1, len(daily_values)):
             curr = daily_values[i]
             prev = daily_values[i - 1]
-            # Daily P&L = change in unrealized P&L (investment_value - cost_basis)
-            # This matches the Investment P&L chart and excludes new purchases / cash changes
-            change = curr["unrealized_pnl"] - prev["unrealized_pnl"]
+            # Daily P&L = unrealized P&L change + realized gain from sells on this day
+            # This captures price movement of held shares AND gain from shares sold today
+            unrealized_change = curr["unrealized_pnl"] - prev["unrealized_pnl"]
+            realized_today = curr["cumulative_realized"] - prev["cumulative_realized"]
+            change = unrealized_change + realized_today
             pct = (change / prev["value"] * 100) if prev["value"] else 0
+
+            # Per-symbol contribution to daily P&L
+            # For sold symbols: unrealized_pnl delta already captures the sell effect,
+            # but for the day of sale we add the realized gain back in per-symbol
+            all_symbols = set(curr["symbol_pnl"]) | set(prev["symbol_pnl"])
+            asset_changes = []
+            for sym in all_symbols:
+                sym_change = curr["symbol_pnl"].get(sym, 0.0) - prev["symbol_pnl"].get(sym, 0.0)
+                # Add realized gain for this symbol if any sells happened today
+                curr_date_obj = date.fromisoformat(curr["date"])
+                sym_realized = sum(
+                    float(s["proceeds"] - s["cost_basis"])
+                    for s in temp_portfolio._sales.get(sym, [])
+                    if s["date"] == curr_date_obj
+                )
+                sym_change += sym_realized
+                if abs(sym_change) >= 0.01:
+                    asset_changes.append({"symbol": sym, "pnl": round(sym_change, 2)})
+            asset_changes.sort(key=lambda x: abs(x["pnl"]), reverse=True)
+
             result.append({
                 "date": curr["date"],
                 "value": curr["value"],
                 "daily_pnl": change,
                 "daily_pnl_percent": pct,
+                "unrealized_pnl": curr["unrealized_pnl"],
+                "asset_changes": asset_changes,
             })
 
         return result
@@ -1112,6 +1151,9 @@ class Portfolio:
     def get_multiday_intraday_values(self, interval: str = "15m", days: int = 3) -> list[dict]:
         """Calculate multi-day intraday portfolio values.
 
+        Uses historical holdings (transaction replay) so that past days reflect
+        the actual positions held on each date, not today's positions.
+
         Args:
             interval: Data interval (15m, 30m, 60m)
             days: Number of days of data to return
@@ -1119,21 +1161,49 @@ class Portfolio:
         Returns:
             List of {datetime, value} dictionaries sorted chronologically
         """
-        from datetime import datetime
+        from datetime import datetime, timedelta
 
-        # Get current holdings (excluding cash)
-        holdings = self.get_holdings(fetch_prices=False)
-        investment_holdings = [h for h in holdings if h.symbol != "CASH"]
+        today = date.today()
+        start_date = today - timedelta(days=days)
 
-        logger.info(f"Multi-day intraday: Found {len(investment_holdings)} investment holdings")
+        # --- Replay transactions to build per-day quantities ---
+        sorted_txns = sorted(self._transactions, key=lambda t: t.date)
+        temp_portfolio = Portfolio(adjust_splits=self._adjust_splits)
 
-        if not investment_holdings:
+        txn_idx = 0
+        # Fast-forward to start_date
+        for txn in sorted_txns:
+            if txn.date < start_date:
+                temp_portfolio._process_transaction(txn)
+                txn_idx += 1
+            else:
+                break
+
+        # Build daily_quantities: date_str -> {symbol: quantity}
+        all_symbols: set[str] = set()
+        daily_quantities: dict[str, dict[str, Decimal]] = {}
+
+        current_date = start_date
+        while current_date <= today:
+            # Process transactions on or before current_date
+            while txn_idx < len(sorted_txns) and sorted_txns[txn_idx].date <= current_date:
+                temp_portfolio._process_transaction(sorted_txns[txn_idx])
+                txn_idx += 1
+
+            day_qty: dict[str, Decimal] = {}
+            for symbol, lots in temp_portfolio._lots.items():
+                total_qty = sum(lot.quantity for lot in lots)
+                if total_qty > 0:
+                    day_qty[symbol] = total_qty
+                    all_symbols.add(symbol)
+            daily_quantities[current_date.isoformat()] = day_qty
+            current_date += timedelta(days=1)
+
+        symbols = sorted(all_symbols)
+        logger.info(f"Multi-day intraday: Found {len(symbols)} symbols across period")
+
+        if not symbols:
             return []
-
-        # Get symbols and their quantities
-        symbols = [h.symbol for h in investment_holdings]
-        quantities = {h.symbol: h.quantity for h in investment_holdings}
-        cost_basis = sum(h.cost_basis for h in investment_holdings)
 
         # Get previous close prices to initialize stock prices for off-hours
         prev_close_prices = price_service.get_previous_close_batch(symbols)
@@ -1168,10 +1238,18 @@ class Portfolio:
         last_prices = {symbol: prev_close_prices.get(symbol) for symbol in symbols}
 
         for ts in sorted_timestamps:
+            dt = all_timestamps[ts]
+            ts_date = dt.strftime("%Y-%m-%d")
+            quantities = daily_quantities.get(ts_date, {})
+
             total_value = Decimal("0")
             has_data = False
 
             for symbol in symbols:
+                qty = quantities.get(symbol, Decimal("0"))
+                if qty <= 0:
+                    continue
+
                 price_at_time = price_lookup.get(symbol, {}).get(ts)
 
                 if price_at_time is not None:
@@ -1180,14 +1258,13 @@ class Portfolio:
                     price_at_time = last_prices[symbol]
 
                 if price_at_time is not None:
-                    total_value += quantities[symbol] * price_at_time
+                    total_value += qty * price_at_time
                     has_data = True
 
             if has_data and total_value > 0:
-                dt = all_timestamps[ts]
                 results.append({
                     "datetime": ts,
-                    "date": dt.strftime("%Y-%m-%d"),
+                    "date": ts_date,
                     "time": dt.strftime("%H:%M"),
                     "value": float(total_value),
                 })

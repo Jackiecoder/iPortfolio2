@@ -209,11 +209,22 @@ body {
 
 .daily-pnl-item {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.5rem 1rem;
+    flex-direction: column;
+    padding: 0 1rem;
     border-bottom: 1px solid #f0f0f0;
     font-size: 0.875rem;
+    cursor: pointer;
+}
+
+.daily-pnl-item:hover {
+    background-color: #f8f9fa;
+}
+
+.daily-pnl-item-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
 }
 
 .daily-pnl-item:last-child {
@@ -239,6 +250,34 @@ body {
     margin-left: 4px;
 }
 
+/* Daily P&L per-asset breakdown */
+.daily-pnl-breakdown {
+    padding: 0.4rem 0 0.5rem 1rem;
+    border-top: 1px dashed #e5e7eb;
+}
+
+.daily-pnl-breakdown-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.78rem;
+    padding: 0.15rem 0;
+    color: #374151;
+}
+
+.breakdown-symbol {
+    color: #6b7280;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.daily-pnl-chevron {
+    font-size: 0.65rem;
+    transition: transform 0.2s ease;
+    color: #9ca3af;
+}
+
 /* Category tabs for allocation drill-down */
 #categoryTabs {
     margin-top: 8px;
@@ -249,6 +288,67 @@ body {
     font-size: 0.75rem;
     padding: 0.25rem 0.5rem;
 }
+
+/* Holdings row expand chevron */
+.holding-chevron {
+    font-size: 0.7rem;
+    transition: transform 0.2s ease;
+    color: #6c757d;
+}
+
+.holding-chevron.rotated {
+    transform: rotate(90deg);
+    color: var(--bs-primary);
+}
+
+/* Transaction detail sub-row */
+.txn-detail-row td {
+    padding: 0 !important;
+    background-color: #f8f9fa;
+}
+
+.txn-detail-container {
+    padding: 0.75rem 1.5rem;
+    border-top: 1px solid #dee2e6;
+}
+
+.txn-detail-table {
+    font-size: 0.8rem;
+}
+
+.txn-detail-table thead th {
+    font-size: 0.75rem;
+    color: #6c757d;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border-bottom: 1px solid #dee2e6;
+    padding: 0.3rem 0.5rem;
+}
+
+.txn-detail-table tbody td {
+    padding: 0.3rem 0.5rem;
+    border-bottom: 1px solid #f0f0f0;
+    vertical-align: middle;
+}
+
+.txn-detail-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.txn-action {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: 0.25rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.txn-buy  { background-color: #d1e7dd; color: #0a3622; }
+.txn-sell { background-color: #f8d7da; color: #58151c; }
+.txn-div  { background-color: #cff4fc; color: #055160; }
+.txn-other { background-color: #e2e3e5; color: #41464b; }
 
 /* Custom category button colors */
 /* Crypto - Orange */
@@ -282,4 +382,75 @@ body {
     color: #fff;
     background-color: #8b5cf6;
     border-color: #8b5cf6;
+}
+
+/* Target allocation cells */
+.target-pct-cell {
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background-color 0.15s ease;
+}
+
+.target-pct-cell:hover {
+    background-color: #e9ecef;
+}
+
+.target-pct-input {
+    width: 60px;
+    padding: 1px 4px;
+    font-size: 0.875rem;
+    border: 1px solid var(--bs-primary);
+    border-radius: 4px;
+    text-align: right;
+    outline: none;
+}
+
+.target-warn {
+    color: #f59e0b;
+    font-size: 0.75rem;
+    margin-left: 4px;
+}
+
+.cat-target-sum {
+    font-size: 0.7rem;
+    color: #6c757d;
+    background-color: #f0f0f0;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 3px;
+    white-space: nowrap;
+}
+
+/* Column toggle dropdown */
+#colToggleMenu {
+    min-width: 160px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+#colToggleMenu .dropdown-item {
+    font-size: 0.85rem;
+    padding: 0.3rem 0.75rem;
+}
+
+/* Δ Target stacked display */
+.delta-target-wrap {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.3;
+}
+
+.delta-target-amt {
+    font-size: 0.75rem;
+    color: #6c757d;
+}
+
+/* Δ Target colors — distinct from P&L green/red */
+.delta-buy {
+    color: #2563eb !important; /* blue = buy more */
+}
+
+.delta-sell {
+    color: #f59e0b !important; /* orange = sell/trim */
 }

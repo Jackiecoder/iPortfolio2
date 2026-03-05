@@ -28,3 +28,14 @@ Thumbs.db
 # Logs
 *.log
 screenshots/
+
+# Cursor
+.cursor/
+
+# Misc
+*.pid
+SESSION_SUMMARY.md
+slides-content.json
+agent-skills-presentation.html
+start_all.sh
+stop_all.sh

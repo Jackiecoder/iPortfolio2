@@ -10,9 +10,10 @@
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=14">
+    <link rel="stylesheet" href="/static/css/style.css?v=15">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 </head>
 <body>
@@ -143,11 +144,11 @@
                         <div class="btn-group btn-group-sm" role="group">
                             <button class="btn btn-outline-secondary period-btn" data-period="3D">3D</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="1W">1W</button>
-                            <button class="btn btn-outline-secondary period-btn" data-period="1M">1M</button>
+                            <button class="btn btn-primary period-btn active" data-period="1M">1M</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="3M">3M</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="6M">6M</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="YTD">YTD</button>
-                            <button class="btn btn-primary period-btn active" data-period="1Y">1Y</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="1Y">1Y</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="3Y">3Y</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="5Y">5Y</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="ALL">ALL</button>
@@ -235,30 +236,39 @@
 
         <!-- Holdings Table -->
         <div class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white border-0">
+            <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
                 <h5 class="mb-0"><i class="bi bi-briefcase me-2"></i>Holdings</h5>
+                <div class="dropdown">
+                    <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" id="colToggleBtn" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <i class="bi bi-layout-three-columns me-1"></i>Columns
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end" id="colToggleMenu"></ul>
+                </div>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
                     <table class="table table-hover mb-0" id="holdingsTable">
                         <thead class="table-light">
                             <tr>
-                                <th class="sortable" data-sort="symbol">Symbol <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="quantity">Quantity <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="avg_cost">Avg Cost <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="cost_basis">Cost Basis <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="current_price">Price <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="daily_change_amount">Today <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="market_value">Market Value <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="unrealized_pnl">P&L ($) <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="pnl_percent">P&L (%) <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="annualized_return">Annual % <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="weighted_annualized_return" title="Weighted Annualized Return&#10;&#10;For each lot: CAGR = (current_value / cost)^(1/years) - 1&#10;Then weighted avg by each lot's cost basis.&#10;Holds < 1yr are treated as 1yr to avoid inflated returns.">W-Annual % <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="symbol" data-col="0">Symbol <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="quantity" data-col="1">Quantity <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="avg_cost" data-col="2">Avg Cost <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="cost_basis" data-col="3">Cost Basis <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="current_price" data-col="4">Price <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="daily_change_amount" data-col="5">Today <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="market_value" data-col="6">Market Value <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="alloc_pct" data-col="7">Alloc % <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="target_pct" data-col="8">Target % <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="delta_target" data-col="9">&#916; Target <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="unrealized_pnl" data-col="10">P&L ($) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="pnl_percent" data-col="11">P&L (%) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="annualized_return" data-col="12">Annual % <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="weighted_annualized_return" data-col="13" title="Weighted Annualized Return&#10;&#10;For each lot: CAGR = (current_value / cost)^(1/years) - 1&#10;Then weighted avg by each lot's cost basis.&#10;Holds < 1yr are treated as 1yr to avoid inflated returns.">W-Annual % <i class="bi bi-arrow-down-up sort-icon"></i></th>
                             </tr>
                         </thead>
                         <tbody id="holdingsBody">
                             <tr>
-                                <td colspan="11" class="text-center text-muted py-4">
+                                <td colspan="14" class="text-center text-muted py-4">
                                     <div class="spinner-border spinner-border-sm me-2" role="status"></div>
                                     Loading holdings...
                                 </td>
@@ -411,6 +421,6 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/app.js?v=74"></script>
+    <script src="/static/js/app.js?v=75"></script>
 </body>
 </html>

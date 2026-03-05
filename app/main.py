@@ -1,11 +1,13 @@
 """FastAPI application entry point."""
 
+import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -364,6 +366,46 @@ async def reload_portfolio(clear_history_cache: bool = Query(False, description=
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/transactions/{symbol}")
+async def get_transactions(
+    symbol: str,
+    limit: int = Query(20, description="Max transactions to return"),
+    actions: Optional[str] = Query(None, description="Comma-separated action types to filter (e.g. BUY,SELL)"),
+):
+    """Get recent transactions for a specific symbol."""
+    if portfolio is None:
+        load_portfolio()
+
+    try:
+        action_filter = {a.strip().upper() for a in actions.split(",")} if actions else None
+        txns = sorted(
+            [
+                t for t in portfolio._transactions
+                if t.asset == symbol.upper()
+                and (action_filter is None or t.action.value in action_filter)
+            ],
+            key=lambda t: t.date,
+            reverse=True,
+        )[:limit]
+        result = {
+            "symbol": symbol.upper(),
+            "transactions": [
+                {
+                    "date": t.date.isoformat(),
+                    "action": t.action.value,
+                    "quantity": float(t.quantity) if t.quantity is not None else None,
+                    "ave_price": float(t.ave_price) if t.ave_price is not None else None,
+                    "amount": float(t.amount) if t.amount is not None else None,
+                }
+                for t in txns
+            ],
+        }
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching transactions for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/files")
 async def list_files():
     """List CSV files in the data directory."""
@@ -431,10 +473,10 @@ async def get_intraday_multiday(
         )
 
     # Validate days
-    if days < 1 or days > 7:
+    if days < 1 or days > 8:
         raise HTTPException(
             status_code=400,
-            detail="Days must be between 1 and 7"
+            detail="Days must be between 1 and 8"
         )
 
     cache_key = f"intraday-multiday_{interval}_{days}"
@@ -506,3 +548,41 @@ async def clear_cache():
     except Exception as e:
         logger.error(f"Error clearing cache: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Target allocation endpoints ---
+
+TARGETS_FILE = DATA_DIR / "targets.json"
+
+
+def _read_targets() -> dict[str, float]:
+    if TARGETS_FILE.exists():
+        return json.loads(TARGETS_FILE.read_text())
+    return {}
+
+
+def _write_targets(targets: dict[str, float]) -> None:
+    TARGETS_FILE.write_text(json.dumps(targets, indent=2))
+
+
+class TargetUpdate(BaseModel):
+    symbol: str
+    target_pct: Optional[float] = None
+
+
+@app.get("/api/targets")
+async def get_targets():
+    """Get target allocation percentages."""
+    return _read_targets()
+
+
+@app.post("/api/targets")
+async def set_target(update: TargetUpdate):
+    """Set or remove a target allocation percentage for a symbol."""
+    targets = _read_targets()
+    if update.target_pct is None or update.target_pct == 0:
+        targets.pop(update.symbol, None)
+    else:
+        targets[update.symbol] = update.target_pct
+    _write_targets(targets)
+    return targets
