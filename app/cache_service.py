@@ -59,6 +59,18 @@ class CacheService:
                 )
             """)
 
+            # Intraday prices table (minute/5m/15m bars, persisted per trading day)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS intraday_prices (
+                    symbol TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    time TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    price TEXT NOT NULL,
+                    PRIMARY KEY (symbol, date, time, interval)
+                )
+            """)
+
             # Create indexes for faster queries
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_historical_prices_symbol
@@ -67,6 +79,10 @@ class CacheService:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_historical_prices_date
                 ON historical_prices(date)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_intraday_prices_lookup
+                ON intraday_prices(symbol, date, interval)
             """)
 
             conn.commit()
@@ -354,6 +370,65 @@ class CacheService:
 
         logger.info(f"Cached {len(cacheable)} portfolio values")
         return len(cacheable)
+
+    # --- Intraday Price Methods ---
+
+    def get_intraday_prices(self, symbol: str, date_str: str, interval: str) -> list[dict]:
+        """Return cached intraday bars for a symbol/date/interval, or [] if not cached."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT time, price FROM intraday_prices
+                   WHERE symbol = ? AND date = ? AND interval = ?
+                   ORDER BY time""",
+                (symbol, date_str, interval)
+            )
+            rows = cursor.fetchall()
+        return [{"time": r[0], "date": date_str, "price": Decimal(r[1])} for r in rows]
+
+    def has_intraday_prices(self, symbol: str, date_str: str, interval: str) -> bool:
+        """Return True if we have any cached bars for this symbol/date/interval."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT 1 FROM intraday_prices
+                   WHERE symbol = ? AND date = ? AND interval = ? LIMIT 1""",
+                (symbol, date_str, interval)
+            )
+            return cursor.fetchone() is not None
+
+    def save_intraday_prices(self, symbol: str, date_str: str, interval: str, prices: list[dict]) -> int:
+        """Persist intraday bars for a completed trading day.
+
+        Each entry in prices must have 'time' (HH:MM) and 'price' (Decimal/str/float).
+        Existing rows for the same symbol/date/interval are replaced.
+        Returns the number of rows saved.
+        """
+        if not prices:
+            return 0
+        rows = [(symbol, date_str, p["time"], interval, str(p["price"])) for p in prices]
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                """INSERT OR REPLACE INTO intraday_prices (symbol, date, time, interval, price)
+                   VALUES (?, ?, ?, ?, ?)""",
+                rows
+            )
+            conn.commit()
+        logger.info(f"Saved {len(rows)} intraday bars for {symbol} {date_str} [{interval}]")
+        return len(rows)
+
+    def get_intraday_cached_dates(self, symbol: str, interval: str) -> list[str]:
+        """Return sorted list of dates that have cached intraday data for a symbol/interval."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT DISTINCT date FROM intraday_prices
+                   WHERE symbol = ? AND interval = ?
+                   ORDER BY date""",
+                (symbol, interval)
+            )
+            return [row[0] for row in cursor.fetchall()]
 
     # --- Utility Methods ---
 

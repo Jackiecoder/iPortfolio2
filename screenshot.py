@@ -95,9 +95,15 @@ async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch()
 
-        # Take first screenshot immediately
+        # Take first screenshot, retrying until server is ready
         print("Taking initial screenshots...")
-        await take_screenshots(browser)
+        for attempt in range(12):
+            try:
+                await take_screenshots(browser)
+                break
+            except Exception as e:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Waiting for server... ({e})")
+                await asyncio.sleep(10)
 
         # Then take screenshots at regular intervals
         while True:

@@ -1,7 +1,9 @@
 """FastAPI application entry point."""
 
+import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -54,6 +56,7 @@ _API_TTL = {
     "summary": timedelta(seconds=30),
     "daily-pnl": timedelta(seconds=60),
     "intraday": timedelta(seconds=30),
+    "intraday-hist": timedelta(hours=12),
     "intraday-multiday": timedelta(seconds=60),
 }
 
@@ -107,10 +110,49 @@ def load_portfolio() -> Portfolio:
     return portfolio
 
 
+# CSV file watcher state
+_csv_mtimes: dict[str, float] = {}
+
+
+def _snapshot_csv_mtimes() -> dict[str, float]:
+    """Record modification times of all CSV files."""
+    mtimes = {}
+    for f in DATA_DIR.glob("**/*.csv"):
+        try:
+            mtimes[str(f)] = os.path.getmtime(f)
+        except OSError:
+            pass
+    return mtimes
+
+
+def _csv_files_changed() -> bool:
+    """Check if any CSV file was added, removed, or modified."""
+    current = _snapshot_csv_mtimes()
+    changed = current != _csv_mtimes
+    return changed
+
+
+async def _watch_csv_files():
+    """Background task to watch for CSV file changes and auto-reload."""
+    global _csv_mtimes
+    while True:
+        await asyncio.sleep(5)
+        if _csv_files_changed():
+            logger.info("CSV file change detected, reloading portfolio...")
+            load_portfolio()
+            _csv_mtimes = _snapshot_csv_mtimes()
+            price_service.clear_cache()
+            _api_cache.clear()
+            logger.info("Portfolio reloaded after CSV change")
+
+
 @app.on_event("startup")
 async def startup_event():
     """Load portfolio data on startup."""
+    global _csv_mtimes
     load_portfolio()
+    _csv_mtimes = _snapshot_csv_mtimes()
+    asyncio.create_task(_watch_csv_files())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -147,6 +189,8 @@ async def get_holdings():
                     "holding_days": h.holding_days,
                     "annualized_return": float(h.annualized_return) if h.annualized_return else None,
                     "weighted_annualized_return": float(h.weighted_annualized_return) if h.weighted_annualized_return else None,
+                    "long_term_quantity": float(h.long_term_quantity) if h.long_term_quantity is not None else None,
+                    "short_term_quantity": float(h.short_term_quantity) if h.short_term_quantity is not None else None,
                 }
                 for h in holdings
             ]
@@ -197,6 +241,8 @@ async def get_summary():
                     "holding_days": h.holding_days,
                     "annualized_return": float(h.annualized_return) if h.annualized_return else None,
                     "weighted_annualized_return": float(h.weighted_annualized_return) if h.weighted_annualized_return else None,
+                    "long_term_quantity": float(h.long_term_quantity) if h.long_term_quantity is not None else None,
+                    "short_term_quantity": float(h.short_term_quantity) if h.short_term_quantity is not None else None,
                 }
                 for h in summary.holdings
             ],
@@ -427,12 +473,12 @@ async def list_files():
 @app.get("/api/intraday")
 async def get_intraday(
     interval: str = Query("5m", description="Data interval (1m, 5m, 15m, 30m, 60m)"),
+    date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (defaults to today)"),
 ):
-    """Get intraday portfolio performance for today."""
+    """Get intraday portfolio performance for a given date (defaults to today)."""
     if portfolio is None:
         load_portfolio()
 
-    # Validate interval
     valid_intervals = ["1m", "2m", "5m", "15m", "30m", "60m", "90m"]
     if interval not in valid_intervals:
         raise HTTPException(
@@ -440,14 +486,31 @@ async def get_intraday(
             detail=f"Invalid interval. Must be one of: {', '.join(valid_intervals)}"
         )
 
-    cache_key = f"intraday_{interval}"
+    from datetime import date as _date
+    today = _date.today()
+    target_date = today
+    if date:
+        try:
+            target_date = _date.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+        if target_date > today:
+            raise HTTPException(status_code=400, detail="Date cannot be in the future.")
+
+    if target_date < today:
+        cache_key = f"intraday-hist_{target_date.isoformat()}_{interval}"
+    else:
+        cache_key = f"intraday_{interval}"
     cached = _get_api_cache(cache_key)
     if cached is not None:
         return cached
 
     try:
-        intraday_data = portfolio.get_intraday_values(interval=interval)
-        result = {"intraday": intraday_data}
+        if target_date == today:
+            intraday_data = portfolio.get_intraday_values(interval=interval)
+        else:
+            intraday_data = portfolio.get_intraday_values_for_date(target_date, interval=interval)
+        result = {"intraday": intraday_data, "date": target_date.isoformat()}
         _set_api_cache(cache_key, result)
         return result
     except Exception as e:

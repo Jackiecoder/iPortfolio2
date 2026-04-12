@@ -104,6 +104,8 @@ class Holding(BaseModel):
     holding_days: Optional[int] = None
     annualized_return: Optional[Decimal] = None
     weighted_annualized_return: Optional[Decimal] = None  # Per-lot cost-basis weighted CAGR
+    long_term_quantity: Optional[Decimal] = None
+    short_term_quantity: Optional[Decimal] = None
 
     def update_with_price(self, price: Decimal, prev_close: Optional[Decimal] = None) -> None:
         """Update holding with current market price."""

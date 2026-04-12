@@ -256,6 +256,21 @@ class Portfolio:
                 years_for_calc = max(years, Decimal("1"))
                 holding.annualized_return = holding.pnl_percent / years_for_calc
 
+            # Calculate long-term vs short-term quantity (1 year threshold)
+            if holding.symbol in self._lots:
+                lt_qty = Decimal("0")
+                st_qty = Decimal("0")
+                one_year_ago = today - timedelta(days=365)
+                for lot in self._lots[holding.symbol]:
+                    if lot.quantity <= 0:
+                        continue
+                    if lot.purchase_date <= one_year_ago:
+                        lt_qty += lot.quantity
+                    else:
+                        st_qty += lot.quantity
+                holding.long_term_quantity = lt_qty
+                holding.short_term_quantity = st_qty
+
             # Calculate per-lot cost-basis weighted CAGR
             if holding.current_price and holding.symbol in self._lots:
                 lots = self._lots[holding.symbol]
@@ -1146,6 +1161,128 @@ class Portfolio:
                 })
 
         logger.info(f"Intraday: Returning {len(results)} data points")
+        return results
+
+    def get_intraday_values_for_date(self, target_date: date, interval: str = "5m") -> list[dict]:
+        """Calculate intraday portfolio P&L for a specific historical date.
+
+        Works for dates within the last ~59 days (yfinance 5m/15m data limit).
+        Uses transaction replay so holdings reflect the actual positions on that date.
+        """
+        today = date.today()
+        if target_date == today:
+            return self.get_intraday_values(interval)
+
+        days_ago = (today - target_date).days
+        if days_ago < 0 or days_ago > 59:
+            return []
+
+        # Replay transactions to get holdings as of target_date
+        sorted_txns = sorted(self._transactions, key=lambda t: t.date)
+        temp_portfolio = Portfolio(adjust_splits=self._adjust_splits)
+        for txn in sorted_txns:
+            if txn.date <= target_date:
+                temp_portfolio._process_transaction(txn)
+
+        holdings = temp_portfolio.get_holdings(fetch_prices=False)
+        investment_holdings = [h for h in holdings if h.symbol != "CASH"]
+        if not investment_holdings:
+            return []
+
+        symbols = [h.symbol for h in investment_holdings]
+        quantities = {h.symbol: h.quantity for h in investment_holdings}
+
+        # Baseline: close of last trading day before target_date
+        prev_close_prices: dict[str, Optional[Decimal]] = {}
+        for symbol in symbols:
+            hist = price_service.get_historical_prices(
+                symbol,
+                datetime.combine(target_date - timedelta(days=10), datetime.min.time()),
+                datetime.combine(target_date - timedelta(days=1), datetime.max.time()),
+            )
+            if hist:
+                keys = sorted(k for k in hist.keys() if k < target_date)
+                if keys:
+                    prev_close_prices[symbol] = hist[keys[-1]]
+
+        baseline_value = sum(
+            quantities[s] * prev_close_prices[s]
+            for s in symbols if prev_close_prices.get(s) is not None
+        )
+        if not baseline_value:
+            return []
+
+        # Fetch intraday data with enough days to cover target_date
+        fetch_days = days_ago + 1  # +1 to include target_date itself in range(fetch_days)
+        all_intraday = price_service.get_intraday_prices_batch(symbols, interval, fetch_days)
+
+        target_date_str = target_date.isoformat()
+        intraday_prices = {
+            symbol: [p for p in prices if p.get("date") == target_date_str]
+            for symbol, prices in all_intraday.items()
+        }
+
+        all_times: set[str] = set()
+        for prices in intraday_prices.values():
+            for p in prices:
+                all_times.add(p["time"])
+
+        if not all_times:
+            return []
+
+        sorted_times = sorted(all_times)
+        results = []
+        last_prices = {s: prev_close_prices.get(s) for s in symbols}
+        zero_point_value = baseline_value
+
+        for time_str in sorted_times:
+            total_value = Decimal("0")
+            has_data = False
+
+            for symbol in symbols:
+                price_at_time = None
+                for p in intraday_prices.get(symbol, []):
+                    if p["time"] == time_str:
+                        price_at_time = p["price"]
+                        last_prices[symbol] = price_at_time
+                        break
+                if price_at_time is None:
+                    price_at_time = last_prices.get(symbol)
+                if price_at_time is not None:
+                    total_value += quantities[symbol] * price_at_time
+                    has_data = True
+
+            if has_data and total_value > 0:
+                daily_pnl = total_value - zero_point_value
+                daily_pnl_percent = (daily_pnl / zero_point_value * 100) if zero_point_value > 0 else Decimal("0")
+
+                asset_changes = []
+                for symbol in symbols:
+                    current_price = last_prices.get(symbol)
+                    prev_price = prev_close_prices.get(symbol)
+                    qty = quantities[symbol]
+                    if current_price is not None and prev_price is not None and prev_price > 0:
+                        asset_pnl = (current_price - prev_price) * qty
+                        asset_pnl_pct = ((current_price - prev_price) / prev_price) * 100
+                        asset_changes.append({
+                            "symbol": symbol,
+                            "pnl": float(asset_pnl),
+                            "pnl_percent": float(asset_pnl_pct),
+                            "prev_price": float(prev_price),
+                            "current_price": float(current_price),
+                        })
+                asset_changes.sort(key=lambda x: abs(x["pnl"]), reverse=True)
+
+                results.append({
+                    "time": time_str,
+                    "value": float(total_value),
+                    "baseline_value": float(zero_point_value),
+                    "daily_pnl": float(daily_pnl),
+                    "daily_pnl_percent": float(daily_pnl_percent),
+                    "asset_changes": asset_changes[:10],
+                })
+
+        logger.info(f"Historical intraday for {target_date}: {len(results)} data points")
         return results
 
     def get_multiday_intraday_values(self, interval: str = "15m", days: int = 3) -> list[dict]:

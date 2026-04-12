@@ -46,7 +46,7 @@ class PriceService:
         try:
             ticker = yf.Ticker(symbol)
             # Try intraday data first for real-time price
-            hist = ticker.history(period="1d", interval="1m")
+            hist = ticker.history(period="1d", interval="1m", prepost=True)
             if not hist.empty:
                 price = hist["Close"].iloc[-1]
                 decimal_price = Decimal(str(price))
@@ -98,6 +98,7 @@ class PriceService:
                 uncached_symbols,
                 period="1d",
                 interval="1m",
+                prepost=True,
                 progress=False,
                 group_by="ticker" if len(uncached_symbols) > 1 else None
             )
@@ -466,6 +467,18 @@ class PriceService:
         self._prev_close_cache[cache_key] = (results, datetime.now())
         return results
 
+    # yfinance rolling window for intraday data (days back from today)
+    _YF_INTRADAY_WINDOW = {"1m": 7, "2m": 60, "5m": 60, "15m": 60, "30m": 60, "60m": 60, "90m": 60}
+
+    def _yf_window_days(self, interval: str) -> int:
+        return self._YF_INTRADAY_WINDOW.get(interval, 60)
+
+    def _is_within_yf_window(self, date_str: str, interval: str) -> bool:
+        """True if yfinance still has data for this date (within its rolling window)."""
+        from datetime import date, timedelta
+        days_ago = (date.today() - date.fromisoformat(date_str)).days
+        return days_ago < self._yf_window_days(interval)
+
     def get_intraday_prices(
         self,
         symbol: str,
@@ -474,15 +487,20 @@ class PriceService:
     ) -> list[dict]:
         """Get intraday prices for a symbol.
 
+        Data source strategy per date:
+        - today: always yfinance (live)
+        - within yfinance window: yfinance is authoritative; DB is updated on every fetch
+          so stale/bad data gets corrected automatically
+        - beyond yfinance window: DB only (yfinance can't provide it anyway)
+
         Args:
             symbol: Yahoo Finance ticker symbol
             interval: Data interval (1m, 2m, 5m, 15m, 30m, 60m, 90m)
             days: Number of days of data to return (1 = today only, 3 = last 3 days)
 
         Returns:
-            List of {time, price} dictionaries
+            List of {time, date, timestamp, price} dictionaries
         """
-        import pandas as pd
         from datetime import date, timedelta
 
         intraday_key = f"{symbol}_{interval}_{days}"
@@ -491,60 +509,142 @@ class PriceService:
             if datetime.now() - cached_at < self.cache_ttl:
                 return data
 
+        today = date.today()
+        today_str = today.isoformat()
+        is_crypto = symbol.endswith('-USD')
+
+        if days == 1:
+            # Today only — always live
+            prices = self._fetch_intraday_from_yfinance(symbol, interval, 1, today, is_crypto)
+            # If the live fetch returned a *past* date (e.g. weekend), persist it
+            if prices:
+                date_str = prices[0]["date"]
+                if date_str < today_str:
+                    self._save_intraday_if_valid(symbol, date_str, interval, prices)
+            self._intraday_cache[intraday_key] = (prices, datetime.now())
+            return prices
+
+        # days > 1: mix of live + DB
+        db_only_prices: list[dict] = []   # dates outside yfinance window → DB only
+        needs_yf_dates: list[date] = []   # dates within window or today → yfinance
+
+        for i in range(days):
+            check_date = today - timedelta(days=i)
+            check_str = check_date.isoformat()
+            if check_str >= today_str or self._is_within_yf_window(check_str, interval):
+                needs_yf_dates.append(check_date)
+            else:
+                # Beyond yfinance window — use DB
+                cached = cache_service.get_intraday_prices(symbol, check_str, interval)
+                if cached:
+                    db_only_prices.extend(cached)
+                    logger.info(f"Intraday DB-only: {symbol} {check_str} [{interval}]")
+                # If not in DB either, data is simply unavailable
+
+        # Fetch everything yfinance can cover in one call
+        yf_prices: list[dict] = []
+        if needs_yf_dates:
+            oldest = min(needs_yf_dates)
+            live_days = (today - oldest).days + 1  # +1 so start_dt lands one day before oldest
+            yf_prices = self._fetch_intraday_from_yfinance(symbol, interval, live_days, today, is_crypto)
+
+            # Update DB for every completed day yfinance returned
+            fetched_by_date: dict[str, list[dict]] = {}
+            for p in yf_prices:
+                fetched_by_date.setdefault(p["date"], []).append(p)
+            for date_str, date_prices in fetched_by_date.items():
+                if date_str < today_str:
+                    # Always overwrite within the window so bad data gets corrected
+                    self._save_intraday_if_valid(symbol, date_str, interval, date_prices, overwrite=True)
+
+        all_prices = sorted(db_only_prices + yf_prices, key=lambda p: (p["date"], p["time"]))
+        self._intraday_cache[intraday_key] = (all_prices, datetime.now())
+        return all_prices
+
+    def _save_intraday_if_valid(
+        self,
+        symbol: str,
+        date_str: str,
+        interval: str,
+        prices: list[dict],
+        overwrite: bool = False,
+    ) -> bool:
+        """Validate and persist intraday bars. Returns True if saved.
+
+        Validation rules:
+        - Must have at least 30 bars (a very short day would have far more)
+        - All prices must be positive
+        """
+        if len(prices) < 30:
+            logger.warning(f"Skipping save for {symbol} {date_str} [{interval}]: only {len(prices)} bars (minimum 30)")
+            return False
+        if any(float(p["price"]) <= 0 for p in prices):
+            logger.warning(f"Skipping save for {symbol} {date_str} [{interval}]: non-positive price detected")
+            return False
+        if not overwrite and cache_service.has_intraday_prices(symbol, date_str, interval):
+            return False
+        cache_service.save_intraday_prices(symbol, date_str, interval, prices)
+        return True
+
+    def _fetch_intraday_from_yfinance(
+        self,
+        symbol: str,
+        interval: str,
+        days: int,
+        today,
+        is_crypto: bool,
+    ) -> list[dict]:
+        """Fetch intraday bars from yfinance for the given symbol/interval/days."""
+        import pandas as pd
+        from datetime import timedelta
+
+        # Cap days to yfinance's hard per-request window to avoid API errors
+        # (e.g. 1m allows only 7 days; requesting 10d raises a 400 error)
+        max_window = self._yf_window_days(interval)
+        safe_days = min(days, max_window)
+
         try:
             ticker = yf.Ticker(symbol)
-            # Get recent intraday data (fetch more days to ensure we have enough)
-            fetch_period = f"{max(days + 2, 5)}d"
-            history = ticker.history(period=fetch_period, interval=interval)
+            # Use start/end instead of period= to avoid the double-+2 overshoot
+            start_dt = today - timedelta(days=safe_days)
+            end_dt   = today + timedelta(days=1)   # yfinance end is exclusive
+            history = ticker.history(
+                start=start_dt.isoformat(),
+                end=end_dt.isoformat(),
+                interval=interval,
+                prepost=True,
+            )
 
-            logger.info(f"Intraday data for {symbol}: {len(history)} total rows")
-
+            logger.info(f"yfinance intraday for {symbol}: {len(history)} rows")
             if history.empty:
-                logger.warning(f"No intraday history for {symbol}")
                 return []
 
-            # Get the most recent trading date
             history.index = pd.to_datetime(history.index)
 
-            # For crypto (24/7), use today's date; for stocks, use the latest date in data
-            today = date.today()
-            is_crypto = symbol.endswith('-USD')
-
             if is_crypto:
-                # For crypto, filter from today back N days
                 end_date = today
             else:
-                # For stocks, use the most recent trading day in the data
                 last_timestamp = history.index[-1].to_pydatetime()
                 if last_timestamp.tzinfo is not None:
                     local_tz = datetime.now().astimezone().tzinfo
                     last_timestamp = last_timestamp.astimezone(local_tz).replace(tzinfo=None)
                 end_date = last_timestamp.date()
 
-                # For single-day intraday view (days=1), only return data if it's today
-                # On weekends/holidays, stocks should show no intraday data (use prev close)
                 if days == 1 and end_date != today:
-                    logger.info(f"Skipping intraday data for {symbol}: last trading day {end_date} != today {today}")
+                    logger.info(f"No intraday for {symbol}: last trading day {end_date} != {today}")
                     return []
 
-            # Calculate start date based on days parameter
-            start_date = end_date - timedelta(days=days - 1)
-
-            logger.info(f"Date range for {symbol}: {start_date} to {end_date} (crypto: {is_crypto})")
+            start_date = end_date - timedelta(days=safe_days - 1)
 
             prices = []
             for date_idx, row in history.iterrows():
                 try:
                     timestamp = date_idx.to_pydatetime()
-                    # Handle timezone-aware timestamps - convert to local time
                     if timestamp.tzinfo is not None:
                         local_tz = datetime.now().astimezone().tzinfo
                         timestamp = timestamp.astimezone(local_tz).replace(tzinfo=None)
-
-                    # Only include data within the date range
                     if timestamp.date() < start_date or timestamp.date() > end_date:
                         continue
-
                     close_price = row["Close"]
                     if pd.notna(close_price):
                         prices.append({
@@ -555,14 +655,12 @@ class PriceService:
                         })
                 except Exception as e:
                     logger.error(f"Error processing row for {symbol}: {e}")
-                    continue
 
-            logger.info(f"Returning {len(prices)} intraday prices for {symbol}")
-            self._intraday_cache[intraday_key] = (prices, datetime.now())
+            logger.info(f"yfinance returned {len(prices)} bars for {symbol} [{interval}]")
             return prices
 
         except Exception as e:
-            logger.error(f"Error fetching intraday prices for {symbol}: {e}")
+            logger.error(f"Error fetching intraday from yfinance for {symbol}: {e}")
             return []
 
     def get_intraday_prices_batch(

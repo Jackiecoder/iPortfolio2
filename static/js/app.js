@@ -13,7 +13,9 @@ let currentPerformanceData = null; // Store performance data for chart switching
 let portfolioPeriod = '1Y'; // Portfolio chart period (global for both value and investment views)
 
 // Current intraday interval
-let currentInterval = '5m';
+let currentInterval = '1m';
+// Current intraday date (null = today)
+let currentIntradayDate = null;
 
 // Anonymous mode
 let anonymousMode = localStorage.getItem('anonymousMode') === 'true';
@@ -139,6 +141,7 @@ let currentPeriod = '1M';
 let holdingsData = [];
 let holdingsSortColumn = 'market_value';
 let holdingsSortDirection = 'desc';
+let holdingsViewMode = 'category'; // 'flat' or 'category'
 
 // Sold assets data and sort state
 let soldData = null;
@@ -152,7 +155,7 @@ let targetAllocations = {};
 // Key = canonical name (used in targets.json), Value = array of symbols in the group
 const targetGroups = {
     'QQQM': ['QQQM', 'QQQ'],
-    'BTC-USD': ['BTC-USD', 'IBIT'],
+    'BTC-USD': ['BTC-USD', 'IBIT', 'MSTR'],
 };
 
 // Reverse lookup: symbol -> canonical group key
@@ -536,15 +539,17 @@ async function fetchSoldAssets(useCache = true) {
     }
 }
 
-async function fetchIntraday(interval = '5m', useCache = true) {
-    const cacheKey = `intraday_${interval}`;
+async function fetchIntraday(interval = '5m', date = null, useCache = true) {
+    const cacheKey = `intraday_${date || 'today'}_${interval}`;
     if (useCache) {
         const cached = apiCache.get(cacheKey);
         if (cached) return cached;
     }
 
     try {
-        const response = await fetch(`/api/intraday?interval=${interval}`);
+        let url = `/api/intraday?interval=${interval}`;
+        if (date) url += `&date=${date}`;
+        const response = await fetch(url);
         if (!response.ok) throw new Error('Failed to fetch intraday data');
         const data = await response.json();
         apiCache.set(cacheKey, data);
@@ -691,6 +696,189 @@ function updateSortIndicators() {
     });
 }
 
+function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
+    const dailyChangePct = h.daily_change_percent;
+    const dailyChangeAmt = h.daily_change_amount;
+    const dailyChangePctHtml = dailyChangePct !== null && dailyChangePct !== undefined
+        ? `<span class="${dailyChangePct >= 0 ? 'text-success' : 'text-danger'} daily-change">(${dailyChangePct >= 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%)</span>`
+        : '';
+    const dailyChangeAmtClass = dailyChangeAmt !== null && dailyChangeAmt !== undefined
+        ? (dailyChangeAmt >= 0 ? 'text-success' : 'text-danger')
+        : '';
+    const dailyChangeAmtText = dailyChangeAmt !== null && dailyChangeAmt !== undefined
+        ? `${dailyChangeAmt >= 0 ? '+' : ''}${formatCurrencyAlways(dailyChangeAmt)}`
+        : '--';
+
+    const annualReturn = h.annualized_return;
+    const holdingDays = h.holding_days;
+    const pnlPercent = h.pnl_percent;
+    const annualReturnClass = annualReturn !== null && annualReturn !== undefined
+        ? (annualReturn >= 0 ? 'text-success' : 'text-danger') : '';
+    const annualReturnText = annualReturn !== null && annualReturn !== undefined
+        ? `${annualReturn >= 0 ? '+' : ''}${annualReturn.toFixed(2)}%` : '--';
+
+    let annualTooltip = '';
+    if (holdingDays !== null && holdingDays !== undefined && pnlPercent !== null) {
+        const years = holdingDays / 365;
+        const yearsForCalc = Math.max(years, 1);
+        const pnlSign = pnlPercent >= 0 ? '+' : '';
+        annualTooltip = `title="${pnlSign}${pnlPercent.toFixed(2)}% / ${yearsForCalc.toFixed(2)} yrs\n(${holdingDays} days${years < 1 ? ', min 1yr' : ''})"`;
+    }
+
+    const weightedAnnualReturn = h.weighted_annualized_return;
+    const weightedAnnualReturnClass = weightedAnnualReturn !== null && weightedAnnualReturn !== undefined
+        ? (weightedAnnualReturn >= 0 ? 'text-success' : 'text-danger') : '';
+    const weightedAnnualReturnText = weightedAnnualReturn !== null && weightedAnnualReturn !== undefined
+        ? `${weightedAnnualReturn >= 0 ? '+' : ''}${weightedAnnualReturn.toFixed(2)}%` : '--';
+    const weightedAnnualTooltip = 'title="Per-lot cost-basis weighted CAGR"';
+
+    // Allocation %, Target %, Δ Target (group-aware)
+    const targetKey = getTargetKey(h.symbol);
+    const isGrouped = !!targetGroups[targetKey];
+    const groupMV = isGrouped ? getGroupMarketValue(h.symbol, holdings) : (h.market_value || 0);
+    const allocPct = totalInvValue > 0 ? (h.market_value || 0) / totalInvValue * 100 : 0;
+    const groupAllocPct = totalInvValue > 0 ? groupMV / totalInvValue * 100 : 0;
+    const targetPct = getTargetPct(h.symbol);
+    const hasTarget = targetPct != null && targetPct > 0;
+    const isCanonical = !isGrouped || targetKey === h.symbol;
+    const deltaTarget = hasTarget && isCanonical ? (targetPct / 100 * totalInvValue - groupMV) : null;
+
+    const groupAllocBadge = isGrouped ? ` <span class="cat-target-sum" title="${targetKey} group total">${groupAllocPct.toFixed(1)}%</span>` : '';
+    const allocPctText = `${allocPct.toFixed(1)}%${groupAllocBadge}`;
+    const allocTitle = isGrouped ? `title="${targetKey} group: ${groupAllocPct.toFixed(1)}%"` : '';
+    const category = getCategory(h.symbol);
+    const catTargetSum = categoryTargetSums[category];
+    const catSumHtml = catTargetSum != null ? `<span class="cat-target-sum" title="${category} target total">${catTargetSum.toFixed(1)}%</span>` : '';
+    const targetPctText = hasTarget ? `${targetPct.toFixed(1)}%` : '--';
+    // Non-canonical grouped members: hide target and delta columns
+    const targetCellContent = !isCanonical
+        ? ''
+        : `${targetPctText} ${catSumHtml}`;
+    let deltaTargetHtml = '';
+    if (deltaTarget !== null) {
+        const targetAmt = targetPct / 100 * totalInvValue;
+        const dtSign = deltaTarget >= 0 ? '+' : '';
+        const dtClass = deltaTarget >= 0 ? 'delta-buy' : 'delta-sell';
+        deltaTargetHtml = `<div class="delta-target-wrap"><span class="delta-target-amt">${formatCurrencyAlways(targetAmt)}</span><span class="${dtClass}">${dtSign}${formatCurrencyAlways(deltaTarget)}</span></div>`;
+    } else if (!isCanonical) {
+        deltaTargetHtml = '';
+    } else {
+        deltaTargetHtml = '<span class="text-muted">--</span>';
+    }
+
+    return `
+    <tr class="holding-row" data-symbol="${h.symbol}" style="cursor:pointer;">
+        <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${h.symbol}</strong></td>
+        <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<br><span class="text-muted" style="font-size:0.75em;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)} / ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</span>` : ''}</td>
+        <td data-col="2">${formatCurrency(h.avg_cost)}</td>
+        <td data-col="3">${formatCurrency(h.cost_basis)}</td>
+        <td data-col="4">${formatCurrencyAlways(h.current_price)} ${dailyChangePctHtml}</td>
+        <td data-col="5" class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
+        <td data-col="6">${formatCurrency(h.market_value)}</td>
+        <td data-col="7" ${allocTitle}>${allocPctText}</td>
+        <td data-col="8" class="target-pct-cell" data-symbol="${targetKey}">${targetCellContent}</td>
+        <td data-col="9">${deltaTargetHtml}</td>
+        <td data-col="10" class="${h.unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(h.unrealized_pnl)}</td>
+        <td data-col="11" class="${h.pnl_percent >= 0 ? 'text-success' : 'text-danger'}">${formatPercent(h.pnl_percent)}</td>
+        <td data-col="12" class="${annualReturnClass}" ${annualTooltip}>${annualReturnText}</td>
+        <td data-col="13" class="${weightedAnnualReturnClass}" ${weightedAnnualTooltip}>${weightedAnnualReturnText}</td>
+    </tr>`;
+}
+
+function buildTotalRowHtml(holdings, totalInvValue) {
+    const totalMV = holdings.reduce((s, h) => s + (h.market_value || 0), 0);
+    const totalCost = holdings.reduce((s, h) => s + (h.cost_basis || 0), 0);
+    const totalPnl = holdings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0);
+    const totalDaily = holdings.reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost * 100) : 0;
+
+    // Only count canonical target keys (skip orphaned non-canonical grouped symbols)
+    const canonicalTargets = Object.entries(targetAllocations).filter(([key]) => {
+        const group = symbolToGroup[key];
+        return !group || group === key; // keep if not grouped, or if it IS the canonical key
+    });
+    const targetSum = canonicalTargets.reduce((s, [, v]) => s + v, 0);
+    const targetSumText = targetSum > 0 ? `${targetSum.toFixed(1)}%` : '--';
+    const targetWarn = targetSum > 0 && Math.abs(targetSum - 100) > 0.1
+        ? `<span class="target-warn" title="Targets don't sum to 100%">&#9888;</span>` : '';
+
+    const netDelta = canonicalTargets.reduce((s, [key, pct]) => {
+        const members = targetGroups[key];
+        const mv = members
+            ? members.reduce((sum, m) => { const x = holdings.find(h => h.symbol === m); return sum + (x ? (x.market_value || 0) : 0); }, 0)
+            : (holdings.find(h => h.symbol === key)?.market_value || 0);
+        return s + (pct / 100 * totalInvValue - mv);
+    }, 0);
+    const hasAnyTarget = Object.keys(targetAllocations).length > 0;
+    const netDeltaClass = netDelta >= 0 ? 'delta-buy' : 'delta-sell';
+    const netDeltaSign = netDelta >= 0 ? '+' : '';
+    const netDeltaHtml = hasAnyTarget
+        ? `<span class="${netDeltaClass}">${netDeltaSign}${formatCurrencyAlways(netDelta)}</span>` : '--';
+
+    const totalDailyClass = totalDaily >= 0 ? 'text-success' : 'text-danger';
+    const totalDailySign = totalDaily >= 0 ? '+' : '';
+    const totalPnlClass = totalPnl >= 0 ? 'text-success' : 'text-danger';
+
+    return `
+        <tr class="total-row">
+            <td data-col="0"><strong>TOTAL</strong></td>
+            <td data-col="1"></td><td data-col="2"></td>
+            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong></td>
+            <td data-col="4"></td>
+            <td data-col="5" class="${totalDailyClass}"><strong>${totalDailySign}${formatCurrencyAlways(totalDaily)}</strong></td>
+            <td data-col="6"><strong>${formatCurrency(totalMV)}</strong></td>
+            <td data-col="7"><strong>100.0%</strong></td>
+            <td data-col="8"><strong>${targetSumText}</strong>${targetWarn}</td>
+            <td data-col="9">${netDeltaHtml}</td>
+            <td data-col="10" class="${totalPnlClass}"><strong>${formatCurrency(totalPnl)}</strong></td>
+            <td data-col="11" class="${totalPnlClass}"><strong>${formatPercent(totalPnlPct)}</strong></td>
+            <td data-col="12"></td><td data-col="13"></td>
+        </tr>`;
+}
+
+function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, categoryTargetSums) {
+    const catColors = { 'Crypto': '#f59e0b', 'Index': '#2563eb', 'Individual Stocks': '#8b5cf6', 'Cash': '#10b981' };
+    const color = catColors[catName] || '#6b7280';
+    const mv = catHoldings.reduce((s, h) => s + (h.market_value || 0), 0);
+    const cost = catHoldings.reduce((s, h) => s + (h.cost_basis || 0), 0);
+    const pnl = catHoldings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0);
+    const daily = catHoldings.reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    const pnlPct = cost > 0 ? (pnl / cost * 100) : 0;
+    const allocPct = totalInvValue > 0 ? (mv / totalInvValue * 100) : 0;
+    const catTargetSum = categoryTargetSums[catName];
+    const catTargetText = catTargetSum != null ? `${catTargetSum.toFixed(1)}%` : '--';
+
+    // Category Δ Target = target_market_value - actual_market_value
+    let catDeltaHtml = '';
+    if (catTargetSum != null && catTargetSum > 0) {
+        const catTargetMV = catTargetSum / 100 * totalInvValue;
+        const catDelta = catTargetMV - mv;
+        const dtSign = catDelta >= 0 ? '+' : '';
+        const dtClass = catDelta >= 0 ? 'delta-buy' : 'delta-sell';
+        catDeltaHtml = `<div class="delta-target-wrap"><span class="delta-target-amt">${formatCurrencyAlways(catTargetMV)}</span><strong><span class="${dtClass}">${dtSign}${formatCurrencyAlways(catDelta)}</span></strong></div>`;
+    }
+
+    const dailyClass = daily >= 0 ? 'text-success' : 'text-danger';
+    const dailySign = daily >= 0 ? '+' : '';
+    const pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+
+    return `
+        <tr class="category-header-row" style="background-color: #fef9e7; border-left: 4px solid ${color};">
+            <td data-col="0"><span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px;margin-right:6px;"></span><strong>${catName}</strong> <span class="text-muted">(${catHoldings.length})</span></td>
+            <td data-col="1"></td><td data-col="2"></td>
+            <td data-col="3"><strong>${formatCurrency(cost)}</strong></td>
+            <td data-col="4" class="${dailyClass}"><strong>${formatPercent(mv > 0 ? (daily / (mv - daily) * 100) : 0)}</strong></td>
+            <td data-col="5" class="${dailyClass}"><strong>${dailySign}${formatCurrencyAlways(daily)}</strong></td>
+            <td data-col="6"><strong>${formatCurrency(mv)}</strong></td>
+            <td data-col="7"><strong>${allocPct.toFixed(1)}%</strong></td>
+            <td data-col="8"><strong>${catTargetText}</strong></td>
+            <td data-col="9">${catDeltaHtml}</td>
+            <td data-col="10" class="${pnlClass}"><strong>${formatCurrency(pnl)}</strong></td>
+            <td data-col="11" class="${pnlClass}"><strong>${formatPercent(pnlPct)}</strong></td>
+            <td data-col="12"></td><td data-col="13"></td>
+        </tr>`;
+}
+
 function renderHoldingsTable(holdings) {
     const tbody = document.getElementById('holdingsBody');
 
@@ -712,7 +900,6 @@ function renderHoldingsTable(holdings) {
 
     // Pre-compute category target sums
     const categoryTargetSums = {};
-    // Collect unique target keys to avoid double-counting groups
     const seenTargetKeys = new Set();
     holdings.forEach(h => {
         const tKey = getTargetKey(h.symbol);
@@ -728,149 +915,34 @@ function renderHoldingsTable(holdings) {
     // Sort holdings
     const sortedHoldings = sortHoldings(holdings, holdingsSortColumn, holdingsSortDirection);
 
-    let rows = sortedHoldings.map(h => {
-        const dailyChangePct = h.daily_change_percent;
-        const dailyChangeAmt = h.daily_change_amount;
-        const dailyChangePctHtml = dailyChangePct !== null && dailyChangePct !== undefined
-            ? `<span class="${dailyChangePct >= 0 ? 'text-success' : 'text-danger'} daily-change">(${dailyChangePct >= 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%)</span>`
-            : '';
-        const dailyChangeAmtClass = dailyChangeAmt !== null && dailyChangeAmt !== undefined
-            ? (dailyChangeAmt >= 0 ? 'text-success' : 'text-danger')
-            : '';
-        const dailyChangeAmtText = dailyChangeAmt !== null && dailyChangeAmt !== undefined
-            ? `${dailyChangeAmt >= 0 ? '+' : ''}${formatCurrencyAlways(dailyChangeAmt)}`
-            : '--';
+    let rows = '';
 
-        // Annualized return with calculation tooltip
-        const annualReturn = h.annualized_return;
-        const holdingDays = h.holding_days;
-        const pnlPercent = h.pnl_percent;
-        const annualReturnClass = annualReturn !== null && annualReturn !== undefined
-            ? (annualReturn >= 0 ? 'text-success' : 'text-danger')
-            : '';
-        const annualReturnText = annualReturn !== null && annualReturn !== undefined
-            ? `${annualReturn >= 0 ? '+' : ''}${annualReturn.toFixed(2)}%`
-            : '--';
+    if (holdingsViewMode === 'category') {
+        // Group by category, preserving sort order within each group
+        const categoryOrder = ['Crypto', 'Index', 'Individual Stocks', 'Cash'];
+        const grouped = {};
+        sortedHoldings.forEach(h => {
+            const cat = getCategory(h.symbol);
+            if (!grouped[cat]) grouped[cat] = [];
+            grouped[cat].push(h);
+        });
+        // Sort categories: known order first, then any extras
+        const cats = Object.keys(grouped).sort((a, b) => {
+            const ai = categoryOrder.indexOf(a);
+            const bi = categoryOrder.indexOf(b);
+            return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+        });
 
-        // Build tooltip showing calculation
-        let annualTooltip = '';
-        if (holdingDays !== null && holdingDays !== undefined && pnlPercent !== null) {
-            const years = holdingDays / 365;
-            const yearsForCalc = Math.max(years, 1);
-            const pnlSign = pnlPercent >= 0 ? '+' : '';
-            annualTooltip = `title="${pnlSign}${pnlPercent.toFixed(2)}% / ${yearsForCalc.toFixed(2)} yrs\n(${holdingDays} days${years < 1 ? ', min 1yr' : ''})"`;
+        for (const cat of cats) {
+            const catHoldings = grouped[cat];
+            rows += buildCategorySubtotalHtml(cat, catHoldings, totalInvValue, categoryTargetSums);
+            rows += catHoldings.map(h => buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums)).join('');
         }
+    } else {
+        rows = sortedHoldings.map(h => buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums)).join('');
+    }
 
-        // Weighted annualized return (per-lot cost-basis weighted CAGR)
-        const weightedAnnualReturn = h.weighted_annualized_return;
-        const weightedAnnualReturnClass = weightedAnnualReturn !== null && weightedAnnualReturn !== undefined
-            ? (weightedAnnualReturn >= 0 ? 'text-success' : 'text-danger')
-            : '';
-        const weightedAnnualReturnText = weightedAnnualReturn !== null && weightedAnnualReturn !== undefined
-            ? `${weightedAnnualReturn >= 0 ? '+' : ''}${weightedAnnualReturn.toFixed(2)}%`
-            : '--';
-        const weightedAnnualTooltip = 'title="Per-lot cost-basis weighted CAGR"';
-
-        // Allocation %, Target %, Δ Target (group-aware)
-        const targetKey = getTargetKey(h.symbol);
-        const isGrouped = !!targetGroups[targetKey];
-        const groupMV = isGrouped ? getGroupMarketValue(h.symbol, holdings) : (h.market_value || 0);
-        const allocPct = totalInvValue > 0 ? (h.market_value || 0) / totalInvValue * 100 : 0;
-        const groupAllocPct = totalInvValue > 0 ? groupMV / totalInvValue * 100 : 0;
-        const targetPct = getTargetPct(h.symbol);
-        const hasTarget = targetPct != null && targetPct > 0;
-        // For grouped symbols, only show Δ Target on the canonical row (first member)
-        const isCanonical = !isGrouped || targetKey === h.symbol;
-        const deltaTarget = hasTarget && isCanonical ? (targetPct / 100 * totalInvValue - groupMV) : null;
-
-        const allocPctText = `${allocPct.toFixed(1)}%`;
-        // Show group alloc in tooltip for grouped symbols
-        const allocTitle = isGrouped ? `title="${targetKey} group: ${groupAllocPct.toFixed(1)}%"` : '';
-        const category = getCategory(h.symbol);
-        const catTargetSum = categoryTargetSums[category];
-        const catSumHtml = catTargetSum != null ? `<span class="cat-target-sum" title="${category} target total">${catTargetSum.toFixed(1)}%</span>` : '';
-        const targetPctText = hasTarget ? `${targetPct.toFixed(1)}%` : '--';
-        // Non-canonical grouped members show a subtle indicator instead of duplicate target
-        const targetCellContent = hasTarget && !isCanonical
-            ? `<span class="text-muted" title="Target set on ${targetKey}">${targetPct.toFixed(1)}%</span> ${catSumHtml}`
-            : `${targetPctText} ${catSumHtml}`;
-        let deltaTargetHtml = '';
-        if (deltaTarget !== null) {
-            const targetAmt = targetPct / 100 * totalInvValue;
-            const dtSign = deltaTarget >= 0 ? '+' : '';
-            const dtClass = deltaTarget >= 0 ? 'delta-buy' : 'delta-sell';
-            deltaTargetHtml = `<div class="delta-target-wrap"><span class="delta-target-amt">${formatCurrencyAlways(targetAmt)}</span><span class="${dtClass}">${dtSign}${formatCurrencyAlways(deltaTarget)}</span></div>`;
-        } else if (hasTarget && !isCanonical) {
-            deltaTargetHtml = `<span class="text-muted" title="See ${targetKey}">--</span>`;
-        } else {
-            deltaTargetHtml = '<span class="text-muted">--</span>';
-        }
-
-        return `
-        <tr class="holding-row" data-symbol="${h.symbol}" style="cursor:pointer;">
-            <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${h.symbol}</strong></td>
-            <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}</td>
-            <td data-col="2">${formatCurrency(h.avg_cost)}</td>
-            <td data-col="3">${formatCurrency(h.cost_basis)}</td>
-            <td data-col="4">${formatCurrencyAlways(h.current_price)} ${dailyChangePctHtml}</td>
-            <td data-col="5" class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
-            <td data-col="6">${formatCurrency(h.market_value)}</td>
-            <td data-col="7" ${allocTitle}>${allocPctText}</td>
-            <td data-col="8" class="target-pct-cell" data-symbol="${targetKey}">${targetCellContent}</td>
-            <td data-col="9">${deltaTargetHtml}</td>
-            <td data-col="10" class="${h.unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(h.unrealized_pnl)}</td>
-            <td data-col="11" class="${h.pnl_percent >= 0 ? 'text-success' : 'text-danger'}">${formatPercent(h.pnl_percent)}</td>
-            <td data-col="12" class="${annualReturnClass}" ${annualTooltip}>${annualReturnText}</td>
-            <td data-col="13" class="${weightedAnnualReturnClass}" ${weightedAnnualTooltip}>${weightedAnnualReturnText}</td>
-        </tr>
-    `}).join('');
-
-    // Total row
-    const totalMV = holdings.reduce((s, h) => s + (h.market_value || 0), 0);
-    const totalCost = holdings.reduce((s, h) => s + (h.cost_basis || 0), 0);
-    const totalPnl = holdings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0);
-    const totalDaily = holdings.reduce((s, h) => s + (h.daily_change_amount || 0), 0);
-    const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost * 100) : 0;
-
-    const targetSum = Object.values(targetAllocations).reduce((s, v) => s + v, 0);
-    const targetSumText = targetSum > 0 ? `${targetSum.toFixed(1)}%` : '--';
-    const targetWarn = targetSum > 0 && Math.abs(targetSum - 100) > 0.1
-        ? `<span class="target-warn" title="Targets don't sum to 100%">&#9888;</span>` : '';
-
-    const netDelta = Object.entries(targetAllocations).reduce((s, [key, pct]) => {
-        const members = targetGroups[key];
-        const mv = members
-            ? members.reduce((sum, m) => { const x = holdings.find(h => h.symbol === m); return sum + (x ? (x.market_value || 0) : 0); }, 0)
-            : (holdings.find(h => h.symbol === key)?.market_value || 0);
-        return s + (pct / 100 * totalInvValue - mv);
-    }, 0);
-    const hasAnyTarget = Object.keys(targetAllocations).length > 0;
-    const netDeltaClass = netDelta >= 0 ? 'delta-buy' : 'delta-sell';
-    const netDeltaSign = netDelta >= 0 ? '+' : '';
-    const netDeltaHtml = hasAnyTarget
-        ? `<span class="${netDeltaClass}">${netDeltaSign}${formatCurrencyAlways(netDelta)}</span>` : '--';
-
-    const totalDailyClass = totalDaily >= 0 ? 'text-success' : 'text-danger';
-    const totalDailySign = totalDaily >= 0 ? '+' : '';
-    const totalPnlClass = totalPnl >= 0 ? 'text-success' : 'text-danger';
-
-    rows += `
-        <tr class="total-row">
-            <td data-col="0"><strong>TOTAL</strong></td>
-            <td data-col="1"></td><td data-col="2"></td>
-            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong></td>
-            <td data-col="4"></td>
-            <td data-col="5" class="${totalDailyClass}"><strong>${totalDailySign}${formatCurrencyAlways(totalDaily)}</strong></td>
-            <td data-col="6"><strong>${formatCurrency(totalMV)}</strong></td>
-            <td data-col="7"><strong>100.0%</strong></td>
-            <td data-col="8"><strong>${targetSumText}</strong>${targetWarn}</td>
-            <td data-col="9">${netDeltaHtml}</td>
-            <td data-col="10" class="${totalPnlClass}"><strong>${formatCurrency(totalPnl)}</strong></td>
-            <td data-col="11" class="${totalPnlClass}"><strong>${formatPercent(totalPnlPct)}</strong></td>
-            <td data-col="12"></td><td data-col="13"></td>
-        </tr>
-    `;
-
+    rows += buildTotalRowHtml(holdings, totalInvValue);
     tbody.innerHTML = rows;
     updateSortIndicators();
 }
@@ -1573,14 +1645,13 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         let changePct = entry.daily_pnl_percent;
         let assetChanges = entry.asset_changes || [];
 
-        // Override today's entry with live intraday P&L (finer granularity)
-        if (dateStr === todayStr && todayDailyPnl !== null) {
-            change = todayDailyPnl;
-            changePct = todayDailyPnlPct;
-            // Use intraday asset_changes for today if available
-            if (intraday?.intraday?.length) {
-                const lastPoint = intraday.intraday[intraday.intraday.length - 1];
-                if (lastPoint.asset_changes?.length) assetChanges = lastPoint.asset_changes;
+        // Use intraday data for today if available (consistent header + breakdown)
+        if (dateStr === todayStr && intraday?.intraday?.length) {
+            const lastPoint = intraday.intraday[intraday.intraday.length - 1];
+            if (lastPoint.asset_changes?.length) assetChanges = lastPoint.asset_changes;
+            if (todayDailyPnl !== null) {
+                change = todayDailyPnl;
+                changePct = todayDailyPnlPct;
             }
         }
 
@@ -1605,7 +1676,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         const amountStr = `${sign}${formatCurrencyAlways(d.change)}`;
         const pctStr = `${sign}${d.changePct.toFixed(2)}%`;
 
-        const breakdownRows = d.assetChanges.map(a => {
+        const breakdownRows = [...d.assetChanges].sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl)).map(a => {
             const aSign = a.pnl >= 0 ? '+' : '';
             const aClass = a.pnl >= 0 ? 'text-success' : 'text-danger';
             return `<div class="daily-pnl-breakdown-row">
@@ -1721,7 +1792,10 @@ function updatePnlChart(performance) {
                 // Collect unique dates and draw dividers at midnight boundaries
                 const dates = [...new Set(data.map(d => getX(d)?.substring(0, 10)).filter(Boolean))];
 
-                // Compute daily P&L from chart data (boundary differences)
+                // Use backend daily P&L data (matches Daily P&L panel)
+                const backendDailyPnl = chart.data.datasets[0]?.dailyPnlMap || {};
+
+                // Fallback: compute from chart data if backend data not available
                 const firstValByDate = {};
                 for (const d of data) {
                     const dateStr = getX(d)?.substring(0, 10);
@@ -1747,7 +1821,7 @@ function updatePnlChart(performance) {
                     ctx.fillStyle = '#9ca3af';
                     ctx.textAlign = 'left';
                     ctx.fillText(dateStr.substring(5), x + 4, yAxis.top + 12);
-                    const dailyChange = chartDailyPnl[dateStr];
+                    const dailyChange = backendDailyPnl[dateStr] != null ? backendDailyPnl[dateStr] : chartDailyPnl[dateStr];
                     if (dailyChange != null) {
                         const sign = dailyChange >= 0 ? '+' : '';
                         ctx.font = 'bold 10px sans-serif';
@@ -1777,29 +1851,87 @@ function updatePnlChart(performance) {
                     drawDayLabel(x, dates[di]);
                 }
             } else if (!isTime) {
-                // Category-based dividers (legacy)
                 const labels = chart.data.labels;
-                if (labels && labels.length > 1 && labels[0] && labels[0].includes('T')) {
-                    let prevDate = labels[0].substring(0, 10);
-                    for (let i = 1; i < labels.length; i++) {
-                        const currDate = labels[i].substring(0, 10);
-                        if (currDate !== prevDate) {
+                if (labels && labels.length > 1) {
+                    const hasIntraday = labels[0] && labels[0].includes('T');
+                    if (hasIntraday) {
+                        // Intraday category dividers (per day boundary)
+                        let prevDate = labels[0].substring(0, 10);
+                        for (let i = 1; i < labels.length; i++) {
+                            const currDate = labels[i].substring(0, 10);
+                            if (currDate !== prevDate) {
+                                const x = xAxis.getPixelForValue(i);
+                                ctx.save();
+                                ctx.beginPath();
+                                ctx.setLineDash([4, 4]);
+                                ctx.strokeStyle = 'rgba(156, 163, 175, 0.5)';
+                                ctx.lineWidth = 1;
+                                ctx.moveTo(x, yAxis.top);
+                                ctx.lineTo(x, yAxis.bottom);
+                                ctx.stroke();
+                                ctx.setLineDash([]);
+                                ctx.font = '11px sans-serif';
+                                ctx.fillStyle = '#9ca3af';
+                                ctx.textAlign = 'left';
+                                ctx.fillText(currDate.substring(5), x + 4, yAxis.top + 12);
+                                ctx.restore();
+                                prevDate = currDate;
+                            }
+                        }
+                    } else {
+                        // Daily data dividers — interval based on data range
+                        const totalDays = labels.length;
+                        let interval;
+                        if (totalDays <= 14) interval = 1;
+                        else if (totalDays <= 45) interval = 3;
+                        else if (totalDays <= 120) interval = 7;
+                        else if (totalDays <= 400) interval = 30;
+                        else interval = 90;
+
+                        const pnlValues = data.map(d => getY(d));
+
+                        // Draw start date label + P&L at left edge
+                        const drawDailyLabel = (x, dateStr, pnlChange) => {
+                            ctx.save();
+                            ctx.setLineDash([]);
+                            ctx.font = '10px sans-serif';
+                            ctx.fillStyle = '#9ca3af';
+                            ctx.textAlign = 'left';
+                            ctx.fillText(dateStr.substring(5), x + 3, yAxis.top + 12);
+                            if (pnlChange != null) {
+                                const sign = pnlChange >= 0 ? '+' : '';
+                                ctx.font = 'bold 9px sans-serif';
+                                ctx.fillStyle = pnlChange >= 0 ? '#10b981' : '#ef4444';
+                                ctx.fillText(anonymousMode ? '***' : sign + formatCurrencyAlways(pnlChange), x + 3, yAxis.top + 24);
+                            }
+                            ctx.restore();
+                        };
+
+                        // Start date label
+                        drawDailyLabel(xAxis.left, labels[0], null);
+
+                        let prevIdx = 0;
+                        for (let i = interval; i < labels.length; i += interval) {
+                            const dateStr = labels[i];
+                            if (!dateStr) continue;
                             const x = xAxis.getPixelForValue(i);
+
+                            // Vertical dashed line
                             ctx.save();
                             ctx.beginPath();
                             ctx.setLineDash([4, 4]);
-                            ctx.strokeStyle = 'rgba(156, 163, 175, 0.5)';
+                            ctx.strokeStyle = 'rgba(156, 163, 175, 0.4)';
                             ctx.lineWidth = 1;
                             ctx.moveTo(x, yAxis.top);
                             ctx.lineTo(x, yAxis.bottom);
                             ctx.stroke();
-                            ctx.setLineDash([]);
-                            ctx.font = '11px sans-serif';
-                            ctx.fillStyle = '#9ca3af';
-                            ctx.textAlign = 'left';
-                            ctx.fillText(currDate.substring(5), x + 4, yAxis.top + 12);
                             ctx.restore();
-                            prevDate = currDate;
+
+                            // P&L change from previous divider to this one
+                            const pnlChange = (pnlValues[i] != null && pnlValues[prevIdx] != null)
+                                ? pnlValues[i] - pnlValues[prevIdx] : null;
+                            drawDailyLabel(x, dateStr, pnlChange);
+                            prevIdx = i;
                         }
                     }
                 }
@@ -1988,20 +2120,50 @@ const marketHoursPlugin = {
         const dataset = chart.data.datasets[0];
         const data = dataset.data;
 
-        // Only draw market open/close lines if today is a trading day
-        if (isMarketDay()) {
-            // Find indices for market open (09:30) and close (16:00)
-            const openIndex = labels.findIndex(l => l === '09:30');
+        // Determine which date this chart is showing (null = today)
+        const chartDate = currentIntradayDate
+            ? new Date(currentIntradayDate + 'T12:00:00')  // noon avoids UTC-offset day-shift
+            : new Date();
+        // Only draw market hour lines if the displayed date is a trading day
+        if (isMarketDay(chartDate)) {
+            const openIndex  = labels.findIndex(l => l === '09:30');
             const closeIndex = labels.findIndex(l => l === '16:00');
+            const preIndex   = labels.findIndex(l => l === '04:00');
+            const ahIndex    = labels.findIndex(l => l === '20:00');
 
             ctx.save();
+            ctx.font = '11px sans-serif';
+
+            // Pre-market (04:00) and post-market (20:00) — subtler style
+            ctx.setLineDash([3, 6]);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = '#6b7280';
+            ctx.fillStyle = '#6b7280';
+
+            if (preIndex !== -1) {
+                const x = xAxis.getPixelForValue(preIndex);
+                ctx.beginPath();
+                ctx.moveTo(x, yAxis.top);
+                ctx.lineTo(x, yAxis.bottom);
+                ctx.stroke();
+                ctx.fillText('Pre', x + 4, yAxis.top + 12);
+            }
+
+            if (ahIndex !== -1) {
+                const x = xAxis.getPixelForValue(ahIndex);
+                ctx.beginPath();
+                ctx.moveTo(x, yAxis.top);
+                ctx.lineTo(x, yAxis.bottom);
+                ctx.stroke();
+                ctx.fillText('AH', x + 4, yAxis.top + 12);
+            }
+
+            // Market open (09:30) and close (16:00) — solid style
             ctx.setLineDash([5, 5]);
             ctx.lineWidth = 1;
             ctx.strokeStyle = '#9ca3af';
-            ctx.font = '11px sans-serif';
-            ctx.fillStyle = '#6b7280';
+            ctx.fillStyle = '#9ca3af';
 
-            // Draw market open line
             if (openIndex !== -1) {
                 const x = xAxis.getPixelForValue(openIndex);
                 ctx.beginPath();
@@ -2011,7 +2173,6 @@ const marketHoursPlugin = {
                 ctx.fillText('Open', x + 4, yAxis.top + 12);
             }
 
-            // Draw market close line
             if (closeIndex !== -1) {
                 const x = xAxis.getPixelForValue(closeIndex);
                 ctx.beginPath();
@@ -2099,7 +2260,11 @@ function updateIntradayChart(intraday, interval = '5m') {
 
     if (intradayChart) {
         intradayChart.destroy();
+        intradayChart = null;
     }
+    // Explicitly clear the canvas — Chart.js destroy() removes internal state
+    // but does NOT wipe canvas pixels, so old curves would still be visible.
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
     if (!intraday || !intraday.intraday || intraday.intraday.length === 0) {
         ctx.font = '14px sans-serif';
@@ -2239,7 +2404,7 @@ function updateIntradayChart(intraday, interval = '5m') {
                         // Top Movers
                         const assetChanges = dataset.assetChangesData[dataIndex];
                         if (assetChanges && assetChanges.length > 0) {
-                            const nonZero = assetChanges.filter(a => Math.abs(a.pnl) >= 0.01);
+                            const nonZero = assetChanges.filter(a => Math.abs(a.pnl) >= 0.01).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
                             if (nonZero.length > 0) {
                                 html += `<div style="color:#6b7280;margin-top:6px;border-top:1px solid #374151;padding-top:4px">── Top Movers ──</div>`;
                                 nonZero.forEach(asset => {
@@ -2747,11 +2912,12 @@ async function loadPerformanceData(period) {
     }
 }
 
-// Load intraday data for a specific interval
-async function loadIntradayData(interval) {
+// Load intraday data for a specific interval and/or date
+async function loadIntradayData(interval, date = undefined, useCache = true) {
     currentInterval = interval;
+    if (date !== undefined) currentIntradayDate = date;
 
-    // Update button states for Bootstrap
+    // Update button states
     document.querySelectorAll('.interval-btn').forEach(btn => {
         if (btn.dataset.interval === interval) {
             btn.classList.remove('btn-outline-secondary');
@@ -2762,14 +2928,26 @@ async function loadIntradayData(interval) {
         }
     });
 
-    const intraday = await fetchIntraday(interval);
-    if (intraday) {
-        updateIntradayChart(intraday, interval);
+    // Show blocking overlay only when the user explicitly switches date
+    const overlay = document.getElementById('intradayLoadingOverlay');
+    if (date !== undefined && overlay) overlay.style.display = 'flex';
+
+    try {
+        const intraday = await fetchIntraday(interval, currentIntradayDate, useCache);
+        if (intraday) {
+            updateIntradayChart(intraday, interval);
+        }
+    } finally {
+        if (overlay) overlay.style.display = 'none';
     }
 }
 
 // Main data loading function
 async function loadAllData() {
+    // Snapshot state at function start to guard against mid-flight date/interval changes
+    const snapshotDate = currentIntradayDate;
+    const snapshotInterval = currentInterval;
+
     // Fetch targets alongside other data
     fetchTargets();
 
@@ -2779,7 +2957,7 @@ async function loadAllData() {
         fetchPerformance('ALL'),  // Fetch all data for annual table
         fetchDividends(),
         fetchSoldAssets(),
-        fetchIntraday(currentInterval)
+        fetchIntraday(snapshotInterval, snapshotDate)
     ];
 
     // For 3D/1W the P&L chart is built from dailyPnl + intraday (fetched below).
@@ -2811,8 +2989,9 @@ async function loadAllData() {
         updateAllocationChart(summary.holdings, allocationView);
     }
 
-    if (intraday) {
-        updateIntradayChart(intraday, currentInterval);
+    // Only update the chart if the user hasn't switched date/interval mid-flight
+    if (intraday && currentIntradayDate === snapshotDate && currentInterval === snapshotInterval) {
+        updateIntradayChart(intraday, snapshotInterval);
     }
 
     // Handle P&L chart - always delegate to loadPerformanceData for consistent behavior
@@ -2959,6 +3138,41 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.addEventListener('click', () => {
             const interval = btn.dataset.interval;
             loadIntradayData(interval);
+        });
+    });
+
+    // Date picker for intraday chart
+    const datePicker = document.getElementById('intradayDatePicker');
+    if (datePicker) {
+        // Set max to today and default to today
+        const todayStr = new Date().toISOString().slice(0, 10);
+        datePicker.max = todayStr;
+        datePicker.value = todayStr;
+
+        datePicker.addEventListener('change', () => {
+            const selectedDate = datePicker.value;
+            const todayVal = new Date().toISOString().slice(0, 10);
+            // null means today (uses the live endpoint without date param)
+            const dateParam = selectedDate === todayVal ? null : selectedDate;
+            // Always bypass frontend cache when user explicitly switches dates
+            loadIntradayData(currentInterval, dateParam, false);
+        });
+    }
+
+    // Holdings view mode toggle (All / Category)
+    document.querySelectorAll('.holdings-view-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            holdingsViewMode = btn.dataset.view;
+            document.querySelectorAll('.holdings-view-btn').forEach(b => {
+                if (b.dataset.view === holdingsViewMode) {
+                    b.classList.remove('btn-outline-secondary');
+                    b.classList.add('btn-primary', 'active');
+                } else {
+                    b.classList.remove('btn-primary', 'active');
+                    b.classList.add('btn-outline-secondary');
+                }
+            });
+            renderHoldingsTable(holdingsData);
         });
     });
 
@@ -3248,12 +3462,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load data
     loadAllData();
 
-    // Auto-start 5-minute refresh
-    startAutoRefresh(300);
-    // Mark the 5 minutes option as active
+    // Auto-start 1-minute refresh
+    startAutoRefresh(60);
+    // Mark the 1 minute option as active
     document.querySelectorAll('.auto-refresh-option').forEach(opt => {
         opt.classList.remove('active');
-        if (opt.dataset.interval === '300') {
+        if (opt.dataset.interval === '60') {
             opt.classList.add('active');
         }
     });

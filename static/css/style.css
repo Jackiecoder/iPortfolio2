@@ -1,5 +1,25 @@
 /* Portfolio Tracker Custom Styles - Bootstrap Enhancement */
 
+/* Intraday loading overlay */
+#intradayLoadingOverlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+}
+
+.intraday-loading-box {
+    background: #fff;
+    border-radius: 12px;
+    padding: 2rem 2.5rem;
+    text-align: center;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    min-width: 200px;
+}
+
 :root {
     --success-color: #198754;
     --danger-color: #dc3545;
@@ -420,6 +440,14 @@ body {
     border-radius: 3px;
     margin-left: 3px;
     white-space: nowrap;
+}
+
+/* Category header row in holdings table */
+.category-header-row td {
+    padding-top: 0.6rem !important;
+    padding-bottom: 0.6rem !important;
+    font-size: 0.9rem;
+    background-color: #fef9e7 !important;
 }
 
 /* Column toggle dropdown */
