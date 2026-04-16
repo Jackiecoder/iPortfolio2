@@ -92,6 +92,7 @@
                             <i class="bi bi-graph-up-arrow me-1"></i>Total P&L
                         </h6>
                         <p class="card-text fs-4 fw-bold mb-0" id="totalPnl">--</p>
+                        <p class="card-text fs-6 mb-0" id="totalReturn">--</p>
                     </div>
                 </div>
             </div>
@@ -99,19 +100,10 @@
                 <div class="card h-100 border-0 shadow-sm">
                     <div class="card-body text-center">
                         <h6 class="card-subtitle mb-2 text-muted">
-                            <i class="bi bi-percent me-1"></i>Total Return
+                            <i class="bi bi-calendar-check me-1"></i>YTD P&L
                         </h6>
-                        <p class="card-text fs-4 fw-bold mb-0" id="totalReturn">--</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-6 col-md-4 col-lg">
-                <div class="card h-100 border-0 shadow-sm">
-                    <div class="card-body text-center">
-                        <h6 class="card-subtitle mb-2 text-muted">
-                            <i class="bi bi-piggy-bank me-1"></i>Dividends
-                        </h6>
-                        <p class="card-text fs-4 fw-bold mb-0" id="totalDividends">--</p>
+                        <p class="card-text fs-4 fw-bold mb-0" id="ytdPnl">--</p>
+                        <p class="card-text fs-6 mb-0" id="ytdPnlPercent">--</p>
                     </div>
                 </div>
             </div>
@@ -123,12 +115,7 @@
                 <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Intraday P&L</h5>
                 <div class="d-flex align-items-center gap-2 flex-wrap">
                     <input type="date" id="intradayDatePicker" class="form-control form-control-sm" style="width:140px;">
-                    <div class="btn-group btn-group-sm" role="group">
-                        <button class="btn btn-primary interval-btn active" data-interval="1m">1m</button>
-                        <button class="btn btn-outline-secondary interval-btn" data-interval="5m">5m</button>
-                        <button class="btn btn-outline-secondary interval-btn" data-interval="15m">15m</button>
-                        <button class="btn btn-outline-secondary interval-btn" data-interval="30m">30m</button>
-                    </div>
+                    <span id="intradayIntervalBadge" class="badge bg-secondary px-2 py-1" style="font-size:0.8rem;">--</span>
                 </div>
             </div>
             <div class="card-body">
@@ -147,10 +134,10 @@
                         <div class="btn-group btn-group-sm" role="group">
                             <button class="btn btn-outline-secondary period-btn" data-period="3D">3D</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="1W">1W</button>
-                            <button class="btn btn-primary period-btn active" data-period="1M">1M</button>
+                            <button class="btn btn-outline-secondary period-btn" data-period="1M">1M</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="3M">3M</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="6M">6M</button>
-                            <button class="btn btn-outline-secondary period-btn" data-period="YTD">YTD</button>
+                            <button class="btn btn-primary period-btn active" data-period="YTD">YTD</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="1Y">1Y</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="3Y">3Y</button>
                             <button class="btn btn-outline-secondary period-btn" data-period="5Y">5Y</button>
@@ -262,7 +249,7 @@
                                 <th class="sortable" data-sort="symbol" data-col="0">Symbol <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th class="sortable" data-sort="quantity" data-col="1">Quantity <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th class="sortable" data-sort="avg_cost" data-col="2">Avg Cost <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="cost_basis" data-col="3">Cost Basis <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th class="sortable" data-sort="cost_basis" data-col="3">Invested <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th class="sortable" data-sort="current_price" data-col="4">Price <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th class="sortable" data-sort="daily_change_amount" data-col="5">Today <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th class="sortable" data-sort="market_value" data-col="6">Market Value <i class="bi bi-arrow-down-up sort-icon"></i></th>
@@ -440,6 +427,6 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/app.js?v=82"></script>
+    <script src="/static/js/app.js?v=85"></script>
 </body>
 </html>

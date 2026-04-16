@@ -525,16 +525,26 @@ class PriceService:
             return prices
 
         # days > 1: mix of live + DB
-        db_only_prices: list[dict] = []   # dates outside yfinance window → DB only
-        needs_yf_dates: list[date] = []   # dates within window or today → yfinance
+        db_only_prices: list[dict] = []   # served from DB (window or beyond)
+        needs_yf_dates: list[date] = []   # must be fetched live from yfinance
 
         for i in range(days):
             check_date = today - timedelta(days=i)
             check_str = check_date.isoformat()
-            if check_str >= today_str or self._is_within_yf_window(check_str, interval):
+            if check_str >= today_str:
+                # Today — always fetch live (never cached)
                 needs_yf_dates.append(check_date)
+            elif self._is_within_yf_window(check_str, interval):
+                # Completed day within window: prefer DB if we already have it,
+                # otherwise fall back to yfinance (and save the result)
+                cached = cache_service.get_intraday_prices(symbol, check_str, interval)
+                if cached:
+                    db_only_prices.extend(cached)
+                    logger.info(f"Intraday DB hit (within window): {symbol} {check_str} [{interval}]")
+                else:
+                    needs_yf_dates.append(check_date)
             else:
-                # Beyond yfinance window — use DB
+                # Beyond yfinance window — DB only
                 cached = cache_service.get_intraday_prices(symbol, check_str, interval)
                 if cached:
                     db_only_prices.extend(cached)

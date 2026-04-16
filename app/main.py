@@ -213,7 +213,26 @@ async def get_summary():
         return cached
 
     try:
+        from datetime import date as _date
         summary = portfolio.get_portfolio_summary(fetch_prices=True)
+
+        # YTD P&L: change in (investment_value - cost_basis) since Jan 1
+        ytd_pnl = 0.0
+        ytd_pnl_percent = 0.0
+        today = _date.today()
+        ytd_history = portfolio.get_historical_values(
+            start_date=_date(today.year, 1, 1), end_date=today
+        )
+        if ytd_history and len(ytd_history) >= 2:
+            first = ytd_history[0]
+            last  = ytd_history[-1]
+            first_inv_pnl = float(first["investment_value"]) - float(first["cost_basis"])
+            last_inv_pnl  = float(last["investment_value"])  - float(last["cost_basis"])
+            ytd_pnl = last_inv_pnl - first_inv_pnl
+            first_total = float(first["value"])
+            if first_total > 0:
+                ytd_pnl_percent = ytd_pnl / first_total * 100
+
         result = {
             "total_cost_basis": float(summary.total_cost_basis),
             "total_market_value": float(summary.total_market_value),
@@ -226,6 +245,8 @@ async def get_summary():
             "total_fees": float(summary.total_fees),
             "all_time_cost_basis": float(summary.all_time_cost_basis),
             "weighted_annualized_return": float(summary.weighted_annualized_return) if summary.weighted_annualized_return else None,
+            "ytd_pnl": ytd_pnl,
+            "ytd_pnl_percent": ytd_pnl_percent,
             "holdings": [
                 {
                     "symbol": h.symbol,

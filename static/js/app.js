@@ -135,7 +135,7 @@ function getCategory(symbol) {
 }
 
 // Current selected period
-let currentPeriod = '1M';
+let currentPeriod = 'YTD';
 
 // Holdings data and sort state
 let holdingsData = [];
@@ -287,6 +287,19 @@ function formatCurrencyAlways(value) {
         currency: 'USD',
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
+    }).format(value);
+}
+
+const PRICE_4DP_SYMBOLS = new Set(['ADA-USD', 'NIGHT-USD', 'ADA', 'NIGHT']);
+function formatPrice(symbol, value, alwaysShow = false) {
+    if (value === null || value === undefined) return '--';
+    if (anonymousMode && !alwaysShow) return '***';
+    const dp = PRICE_4DP_SYMBOLS.has((symbol || '').toUpperCase()) ? 4 : 2;
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: dp,
+        maximumFractionDigits: dp
     }).format(value);
 }
 
@@ -631,11 +644,22 @@ function updateSummaryCards(summary) {
 
     const returnElement = document.getElementById('totalReturn');
     returnElement.textContent = formatPercent(summary.total_pnl_percent);
-    returnElement.className = `card-text fs-4 fw-bold mb-0 has-tooltip ${summary.total_pnl_percent >= 0 ? 'text-success' : 'text-danger'}`;
+    returnElement.className = `card-text fs-6 mb-0 has-tooltip ${summary.total_pnl_percent >= 0 ? 'text-success' : 'text-danger'}`;
     const returnTooltip = `Total Return = (Realized + Unrealized) / All-Time Cost\nRealized P&L: ${formatCurrency(summary.total_realized_pnl)}\nUnrealized P&L: ${formatCurrency(summary.total_unrealized_pnl)}\nTotal P&L: ${formatCurrency(summary.total_pnl)}\nAll-Time Cost: ${formatCurrency(summary.all_time_cost_basis)}\n= ${formatPercent(summary.total_pnl_percent)}`;
     returnElement.dataset.tooltip = returnTooltip;
 
-    document.getElementById('totalDividends').textContent = formatCurrency(summary.total_dividends);
+    const ytdPnl = summary.ytd_pnl ?? 0;
+    const ytdPct = summary.ytd_pnl_percent ?? 0;
+    const ytdColor = ytdPnl >= 0 ? 'text-success' : 'text-danger';
+    const ytdSign = ytdPnl >= 0 ? '+' : '';
+
+    const ytdPnlEl = document.getElementById('ytdPnl');
+    ytdPnlEl.textContent = `${ytdSign}${formatCurrencyAlways(ytdPnl)}`;
+    ytdPnlEl.className = `card-text fs-4 fw-bold mb-0 ${ytdColor}`;
+
+    const ytdPctEl = document.getElementById('ytdPnlPercent');
+    ytdPctEl.textContent = `${ytdSign}${ytdPct.toFixed(2)}%`;
+    ytdPctEl.className = `card-text fs-6 mb-0 ${ytdColor}`;
 }
 
 function sortHoldings(holdings, column, direction) {
@@ -770,9 +794,9 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
     <tr class="holding-row" data-symbol="${h.symbol}" style="cursor:pointer;">
         <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${h.symbol}</strong></td>
         <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<br><span class="text-muted" style="font-size:0.75em;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)} / ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</span>` : ''}</td>
-        <td data-col="2">${formatCurrency(h.avg_cost)}</td>
+        <td data-col="2">${formatPrice(h.symbol, h.avg_cost)}</td>
         <td data-col="3">${formatCurrency(h.cost_basis)}</td>
-        <td data-col="4">${formatCurrencyAlways(h.current_price)} ${dailyChangePctHtml}</td>
+        <td data-col="4">${formatPrice(h.symbol, h.current_price, true)} ${dailyChangePctHtml}</td>
         <td data-col="5" class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
         <td data-col="6">${formatCurrency(h.market_value)}</td>
         <td data-col="7" ${allocTitle}>${allocPctText}</td>
@@ -1005,7 +1029,7 @@ async function toggleTransactionDetail(holdingRow) {
 
     const rows = txns.map(t => {
         const qty = t.quantity !== null ? formatNumber(t.quantity, 4) : '--';
-        const price = t.ave_price !== null ? formatCurrency(t.ave_price) : '--';
+        const price = t.ave_price !== null ? formatPrice(symbol, t.ave_price, true) : '--';
         const amount = t.amount !== null ? formatCurrencyAlways(t.amount) : '--';
         return `<tr>
             <td>${t.date}</td>
@@ -1232,9 +1256,9 @@ function renderSoldTable() {
         <tr>
             <td>${getAssetIconHtml(s.symbol)}<strong>${s.symbol}</strong></td>
             <td>${formatNumber(s.quantity, 4)}</td>
-            <td>${formatCurrency(s.avg_cost)}</td>
+            <td>${formatPrice(s.symbol, s.avg_cost)}</td>
             <td>${formatCurrency(s.cost_basis)}</td>
-            <td>${formatCurrency(s.avg_sell_price)}</td>
+            <td>${formatPrice(s.symbol, s.avg_sell_price)}</td>
             <td>${formatCurrency(s.proceeds)}</td>
             <td class="${s.pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(s.pnl)}</td>
             <td class="${s.pnl_percent >= 0 ? 'text-success' : 'text-danger'}">${formatPercent(s.pnl_percent)}</td>
@@ -2912,30 +2936,38 @@ async function loadPerformanceData(period) {
     }
 }
 
-// Load intraday data for a specific interval and/or date
-async function loadIntradayData(interval, date = undefined, useCache = true) {
-    currentInterval = interval;
-    if (date !== undefined) currentIntradayDate = date;
+// Update the read-only interval badge in the Intraday card header
+function updateIntradayIntervalBadge(interval) {
+    const badge = document.getElementById('intradayIntervalBadge');
+    if (badge) badge.textContent = interval || '--';
+}
 
-    // Update button states
-    document.querySelectorAll('.interval-btn').forEach(btn => {
-        if (btn.dataset.interval === interval) {
-            btn.classList.remove('btn-outline-secondary');
-            btn.classList.add('btn-primary', 'active');
-        } else {
-            btn.classList.remove('btn-primary', 'active');
-            btn.classList.add('btn-outline-secondary');
+// Try intervals in order (finest first) and return the first that has data
+async function fetchIntradayAutoInterval(date = null, useCache = true) {
+    const intervals = ['1m', '5m', '15m', '30m'];
+    for (const interval of intervals) {
+        const data = await fetchIntraday(interval, date, useCache);
+        if (data && data.intraday && data.intraday.length > 0) {
+            return { data, interval };
         }
-    });
+    }
+    return { data: null, interval: '1m' };
+}
+
+// Load intraday data for a given date, auto-selecting the finest available interval
+async function loadIntradayData(date = undefined, useCache = true) {
+    if (date !== undefined) currentIntradayDate = date;
 
     // Show blocking overlay only when the user explicitly switches date
     const overlay = document.getElementById('intradayLoadingOverlay');
     if (date !== undefined && overlay) overlay.style.display = 'flex';
 
     try {
-        const intraday = await fetchIntraday(interval, currentIntradayDate, useCache);
-        if (intraday) {
-            updateIntradayChart(intraday, interval);
+        const { data, interval } = await fetchIntradayAutoInterval(currentIntradayDate, useCache);
+        currentInterval = interval;
+        updateIntradayIntervalBadge(interval);
+        if (data) {
+            updateIntradayChart(data, interval);
         }
     } finally {
         if (overlay) overlay.style.display = 'none';
@@ -2944,20 +2976,19 @@ async function loadIntradayData(interval, date = undefined, useCache = true) {
 
 // Main data loading function
 async function loadAllData() {
-    // Snapshot state at function start to guard against mid-flight date/interval changes
+    // Snapshot date at function start to guard against mid-flight date changes
     const snapshotDate = currentIntradayDate;
-    const snapshotInterval = currentInterval;
 
     // Fetch targets alongside other data
     fetchTargets();
 
-    // Fetch all data in parallel
+    // Fetch all data in parallel; intraday auto-selects the finest available interval
     const fetchList = [
         fetchSummary(),
         fetchPerformance('ALL'),  // Fetch all data for annual table
         fetchDividends(),
         fetchSoldAssets(),
-        fetchIntraday(snapshotInterval, snapshotDate)
+        fetchIntradayAutoInterval(snapshotDate)   // returns {data, interval}
     ];
 
     // For 3D/1W the P&L chart is built from dailyPnl + intraday (fetched below).
@@ -2979,9 +3010,13 @@ async function loadAllData() {
     fetchList.push(fetchDailyPnl());
 
     const results = await Promise.all(fetchList);
-    const [summary, allPerformance, dividends, sold, intraday, pnlData] = results;
+    const [summary, allPerformance, dividends, sold, intradayResult, pnlData] = results;
     const portfolioPerformance = needsSeparatePortfolioFetch ? results[6] : allPerformance;
     const dailyPnlData = results[results.length - 1];
+
+    // Unpack auto-detected intraday result
+    const intraday = intradayResult?.data ?? null;
+    const detectedInterval = intradayResult?.interval ?? '1m';
 
     if (summary) {
         updateSummaryCards(summary);
@@ -2989,9 +3024,11 @@ async function loadAllData() {
         updateAllocationChart(summary.holdings, allocationView);
     }
 
-    // Only update the chart if the user hasn't switched date/interval mid-flight
-    if (intraday && currentIntradayDate === snapshotDate && currentInterval === snapshotInterval) {
-        updateIntradayChart(intraday, snapshotInterval);
+    // Only update the chart if the user hasn't switched date mid-flight
+    if (intraday && currentIntradayDate === snapshotDate) {
+        currentInterval = detectedInterval;
+        updateIntradayIntervalBadge(detectedInterval);
+        updateIntradayChart(intraday, detectedInterval);
     }
 
     // Handle P&L chart - always delegate to loadPerformanceData for consistent behavior
@@ -3133,13 +3170,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Interval button event handlers (for intraday chart)
-    document.querySelectorAll('.interval-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const interval = btn.dataset.interval;
-            loadIntradayData(interval);
-        });
-    });
 
     // Date picker for intraday chart
     const datePicker = document.getElementById('intradayDatePicker');
@@ -3155,7 +3185,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // null means today (uses the live endpoint without date param)
             const dateParam = selectedDate === todayVal ? null : selectedDate;
             // Always bypass frontend cache when user explicitly switches dates
-            loadIntradayData(currentInterval, dateParam, false);
+            loadIntradayData(dateParam, false);
         });
     }
 
@@ -3402,7 +3432,7 @@ document.addEventListener('DOMContentLoaded', () => {
         { col: 0, label: 'Symbol', locked: true },
         { col: 1, label: 'Quantity' },
         { col: 2, label: 'Avg Cost' },
-        { col: 3, label: 'Cost Basis' },
+        { col: 3, label: 'Invested' },
         { col: 4, label: 'Price' },
         { col: 5, label: 'Today' },
         { col: 6, label: 'Market Value' },
