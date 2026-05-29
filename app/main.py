@@ -1,9 +1,6 @@
 """FastAPI application entry point."""
 
-import asyncio
-import json
 import logging
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -15,8 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+from . import repository
 from .cache_service import cache_service
-from .csv_parser import CSVParseError, parse_csv_content, parse_csv_file
+from .csv_parser import CSVParseError, parse_csv_content
+from .db import init_schema
 from .portfolio import Portfolio
 from .price_service import price_service
 from .simulator import run_simulation
@@ -77,83 +76,25 @@ def _set_api_cache(key: str, data: dict) -> None:
 
 
 def load_portfolio() -> Portfolio:
-    """Load portfolio from all CSV files in the data directory (including subfolders)."""
+    """Load portfolio from all transactions stored in Postgres."""
     global portfolio
     portfolio = Portfolio()
 
-    # Recursively find all CSV files in data directory and subdirectories
-    csv_files = list(DATA_DIR.glob("**/*.csv"))
-    if not csv_files:
-        logger.info("No CSV files found in data directory")
-        return portfolio
-
-    # Collect all transactions from all files first
-    all_transactions = []
-    for csv_file in csv_files:
-        try:
-            transactions = parse_csv_file(csv_file)
-            all_transactions.extend(transactions)
-            # Show relative path from data directory
-            relative_path = csv_file.relative_to(DATA_DIR)
-            logger.info(f"Loaded {len(transactions)} transactions from {relative_path}")
-        except CSVParseError as e:
-            relative_path = csv_file.relative_to(DATA_DIR)
-            logger.error(f"Error parsing {relative_path}: {e}")
-        except Exception as e:
-            relative_path = csv_file.relative_to(DATA_DIR)
-            logger.error(f"Unexpected error loading {relative_path}: {e}")
-
-    # Add all transactions at once (will be sorted globally by date)
-    if all_transactions:
-        portfolio.add_transactions(all_transactions)
-        logger.info(f"Total: {len(all_transactions)} transactions loaded and sorted by date")
+    transactions = repository.get_all_transactions()
+    if transactions:
+        portfolio.add_transactions(transactions)
+        logger.info(f"Loaded {len(transactions)} transactions from database")
+    else:
+        logger.info("No transactions found in database")
 
     return portfolio
 
 
-# CSV file watcher state
-_csv_mtimes: dict[str, float] = {}
-
-
-def _snapshot_csv_mtimes() -> dict[str, float]:
-    """Record modification times of all CSV files."""
-    mtimes = {}
-    for f in DATA_DIR.glob("**/*.csv"):
-        try:
-            mtimes[str(f)] = os.path.getmtime(f)
-        except OSError:
-            pass
-    return mtimes
-
-
-def _csv_files_changed() -> bool:
-    """Check if any CSV file was added, removed, or modified."""
-    current = _snapshot_csv_mtimes()
-    changed = current != _csv_mtimes
-    return changed
-
-
-async def _watch_csv_files():
-    """Background task to watch for CSV file changes and auto-reload."""
-    global _csv_mtimes
-    while True:
-        await asyncio.sleep(5)
-        if _csv_files_changed():
-            logger.info("CSV file change detected, reloading portfolio...")
-            load_portfolio()
-            _csv_mtimes = _snapshot_csv_mtimes()
-            price_service.clear_cache()
-            _api_cache.clear()
-            logger.info("Portfolio reloaded after CSV change")
-
-
 @app.on_event("startup")
 async def startup_event():
-    """Load portfolio data on startup."""
-    global _csv_mtimes
+    """Apply DB schema (idempotent) and load portfolio data on startup."""
+    init_schema()
     load_portfolio()
-    _csv_mtimes = _snapshot_csv_mtimes()
-    asyncio.create_task(_watch_csv_files())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -680,19 +621,6 @@ async def clear_cache():
 
 # --- Target allocation endpoints ---
 
-TARGETS_FILE = DATA_DIR / "targets.json"
-
-
-def _read_targets() -> dict[str, float]:
-    if TARGETS_FILE.exists():
-        return json.loads(TARGETS_FILE.read_text())
-    return {}
-
-
-def _write_targets(targets: dict[str, float]) -> None:
-    TARGETS_FILE.write_text(json.dumps(targets, indent=2))
-
-
 class TargetUpdate(BaseModel):
     symbol: str
     target_pct: Optional[float] = None
@@ -701,19 +629,14 @@ class TargetUpdate(BaseModel):
 @app.get("/api/targets")
 async def get_targets():
     """Get target allocation percentages."""
-    return _read_targets()
+    return repository.get_targets()
 
 
 @app.post("/api/targets")
 async def set_target(update: TargetUpdate):
     """Set or remove a target allocation percentage for a symbol."""
-    targets = _read_targets()
-    if update.target_pct is None or update.target_pct == 0:
-        targets.pop(update.symbol, None)
-    else:
-        targets[update.symbol] = update.target_pct
-    _write_targets(targets)
-    return targets
+    repository.set_target(update.symbol, update.target_pct)
+    return repository.get_targets()
 
 
 # ---------------------------------------------------------------------------
