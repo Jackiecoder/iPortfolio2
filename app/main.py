@@ -1,12 +1,14 @@
 """FastAPI application entry point."""
 
 import logging
+from datetime import date as date_type
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -16,6 +18,7 @@ from . import repository
 from .cache_service import cache_service
 from .csv_parser import CSVParseError, parse_csv_content
 from .db import init_schema
+from .models import ActionType, Transaction
 from .portfolio import Portfolio
 from .price_service import price_service
 from .simulator import run_simulation
@@ -366,9 +369,59 @@ async def get_sold_assets():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _refresh_after_write() -> None:
+    """Reload the portfolio and drop the API response cache after a DB write."""
+    load_portfolio()
+    _api_cache.clear()
+
+
+class TransactionCreate(BaseModel):
+    """Request body for adding a single transaction."""
+    date: date_type
+    asset: str
+    action: ActionType
+    amount: Optional[Decimal] = None
+    quantity: Optional[Decimal] = None
+    ave_price: Optional[Decimal] = None
+    source: Optional[str] = None
+    comment: Optional[str] = None
+    broker: Optional[str] = None
+
+
+@app.post("/api/transactions")
+async def create_transaction(txn_in: TransactionCreate):
+    """Add a single transaction to the database."""
+    try:
+        # Reuse Transaction's validation + missing-value derivation.
+        txn = Transaction(
+            date=txn_in.date,
+            asset=txn_in.asset,
+            action=txn_in.action,
+            amount=txn_in.amount,
+            quantity=txn_in.quantity,
+            ave_price=txn_in.ave_price,
+            source=txn_in.source,
+            comment=txn_in.comment,
+        )
+    except ValidationError as e:
+        msgs = "; ".join(err.get("msg", "invalid") for err in e.errors())
+        raise HTTPException(status_code=400, detail=msgs)
+
+    try:
+        new_id = repository.insert_transaction(txn, broker=txn_in.broker)
+        _refresh_after_write()
+        return {
+            "id": new_id,
+            "message": f"Added {txn.action.value} {txn.asset} on {txn.date.isoformat()}",
+        }
+    except Exception as e:
+        logger.error(f"Error adding transaction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/upload")
 async def upload_csv(file: UploadFile = File(...)):
-    """Upload a CSV file with transactions."""
+    """Upload a CSV file and import its transactions into the database."""
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="File must be a CSV file")
 
@@ -376,20 +429,15 @@ async def upload_csv(file: UploadFile = File(...)):
         content = await file.read()
         content_str = content.decode("utf-8-sig")
 
-        # Validate the CSV content
+        # Parse + validate, then bulk-insert into Postgres (no file is written).
         transactions = parse_csv_content(content_str)
+        count = repository.insert_transactions(transactions)
 
-        # Save the file
-        file_path = DATA_DIR / file.filename
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content_str)
-
-        # Reload portfolio
-        load_portfolio()
+        _refresh_after_write()
 
         return {
-            "message": f"Successfully uploaded {file.filename}",
-            "transactions_count": len(transactions),
+            "message": f"Imported {count} transactions from {file.filename}",
+            "transactions_count": count,
         }
     except CSVParseError as e:
         raise HTTPException(status_code=400, detail=str(e))

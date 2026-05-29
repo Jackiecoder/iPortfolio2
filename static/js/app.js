@@ -3627,6 +3627,75 @@ document.getElementById('fileInput').addEventListener('change', async (event) =>
     event.target.value = '';
 });
 
+async function addTransaction(payload) {
+    const response = await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) {
+        const msg = typeof data.detail === 'string'
+            ? data.detail
+            : (Array.isArray(data.detail) ? data.detail.map(d => d.msg).join('; ') : 'Failed to add transaction');
+        throw new Error(msg);
+    }
+    apiCache.clear();
+    return data;
+}
+
+// Add Transaction modal wiring
+(function setupAddTxn() {
+    const form = document.getElementById('addTxnForm');
+    if (!form) return;
+    const modalEl = document.getElementById('addTxnModal');
+    const errBox = document.getElementById('addTxnError');
+    const submitBtn = document.getElementById('addTxnSubmit');
+
+    // Default the date to today whenever the modal opens
+    modalEl.addEventListener('show.bs.modal', () => {
+        errBox.classList.add('d-none');
+        const dateInput = form.elements['date'];
+        if (!dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);
+    });
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errBox.classList.add('d-none');
+
+        const fd = new FormData(form);
+        const num = (v) => (v === '' || v == null) ? null : Number(v);
+        const str = (v) => (v === '' || v == null) ? null : v;
+        const payload = {
+            date: fd.get('date'),
+            asset: (fd.get('asset') || '').trim().toUpperCase(),
+            action: fd.get('action'),
+            quantity: num(fd.get('quantity')),
+            ave_price: num(fd.get('ave_price')),
+            amount: num(fd.get('amount')),
+            source: str(fd.get('source')),
+            broker: str(fd.get('broker')),
+            comment: str(fd.get('comment')),
+        };
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Adding…';
+        try {
+            const result = await addTransaction(payload);
+            bootstrap.Modal.getInstance(modalEl).hide();
+            form.reset();
+            showToast(result.message || 'Transaction added', 'success');
+            await loadAllData();
+        } catch (error) {
+            errBox.textContent = error.message || 'Error adding transaction';
+            errBox.classList.remove('d-none');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Add';
+        }
+    });
+})();
+
 // Initial load and event handlers setup
 document.addEventListener('DOMContentLoaded', () => {
     // Period button event handlers

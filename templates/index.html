@@ -53,6 +53,9 @@
                 <button id="refreshBtn" class="btn btn-light btn-sm">
                     <i class="bi bi-arrow-clockwise me-1"></i>Refresh
                 </button>
+                <button id="addTxnBtn" class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTxnModal">
+                    <i class="bi bi-plus-lg me-1"></i>Add Transaction
+                </button>
                 <label class="btn btn-outline-light btn-sm mb-0">
                     <i class="bi bi-upload me-1"></i>Upload CSV
                     <input type="file" id="fileInput" accept=".csv" hidden>
@@ -60,6 +63,80 @@
             </div>
         </div>
     </nav>
+
+    <!-- ============================================================ ADD TRANSACTION MODAL -->
+    <div class="modal fade" id="addTxnModal" tabindex="-1" aria-labelledby="addTxnModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <form id="addTxnForm">
+            <div class="modal-header">
+              <h5 class="modal-title" id="addTxnModalLabel"><i class="bi bi-plus-lg me-1"></i>Add Transaction</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <div class="row g-3">
+                <div class="col-6">
+                  <label class="form-label">Date <span class="text-danger">*</span></label>
+                  <input type="date" class="form-control" name="date" required>
+                </div>
+                <div class="col-6">
+                  <label class="form-label">Action <span class="text-danger">*</span></label>
+                  <select class="form-select" name="action" required>
+                    <option value="BUY">BUY</option>
+                    <option value="SELL">SELL</option>
+                    <option value="DIV">DIV</option>
+                    <option value="GIFT">GIFT</option>
+                    <option value="FEE">FEE</option>
+                    <option value="GAS">GAS</option>
+                    <option value="CASH">CASH</option>
+                    <option value="FIX">FIX</option>
+                  </select>
+                </div>
+                <div class="col-6">
+                  <label class="form-label">Asset / Symbol <span class="text-danger">*</span></label>
+                  <input type="text" class="form-control text-uppercase" name="asset" placeholder="AAPL, BTC-USD, CASH" required>
+                </div>
+                <div class="col-6">
+                  <label class="form-label">Broker</label>
+                  <input type="text" class="form-control" name="broker" placeholder="fidelity, schwab…">
+                </div>
+                <div class="col-4">
+                  <label class="form-label">Quantity</label>
+                  <input type="number" step="any" class="form-control" name="quantity">
+                </div>
+                <div class="col-4">
+                  <label class="form-label">Avg Price</label>
+                  <input type="number" step="any" class="form-control" name="ave_price">
+                </div>
+                <div class="col-4">
+                  <label class="form-label">Amount</label>
+                  <input type="number" step="any" class="form-control" name="amount">
+                </div>
+                <div class="col-12">
+                  <div class="form-text">
+                    BUY/SELL: fill any 2 of Quantity / Avg Price / Amount (the third is derived).
+                    DIV / FEE / CASH need Amount. GIFT / GAS / FIX need Quantity.
+                  </div>
+                </div>
+                <div class="col-6">
+                  <label class="form-label">Source</label>
+                  <input type="text" class="form-control" name="source">
+                </div>
+                <div class="col-6">
+                  <label class="form-label">Comment</label>
+                  <input type="text" class="form-control" name="comment">
+                </div>
+              </div>
+              <div id="addTxnError" class="alert alert-danger mt-3 mb-0 d-none"></div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button type="submit" class="btn btn-primary" id="addTxnSubmit">Add</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
 
     <main class="container-fluid py-4">
 
