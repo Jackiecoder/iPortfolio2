@@ -19,6 +19,7 @@ from .cache_service import cache_service
 from .csv_parser import CSVParseError, parse_csv_content, parse_csv_file
 from .portfolio import Portfolio
 from .price_service import price_service
+from .simulator import run_simulation
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -191,6 +192,17 @@ async def get_holdings():
                     "weighted_annualized_return": float(h.weighted_annualized_return) if h.weighted_annualized_return else None,
                     "long_term_quantity": float(h.long_term_quantity) if h.long_term_quantity is not None else None,
                     "short_term_quantity": float(h.short_term_quantity) if h.short_term_quantity is not None else None,
+                    "lt_unrealized_pnl": float(h.lt_unrealized_pnl) if h.lt_unrealized_pnl is not None else None,
+                    "st_unrealized_pnl": float(h.st_unrealized_pnl) if h.st_unrealized_pnl is not None else None,
+                    "realized_pnl": float(h.realized_pnl) if h.realized_pnl is not None else None,
+                    "lt_realized_pnl": float(h.lt_realized_pnl) if h.lt_realized_pnl is not None else None,
+                    "st_realized_pnl": float(h.st_realized_pnl) if h.st_realized_pnl is not None else None,
+                    "total_pnl": float(h.total_pnl) if h.total_pnl is not None else None,
+                    "total_pnl_percent": float(h.total_pnl_percent) if h.total_pnl_percent is not None else None,
+                    "ytd_pnl": float(h.ytd_pnl) if h.ytd_pnl is not None else None,
+                    "ytd_pnl_percent": float(h.ytd_pnl_percent) if h.ytd_pnl_percent is not None else None,
+                    "lt_ytd_pnl": float(h.lt_ytd_pnl) if h.lt_ytd_pnl is not None else None,
+                    "st_ytd_pnl": float(h.st_ytd_pnl) if h.st_ytd_pnl is not None else None,
                 }
                 for h in holdings
             ]
@@ -219,25 +231,36 @@ async def get_summary():
         # YTD P&L: change in (investment_value - cost_basis) since Jan 1
         ytd_pnl = 0.0
         ytd_pnl_percent = 0.0
+        ytd_lt_pnl = None
+        ytd_st_pnl = None
         today = _date.today()
+        jan1 = _date(today.year, 1, 1)
         ytd_history = portfolio.get_historical_values(
-            start_date=_date(today.year, 1, 1), end_date=today
+            start_date=jan1, end_date=today
         )
-        if ytd_history and len(ytd_history) >= 2:
+        if ytd_history and len(ytd_history) >= 1:
             first = ytd_history[0]
-            last  = ytd_history[-1]
             first_inv_pnl = float(first["investment_value"]) - float(first["cost_basis"])
-            last_inv_pnl  = float(last["investment_value"])  - float(last["cost_basis"])
+            # Use live unrealized P&L for the "now" leg so YTD P&L tracks intraday price moves
+            last_inv_pnl = float(summary.total_unrealized_pnl)
             ytd_pnl = last_inv_pnl - first_inv_pnl
             first_total = float(first["value"])
             if first_total > 0:
                 ytd_pnl_percent = ytd_pnl / first_total * 100
+
+        # YTD LT/ST P&L: compute LT/ST unrealized P&L at Jan 1, diff against today
+        if summary.lt_unrealized_pnl is not None and summary.st_unrealized_pnl is not None:
+            jan1_lt, jan1_st = portfolio.get_lt_st_unrealized_pnl_at_date(jan1)
+            ytd_lt_pnl = float(summary.lt_unrealized_pnl) - float(jan1_lt)
+            ytd_st_pnl = float(summary.st_unrealized_pnl) - float(jan1_st)
 
         result = {
             "total_cost_basis": float(summary.total_cost_basis),
             "total_market_value": float(summary.total_market_value),
             "investment_market_value": float(summary.investment_market_value),
             "total_unrealized_pnl": float(summary.total_unrealized_pnl),
+            "lt_unrealized_pnl": float(summary.lt_unrealized_pnl) if summary.lt_unrealized_pnl is not None else None,
+            "st_unrealized_pnl": float(summary.st_unrealized_pnl) if summary.st_unrealized_pnl is not None else None,
             "total_realized_pnl": float(summary.total_realized_pnl),
             "total_pnl": float(summary.total_pnl),
             "total_pnl_percent": float(summary.total_pnl_percent),
@@ -247,6 +270,8 @@ async def get_summary():
             "weighted_annualized_return": float(summary.weighted_annualized_return) if summary.weighted_annualized_return else None,
             "ytd_pnl": ytd_pnl,
             "ytd_pnl_percent": ytd_pnl_percent,
+            "ytd_lt_pnl": ytd_lt_pnl,
+            "ytd_st_pnl": ytd_st_pnl,
             "holdings": [
                 {
                     "symbol": h.symbol,
@@ -264,6 +289,17 @@ async def get_summary():
                     "weighted_annualized_return": float(h.weighted_annualized_return) if h.weighted_annualized_return else None,
                     "long_term_quantity": float(h.long_term_quantity) if h.long_term_quantity is not None else None,
                     "short_term_quantity": float(h.short_term_quantity) if h.short_term_quantity is not None else None,
+                    "lt_unrealized_pnl": float(h.lt_unrealized_pnl) if h.lt_unrealized_pnl is not None else None,
+                    "st_unrealized_pnl": float(h.st_unrealized_pnl) if h.st_unrealized_pnl is not None else None,
+                    "realized_pnl": float(h.realized_pnl) if h.realized_pnl is not None else None,
+                    "lt_realized_pnl": float(h.lt_realized_pnl) if h.lt_realized_pnl is not None else None,
+                    "st_realized_pnl": float(h.st_realized_pnl) if h.st_realized_pnl is not None else None,
+                    "total_pnl": float(h.total_pnl) if h.total_pnl is not None else None,
+                    "total_pnl_percent": float(h.total_pnl_percent) if h.total_pnl_percent is not None else None,
+                    "ytd_pnl": float(h.ytd_pnl) if h.ytd_pnl is not None else None,
+                    "ytd_pnl_percent": float(h.ytd_pnl_percent) if h.ytd_pnl_percent is not None else None,
+                    "lt_ytd_pnl": float(h.lt_ytd_pnl) if h.lt_ytd_pnl is not None else None,
+                    "st_ytd_pnl": float(h.st_ytd_pnl) if h.st_ytd_pnl is not None else None,
                 }
                 for h in summary.holdings
             ],
@@ -304,7 +340,8 @@ async def get_performance(
             end = datetime.strptime(end_date, "%Y-%m-%d").date()
 
         history = portfolio.get_historical_values(start_date=start, end_date=end)
-        return {"performance": history}
+        realized_by_year = portfolio.get_realized_pnl_by_year()
+        return {"performance": history, "realized_by_year": realized_by_year}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
     except Exception as e:
@@ -313,19 +350,26 @@ async def get_performance(
 
 
 @app.get("/api/daily-pnl")
-async def get_daily_pnl():
-    """Get daily P&L for the last 14 days using EST midnight as the daily boundary."""
+async def get_daily_pnl(num_days: int = 42):
+    """Get daily P&L for the last `num_days` days using EST midnight as the daily boundary.
+
+    Default 42 days so the 5-week (current + past 4) Daily P&L panel always
+    has a full window's worth of data, even when today falls early in the week.
+    """
     if portfolio is None:
         load_portfolio()
 
-    cached = _get_api_cache("daily-pnl")
+    # Cache is keyed on the endpoint name only, so vary it by num_days.
+    # `_get_api_cache` splits on "_" to look up the TTL, so use "_" not ":" in the suffix.
+    cache_key = f"daily-pnl_{num_days}"
+    cached = _get_api_cache(cache_key)
     if cached is not None:
         return cached
 
     try:
-        data = portfolio.get_daily_pnl_history(num_days=15)
+        data = portfolio.get_daily_pnl_history(num_days=num_days)
         result = {"daily_pnl": data}
-        _set_api_cache("daily-pnl", result)
+        _set_api_cache(cache_key, result)
         return result
     except Exception as e:
         logger.error(f"Error fetching daily P&L: {e}")
@@ -670,3 +714,51 @@ async def set_target(update: TargetUpdate):
         targets[update.symbol] = update.target_pct
     _write_targets(targets)
     return targets
+
+
+# ---------------------------------------------------------------------------
+# Simulator
+# ---------------------------------------------------------------------------
+
+class SimulatorAllocation(BaseModel):
+    symbol: str
+    weight: float
+
+
+class SimulatorRequest(BaseModel):
+    allocations: list[SimulatorAllocation]
+    start_date: str          # YYYY-MM-DD
+    end_date: str            # YYYY-MM-DD
+    initial_capital: float = 0.0
+    rebalance_frequency: str = "never"   # never / weekly / monthly / quarterly / annually
+    data_interval_days: int = 7
+    benchmark: Optional[str] = "VOO"
+    dca_frequency: str = "none"          # none / weekly / biweekly / monthly
+    dca_amount: float = 0.0
+
+
+@app.post("/api/simulator/run")
+async def simulator_run(req: SimulatorRequest):
+    """Run a portfolio back-test simulation (supports DCA)."""
+    from datetime import date as date_type
+    try:
+        start = date_type.fromisoformat(req.start_date)
+        end = date_type.fromisoformat(req.end_date)
+        allocs = [{"symbol": a.symbol, "weight": a.weight} for a in req.allocations]
+        result = run_simulation(
+            allocations=allocs,
+            start_date=start,
+            end_date=end,
+            initial_capital=req.initial_capital,
+            rebalance_frequency=req.rebalance_frequency,
+            data_interval_days=req.data_interval_days,
+            benchmark=req.benchmark if req.benchmark else None,
+            dca_frequency=req.dca_frequency,
+            dca_amount=req.dca_amount,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Simulator error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

@@ -221,10 +221,176 @@ body {
     white-space: nowrap;
 }
 
+/* Inline card-collapse chevron button (lives inside card-header titles) */
+.card-collapse-btn {
+    background: transparent;
+    border: 1px solid #e5e7eb;
+    color: #6b7280;
+    border-radius: 6px;
+    width: 26px;
+    height: 26px;
+    line-height: 1;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.card-collapse-btn:hover {
+    background: #f3f4f6;
+    color: #111827;
+}
+
+.card-collapse-btn[aria-expanded="false"] {
+    color: #2563eb;
+    border-color: #bfdbfe;
+    background: #eff6ff;
+}
+
+/* Condensed summary strip (when summary cards are collapsed) */
+.summary-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.6rem;
+    align-items: center;
+    font-size: 0.875rem;
+}
+
+.summary-strip-item {
+    white-space: nowrap;
+}
+
+.summary-strip-sep {
+    color: #d1d5db;
+}
+
 /* Daily P&L List */
 .daily-pnl-list {
-    max-height: 390px;
-    overflow-y: auto;
+    /* No max-height now that the panel is full width — let the 4 columns
+       breathe and only constrain via natural content height. */
+}
+
+/* Weekly grid: 4 columns, current week on the left */
+.weekly-pnl-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+}
+
+.weekly-pnl-col {
+    border-right: 1px solid #f0f0f0;
+    display: flex;
+    flex-direction: column;
+}
+
+.weekly-pnl-col:last-child {
+    border-right: none;
+}
+
+.weekly-pnl-col.is-current {
+    background-color: #f8fbff;
+}
+
+.weekly-pnl-header {
+    font-weight: 600;
+    font-size: 0.85rem;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid #e5e7eb;
+    color: #374151;
+    background: #fafafa;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.weekly-pnl-col.is-current .weekly-pnl-header {
+    background: #eff6ff;
+    color: #1e40af;
+}
+
+.weekly-pnl-badge {
+    font-size: 0.65rem;
+    font-weight: 600;
+    background: #2563eb;
+    color: #fff;
+    padding: 1px 6px;
+    border-radius: 8px;
+    text-transform: uppercase;
+}
+
+.weekly-pnl-days {
+    flex: 1;
+}
+
+.weekly-pnl-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.55rem 1rem;
+    border-top: 2px solid #e5e7eb;
+    background: #fafafa;
+    font-weight: 700;
+    font-size: 0.875rem;
+    cursor: pointer;
+}
+
+.weekly-pnl-summary:hover {
+    background: #f3f4f6;
+}
+
+.weekly-pnl-summary .date {
+    color: #6b7280;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.weekly-pnl-summary .pnl-amount {
+    font-weight: 700;
+    display: inline-block;
+    text-align: right;
+    min-width: 7.25em;
+    font-variant-numeric: tabular-nums;
+}
+
+.weekly-pnl-breakdown {
+    padding: 0.4rem 0 0.5rem 1rem;
+    border-top: 1px dashed #e5e7eb;
+    background: #ffffff;
+}
+
+.weekly-pnl-chevron {
+    font-size: 0.65rem;
+    transition: transform 0.2s ease;
+    color: #9ca3af;
+}
+
+.weekly-pnl-chevron.rotated {
+    transform: rotate(90deg);
+}
+
+@media (max-width: 992px) {
+    .weekly-pnl-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    .weekly-pnl-col:nth-child(2) {
+        border-right: none;
+    }
+    .weekly-pnl-col:nth-child(-n+2) {
+        border-bottom: 1px solid #f0f0f0;
+    }
+}
+
+@media (max-width: 576px) {
+    .weekly-pnl-grid {
+        grid-template-columns: 1fr;
+    }
+    .weekly-pnl-col {
+        border-right: none;
+        border-bottom: 1px solid #f0f0f0;
+    }
 }
 
 .daily-pnl-item {
@@ -238,6 +404,18 @@ body {
 
 .daily-pnl-item:hover {
     background-color: #f8f9fa;
+}
+
+.daily-pnl-item.weekend {
+    background-color: #faf5ff;
+}
+
+.daily-pnl-item.weekend:hover {
+    background-color: #f3e8ff;
+}
+
+.daily-pnl-item.weekend .date {
+    color: #9333ea;
 }
 
 .daily-pnl-item-row {
@@ -259,15 +437,24 @@ body {
 
 .daily-pnl-item .values {
     text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 
 .daily-pnl-item .pnl-amount {
     font-weight: 600;
+    display: inline-block;
+    text-align: right;
+    min-width: 7.25em;
+    font-variant-numeric: tabular-nums;
 }
 
 .daily-pnl-item .pnl-percent {
     font-size: 0.75rem;
     margin-left: 4px;
+    display: inline-block;
+    text-align: right;
+    min-width: 4.75em;
+    font-variant-numeric: tabular-nums;
 }
 
 /* Daily P&L per-asset breakdown */
@@ -296,6 +483,180 @@ body {
     font-size: 0.65rem;
     transition: transform 0.2s ease;
     color: #9ca3af;
+}
+
+/* ── Monthly P&L grid ──────────────────────────────────────────────── */
+.monthly-pnl-list {
+    overflow-x: auto;
+}
+
+.monthly-pnl-grid {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(160px, 1fr));
+    min-width: max-content;
+    width: 100%;
+}
+
+.monthly-pnl-col {
+    border-right: 1px solid #f0f0f0;
+    display: flex;
+    flex-direction: column;
+}
+
+.monthly-pnl-col:last-child {
+    border-right: none;
+}
+
+.monthly-pnl-col.is-current {
+    background-color: #f8fbff;
+}
+
+.monthly-pnl-header {
+    font-weight: 600;
+    font-size: 0.82rem;
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid #e5e7eb;
+    color: #374151;
+    background: #fafafa;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.monthly-pnl-col.is-current .monthly-pnl-header {
+    background: #eff6ff;
+    color: #1e40af;
+}
+
+.monthly-pnl-weeks {
+    flex: 1;
+}
+
+/* Week row inside a month column */
+.monthly-pnl-week-item {
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+
+.monthly-pnl-week-item:last-child {
+    border-bottom: none;
+}
+
+.monthly-pnl-week-item:hover {
+    background: #f8f9fa;
+}
+
+.monthly-pnl-week-item-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.45rem 0.75rem;
+    gap: 0.3rem;
+}
+
+.monthly-pnl-week-item .week-label {
+    color: #6b7280;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.monthly-pnl-week-item .pnl-amount {
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-align: right;
+}
+
+.monthly-pnl-week-breakdown {
+    padding: 0.3rem 0 0.4rem 0.5rem;
+    border-top: 1px dashed #e5e7eb;
+    background: #fff;
+}
+
+.monthly-pnl-week-chevron {
+    font-size: 0.6rem;
+    transition: transform 0.2s ease;
+    color: #9ca3af;
+}
+
+.monthly-pnl-week-chevron.rotated {
+    transform: rotate(90deg);
+}
+
+/* Day row inside an expanded week */
+.monthly-pnl-day-item {
+    padding: 0.2rem 0 0.2rem 0.25rem;
+    border-bottom: 1px solid #f7f7f7;
+}
+
+.monthly-pnl-day-item:last-child {
+    border-bottom: none;
+}
+
+.monthly-pnl-day-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.76rem;
+    padding: 0.1rem 0.25rem;
+}
+
+.monthly-pnl-day-row .day-label {
+    color: #6b7280;
+}
+
+.monthly-pnl-day-row .pnl-amount {
+    font-weight: 600;
+}
+
+.monthly-pnl-asset-rows {
+    padding-left: 0.4rem;
+}
+
+/* Monthly total footer */
+.monthly-pnl-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-top: 2px solid #e5e7eb;
+    background: #fafafa;
+    font-weight: 700;
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+
+.monthly-pnl-summary:hover {
+    background: #f3f4f6;
+}
+
+.monthly-pnl-summary .date {
+    color: #6b7280;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.monthly-pnl-summary-breakdown {
+    padding: 0.4rem 0 0.5rem 0.75rem;
+    border-top: 1px dashed #e5e7eb;
+    background: #fff;
+}
+
+@media (max-width: 992px) {
+    .monthly-pnl-grid {
+        grid-template-columns: repeat(6, minmax(155px, 1fr));
+    }
+}
+
+@media (max-width: 576px) {
+    .monthly-pnl-grid {
+        grid-template-columns: repeat(3, minmax(145px, 1fr));
+    }
 }
 
 /* Category tabs for allocation drill-down */
@@ -481,4 +842,130 @@ body {
 
 .delta-sell {
     color: #f59e0b !important; /* orange = sell/trim */
+}
+
+/* ============================================================
+   Portfolio Simulator
+   ============================================================ */
+
+/* Page toggle buttons in navbar */
+#pageTrackerBtn, #pageSimulatorBtn {
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+/* Sticky config card */
+.sim-config-card {
+    position: sticky;
+    top: 70px;
+    max-height: calc(100vh - 90px);
+    overflow-y: auto;
+}
+
+/* Tiny xs button for preset pills */
+.btn-xs {
+    padding: 0.15rem 0.5rem;
+    font-size: 0.75rem;
+    border-radius: 0.25rem;
+}
+
+/* Weight badge — turns green at 100 % */
+.sim-weight-badge {
+    min-width: 48px;
+    text-align: center;
+    transition: background-color 0.2s ease;
+}
+.sim-weight-badge.ok   { background-color: #198754 !important; }
+.sim-weight-badge.warn { background-color: #f59e0b !important; }
+
+/* Allocation input row */
+.sim-alloc-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.sim-alloc-symbol {
+    flex: 1 1 80px;
+    min-width: 0;
+    text-transform: uppercase;
+    font-size: 0.85rem;
+    padding: 0.25rem 0.5rem;
+}
+
+.sim-alloc-weight {
+    width: 72px;
+    flex-shrink: 0;
+    font-size: 0.85rem;
+    padding: 0.25rem 0.5rem;
+    text-align: right;
+}
+
+.sim-alloc-remove {
+    flex-shrink: 0;
+    color: #dc3545;
+    border: none;
+    background: transparent;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 2px 4px;
+    cursor: pointer;
+    border-radius: 4px;
+}
+.sim-alloc-remove:hover { background: #f8d7da; }
+
+/* Metric cards */
+.sim-metric-card .metric-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #6c757d;
+}
+
+.sim-metric-card .metric-value {
+    font-size: 1.4rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.sim-metric-card .metric-bench {
+    font-size: 0.78rem;
+    color: #6c757d;
+    margin-top: 2px;
+}
+
+/* Comparison table */
+#simComparisonTable td:not(:first-child),
+#simComparisonTable th:not(:first-child) {
+    text-align: right;
+}
+
+#simComparisonTable td:first-child {
+    color: #6c757d;
+    font-size: 0.875rem;
+}
+
+/* Loading overlay for simulator run button */
+#simRunBtn:disabled {
+    opacity: 0.75;
+}
+
+/* Rebalance vertical tick on drift chart */
+.sim-rebalance-label {
+    font-size: 0.65rem;
+    color: #6c757d;
+}
+
+/* DCA config group */
+.sim-dca-box {
+    background: #f0f7ff;
+    border: 1px solid #d9e8fb;
+    border-radius: 6px;
+    padding: 0.625rem 0.75rem;
+}
+
+.sim-dca-box .form-label-sm {
+    color: #1e40af;
 }

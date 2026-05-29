@@ -106,6 +106,24 @@ class Holding(BaseModel):
     weighted_annualized_return: Optional[Decimal] = None  # Per-lot cost-basis weighted CAGR
     long_term_quantity: Optional[Decimal] = None
     short_term_quantity: Optional[Decimal] = None
+    # LT/ST split of unrealized P&L for current open position
+    lt_unrealized_pnl: Optional[Decimal] = None
+    st_unrealized_pnl: Optional[Decimal] = None
+    # Realized P&L from prior sales of this symbol (FIFO-tracked)
+    realized_pnl: Optional[Decimal] = None
+    lt_realized_pnl: Optional[Decimal] = None
+    st_realized_pnl: Optional[Decimal] = None
+    # Total = realized + unrealized (excludes dividends, matches summary semantics)
+    total_pnl: Optional[Decimal] = None
+    total_pnl_percent: Optional[Decimal] = None  # vs all-time invested cost basis for symbol
+    # Year-to-date P&L on currently-held lots only. Baseline per lot:
+    # - lots purchased before Jan 1 use the prior-year-end close
+    # - lots purchased during the year use their cost basis
+    ytd_pnl: Optional[Decimal] = None
+    ytd_pnl_percent: Optional[Decimal] = None
+    # LT/ST split of YTD P&L (classification by today's 1-year holding rule).
+    lt_ytd_pnl: Optional[Decimal] = None
+    st_ytd_pnl: Optional[Decimal] = None
 
     def update_with_price(self, price: Decimal, prev_close: Optional[Decimal] = None) -> None:
         """Update holding with current market price."""
@@ -145,5 +163,7 @@ class PortfolioSummary(BaseModel):
     total_fees: Decimal
     all_time_cost_basis: Decimal  # includes sold assets
     weighted_annualized_return: Optional[Decimal] = None  # market-value weighted
+    lt_unrealized_pnl: Optional[Decimal] = None  # current LT unrealized P&L (used for YTD diff)
+    st_unrealized_pnl: Optional[Decimal] = None  # current ST unrealized P&L (used for YTD diff)
     holdings: list[Holding]
     dividend_summaries: list[DividendSummary]

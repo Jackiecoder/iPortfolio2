@@ -105,25 +105,44 @@ class Portfolio:
             adjusted_price = txn.ave_price / factor if factor != 0 else txn.ave_price
             proceeds = adjusted_qty * adjusted_price
 
-            # Remove shares using FIFO and track cost basis
+            # Remove shares using FIFO and track cost basis (split LT vs ST)
             remaining = adjusted_qty
             total_cost_basis = Decimal("0")
             qty_sold = Decimal("0")
+            lt_cost_basis = Decimal("0")
+            st_cost_basis = Decimal("0")
+            lt_proceeds = Decimal("0")
+            st_proceeds = Decimal("0")
+            sale_price = adjusted_price  # per share
 
             while remaining > 0 and self._lots[symbol]:
                 lot = self._lots[symbol][0]
+                # LT if held >= 365 days at sale date
+                is_lt = (txn.date - lot.purchase_date).days >= 365
                 if lot.quantity <= remaining:
                     # Sell entire lot
-                    total_cost_basis += lot.total_cost
-                    qty_sold += lot.quantity
-                    remaining -= lot.quantity
+                    slice_qty = lot.quantity
+                    slice_cost = lot.total_cost
+                    total_cost_basis += slice_cost
+                    qty_sold += slice_qty
+                    remaining -= slice_qty
                     self._lots[symbol].pop(0)
                 else:
                     # Partial lot sale
-                    total_cost_basis += remaining * lot.cost_per_share
-                    qty_sold += remaining
+                    slice_qty = remaining
+                    slice_cost = remaining * lot.cost_per_share
+                    total_cost_basis += slice_cost
+                    qty_sold += slice_qty
                     lot.quantity -= remaining
                     remaining = Decimal("0")
+
+                slice_proceeds = slice_qty * sale_price
+                if is_lt:
+                    lt_cost_basis += slice_cost
+                    lt_proceeds += slice_proceeds
+                else:
+                    st_cost_basis += slice_cost
+                    st_proceeds += slice_proceeds
 
             # Record the sale
             if qty_sold > 0:
@@ -132,6 +151,10 @@ class Portfolio:
                     "quantity": qty_sold,
                     "cost_basis": total_cost_basis,
                     "proceeds": proceeds,
+                    "lt_cost_basis": lt_cost_basis,
+                    "st_cost_basis": st_cost_basis,
+                    "lt_proceeds": lt_proceeds,
+                    "st_proceeds": st_proceeds,
                 })
 
         elif txn.action == ActionType.DIV:
@@ -234,9 +257,14 @@ class Portfolio:
             holdings.append(holding)
             symbols.append(symbol)
 
+        # Year-start prices for YTD baseline (only fetched when prices are fetched).
+        year_start_prices: dict[str, Optional[Decimal]] = {}
         if fetch_prices and symbols:
             prices = price_service.get_prices_batch(symbols)
             prev_closes = price_service.get_previous_close_batch(symbols)
+            year_start_prices = price_service.get_year_start_prices_batch(
+                symbols, date.today().year
+            )
             for holding in holdings:
                 price = prices.get(holding.symbol)
                 prev_close = prev_closes.get(holding.symbol)
@@ -257,19 +285,97 @@ class Portfolio:
                 holding.annualized_return = holding.pnl_percent / years_for_calc
 
             # Calculate long-term vs short-term quantity (1 year threshold)
+            # and split current unrealized P&L into LT/ST per-lot.
             if holding.symbol in self._lots:
                 lt_qty = Decimal("0")
                 st_qty = Decimal("0")
+                lt_unreal = Decimal("0")
+                st_unreal = Decimal("0")
                 one_year_ago = today - timedelta(days=365)
                 for lot in self._lots[holding.symbol]:
                     if lot.quantity <= 0:
                         continue
-                    if lot.purchase_date <= one_year_ago:
+                    is_lt = lot.purchase_date <= one_year_ago
+                    if is_lt:
                         lt_qty += lot.quantity
                     else:
                         st_qty += lot.quantity
+                    if holding.current_price is not None:
+                        lot_pnl = lot.quantity * holding.current_price - lot.total_cost
+                        if is_lt:
+                            lt_unreal += lot_pnl
+                        else:
+                            st_unreal += lot_pnl
                 holding.long_term_quantity = lt_qty
                 holding.short_term_quantity = st_qty
+                if holding.current_price is not None:
+                    holding.lt_unrealized_pnl = lt_unreal
+                    holding.st_unrealized_pnl = st_unreal
+
+            # YTD P&L on currently-held lots. For lots purchased before Jan 1
+            # the baseline is the prior-year-end close; for lots purchased this
+            # year the baseline is the lot's cost (effectively unrealized P&L
+            # for that lot). Sales during the year are reflected in realized P&L.
+            if holding.current_price is not None and holding.symbol in self._lots:
+                year_start = date(today.year, 1, 1)
+                year_start_price = year_start_prices.get(holding.symbol)
+                ytd_pnl = Decimal("0")
+                ytd_basis = Decimal("0")
+                lt_ytd = Decimal("0")
+                st_ytd = Decimal("0")
+                for lot in self._lots[holding.symbol]:
+                    if lot.quantity <= 0:
+                        continue
+                    if lot.purchase_date < year_start and year_start_price is not None:
+                        baseline = year_start_price
+                    else:
+                        baseline = lot.cost_per_share
+                    lot_ytd = (holding.current_price - baseline) * lot.quantity
+                    ytd_pnl += lot_ytd
+                    ytd_basis += baseline * lot.quantity
+                    if (today - lot.purchase_date).days >= 365:
+                        lt_ytd += lot_ytd
+                    else:
+                        st_ytd += lot_ytd
+                holding.ytd_pnl = ytd_pnl
+                holding.lt_ytd_pnl = lt_ytd
+                holding.st_ytd_pnl = st_ytd
+                if ytd_basis > 0:
+                    holding.ytd_pnl_percent = (ytd_pnl / ytd_basis) * 100
+
+            # Realized P&L (prior sales of this symbol) — FIFO records
+            sales = self._sales.get(holding.symbol, [])
+            if sales:
+                realized = Decimal("0")
+                lt_real = Decimal("0")
+                st_real = Decimal("0")
+                sold_cost_sym = Decimal("0")
+                for s in sales:
+                    realized += s["proceeds"] - s["cost_basis"]
+                    sold_cost_sym += s["cost_basis"]
+                    # Older sale records may not have LT/ST split — fall back to 0/realized as ST
+                    lt_p = s.get("lt_proceeds", Decimal("0"))
+                    lt_c = s.get("lt_cost_basis", Decimal("0"))
+                    st_p = s.get("st_proceeds", Decimal("0"))
+                    st_c = s.get("st_cost_basis", Decimal("0"))
+                    lt_real += (lt_p - lt_c)
+                    st_real += (st_p - st_c)
+                holding.realized_pnl = realized
+                holding.lt_realized_pnl = lt_real
+                holding.st_realized_pnl = st_real
+
+            # Total P&L (realized + unrealized) and % vs all-time invested in this symbol
+            unreal = holding.unrealized_pnl if holding.unrealized_pnl is not None else Decimal("0")
+            real = holding.realized_pnl if holding.realized_pnl is not None else Decimal("0")
+            total = unreal + real
+            holding.total_pnl = total
+            sold_cost = sum(
+                (s["cost_basis"] for s in self._sales.get(holding.symbol, [])),
+                start=Decimal("0"),
+            )
+            all_time_cost = (holding.cost_basis or Decimal("0")) + sold_cost
+            if all_time_cost > 0:
+                holding.total_pnl_percent = (total / all_time_cost) * 100
 
             # Calculate per-lot cost-basis weighted CAGR
             if holding.current_price and holding.symbol in self._lots:
@@ -457,6 +563,32 @@ class Portfolio:
 
         return sorted(sold_assets, key=lambda s: s["symbol"])
 
+    def get_realized_pnl_by_year(self) -> dict[str, dict]:
+        """Realized P&L grouped by the year the sale closed, split into ST/LT.
+
+        Returns:
+            {year: {"total": float, "lt": float, "st": float}}
+        """
+        by_year: dict[str, dict[str, Decimal]] = {}
+        for sales in self._sales.values():
+            for s in sales:
+                year = str(s["date"].year)
+                entry = by_year.setdefault(
+                    year,
+                    {"total": Decimal("0"), "lt": Decimal("0"), "st": Decimal("0")},
+                )
+                entry["total"] += s["proceeds"] - s["cost_basis"]
+                entry["lt"] += s.get("lt_proceeds", Decimal("0")) - s.get(
+                    "lt_cost_basis", Decimal("0")
+                )
+                entry["st"] += s.get("st_proceeds", Decimal("0")) - s.get(
+                    "st_cost_basis", Decimal("0")
+                )
+        return {
+            year: {k: float(v) for k, v in vals.items()}
+            for year, vals in by_year.items()
+        }
+
     def get_portfolio_summary(self, fetch_prices: bool = True) -> PortfolioSummary:
         """Get complete portfolio summary.
 
@@ -550,6 +682,28 @@ class Portfolio:
             if total_cost_basis_weight > 0:
                 weighted_annualized_return = weighted_sum / total_cost_basis_weight
 
+            # Compute LT / ST unrealized P&L from individual lots
+            one_year_ago = today - timedelta(days=365)
+            lt_unrealized_pnl = Decimal("0")
+            st_unrealized_pnl = Decimal("0")
+            for symbol, lots in self._lots.items():
+                if symbol == "CASH":
+                    continue
+                current_price = price_lookup.get(symbol)
+                if current_price is None:
+                    continue
+                for lot in lots:
+                    if lot.quantity <= 0:
+                        continue
+                    lot_pnl = (current_price - lot.cost_per_share) * lot.quantity
+                    if lot.purchase_date <= one_year_ago:
+                        lt_unrealized_pnl += lot_pnl
+                    else:
+                        st_unrealized_pnl += lot_pnl
+        else:
+            lt_unrealized_pnl = None
+            st_unrealized_pnl = None
+
         return PortfolioSummary(
             total_cost_basis=investment_cost_basis,
             total_market_value=total_market_value,
@@ -562,9 +716,68 @@ class Portfolio:
             total_fees=self._total_fees,
             all_time_cost_basis=all_time_cost_basis,
             weighted_annualized_return=weighted_annualized_return,
+            lt_unrealized_pnl=lt_unrealized_pnl,
+            st_unrealized_pnl=st_unrealized_pnl,
             holdings=holdings,
             dividend_summaries=dividend_summaries,
         )
+
+    def get_lt_st_unrealized_pnl_at_date(self, target_date: date) -> tuple[Decimal, Decimal]:
+        """Compute LT/ST unrealized P&L at a specific historical date by replaying transactions.
+
+        Returns:
+            (lt_pnl, st_pnl) — unrealized P&L for long-term and short-term lots at target_date
+        """
+        # Collect symbols involved in transactions up to target_date
+        symbols: set[str] = set()
+        for txn in self._transactions:
+            if txn.date <= target_date and txn.action in (
+                ActionType.BUY, ActionType.SELL, ActionType.GIFT
+            ):
+                symbols.add(txn.asset)
+
+        if not symbols:
+            return Decimal("0"), Decimal("0")
+
+        # Fetch historical prices around target_date (7-day lookback for weekends/holidays)
+        fetch_start = target_date - timedelta(days=7)
+        historical_prices = price_service.get_historical_prices_batch(
+            list(symbols),
+            datetime.combine(fetch_start, datetime.min.time()),
+            datetime.combine(target_date + timedelta(days=1), datetime.max.time()),
+        )
+
+        # Replay transactions up to target_date in a temp portfolio
+        temp = Portfolio(adjust_splits=self._adjust_splits)
+        for txn in sorted(self._transactions, key=lambda t: t.date):
+            if txn.date <= target_date:
+                temp._process_transaction(txn)
+            else:
+                break
+
+        # Compute LT/ST unrealized P&L at target_date
+        one_year_ago = target_date - timedelta(days=365)
+        lt_pnl = Decimal("0")
+        st_pnl = Decimal("0")
+
+        for symbol, lots in temp._lots.items():
+            prices = historical_prices.get(symbol, {})
+            sorted_keys = sorted(prices.keys())
+            idx = bisect.bisect_right(sorted_keys, target_date) - 1
+            if idx < 0:
+                continue
+            price = prices[sorted_keys[idx]]
+
+            for lot in lots:
+                if lot.quantity <= 0:
+                    continue
+                lot_pnl = (price - lot.cost_per_share) * lot.quantity
+                if lot.purchase_date <= one_year_ago:
+                    lt_pnl += lot_pnl
+                else:
+                    st_pnl += lot_pnl
+
+        return lt_pnl, st_pnl
 
     def get_historical_values(
         self,
@@ -623,14 +836,11 @@ class Portfolio:
         # Note: yfinance returns split-adjusted prices (adjusted to today)
         # Fetch from a few days before calc_start to handle weekends/holidays
         fetch_start = calc_start - timedelta(days=7)
-        historical_prices: dict[str, dict[date, Decimal]] = {}
-        for symbol in symbols:
-            prices = price_service.get_historical_prices(
-                symbol,
-                datetime.combine(fetch_start, datetime.min.time()),
-                datetime.combine(end_date, datetime.max.time()),
-            )
-            historical_prices[symbol] = prices
+        historical_prices = price_service.get_historical_prices_batch(
+            list(symbols),
+            datetime.combine(fetch_start, datetime.min.time()),
+            datetime.combine(end_date, datetime.max.time()),
+        )
 
         # Pre-sort price keys once per symbol for efficient bisect lookups
         sorted_price_keys = {sym: sorted(prices.keys()) for sym, prices in historical_prices.items()}
@@ -740,13 +950,11 @@ class Portfolio:
         })
 
         fetch_start = start_date - timedelta(days=7)
-        prices_by_date: dict[str, dict[date, Decimal]] = {}
-        for symbol in symbols:
-            prices_by_date[symbol] = price_service.get_historical_prices(
-                symbol,
-                datetime.combine(fetch_start, datetime.min.time()),
-                datetime.combine(today, datetime.max.time()),
-            )
+        prices_by_date = price_service.get_historical_prices_batch(
+            symbols,
+            datetime.combine(fetch_start, datetime.min.time()),
+            datetime.combine(today, datetime.max.time()),
+        )
 
         sorted_txns = sorted(self._transactions, key=lambda t: t.date)
         temp_portfolio = Portfolio(adjust_splits=self._adjust_splits)
@@ -875,7 +1083,7 @@ class Portfolio:
         def get_category(symbol: str) -> str:
             symbol_to_category = {
                 'BTC-USD': 'Crypto', 'ETH-USD': 'Crypto', 'MSTR': 'Crypto', 'CRCL': 'Crypto', 'IBIT': 'Crypto',
-                'VOO': 'Index', 'QQQM': 'Index', 'QQQ': 'Index', 'BRK-B': 'Index', 'SOXX': 'Index',
+                'VOO': 'Index', 'QQQM': 'Index', 'QQQ': 'Index', 'BRK-B': 'Index',
                 'CASH': 'Cash',
             }
             if symbol in symbol_to_category:
@@ -1194,16 +1402,16 @@ class Portfolio:
 
         # Baseline: close of last trading day before target_date
         prev_close_prices: dict[str, Optional[Decimal]] = {}
+        hist_batch = price_service.get_historical_prices_batch(
+            symbols,
+            datetime.combine(target_date - timedelta(days=10), datetime.min.time()),
+            datetime.combine(target_date - timedelta(days=1), datetime.max.time()),
+        )
         for symbol in symbols:
-            hist = price_service.get_historical_prices(
-                symbol,
-                datetime.combine(target_date - timedelta(days=10), datetime.min.time()),
-                datetime.combine(target_date - timedelta(days=1), datetime.max.time()),
-            )
-            if hist:
-                keys = sorted(k for k in hist.keys() if k < target_date)
-                if keys:
-                    prev_close_prices[symbol] = hist[keys[-1]]
+            hist = hist_batch.get(symbol) or {}
+            keys = sorted(k for k in hist.keys() if k < target_date)
+            if keys:
+                prev_close_prices[symbol] = hist[keys[-1]]
 
         baseline_value = sum(
             quantities[s] * prev_close_prices[s]

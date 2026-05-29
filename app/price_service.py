@@ -1,6 +1,8 @@
 """Price service for fetching market data using yfinance."""
 
 import logging
+import random
+import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -10,6 +12,26 @@ import yfinance as yf
 from .cache_service import cache_service
 
 logger = logging.getLogger(__name__)
+
+
+def _yf_call_with_retry(fn, *args, **kwargs):
+    """Invoke a yfinance call, retrying on 429 / 'Too Many Requests' with backoff."""
+    delays = (1, 2, 4)
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            msg = str(e).lower()
+            if "too many requests" in msg or "rate limit" in msg or "429" in msg:
+                sleep_for = delay + random.uniform(0, 0.5)
+                logger.warning(
+                    f"yfinance rate limited (attempt {attempt}/{len(delays) + 1}), "
+                    f"sleeping {sleep_for:.1f}s"
+                )
+                time.sleep(sleep_for)
+                continue
+            raise
+    return fn(*args, **kwargs)
 
 
 class PriceService:
@@ -163,21 +185,19 @@ class PriceService:
         start_d = start_date.date() if isinstance(start_date, datetime) else start_date
         end_d = end_date.date() if isinstance(end_date, datetime) else end_date
 
+        # Memory cache — TTL-gated, valid regardless of date range
+        cache_key = f"{symbol}_{start_d}_{end_d}"
+        if cache_key in self._history_cache:
+            data, cached_at = self._history_cache[cache_key]
+            if datetime.now() - cached_at < self.cache_ttl:
+                return data
+
         # Try to get cached prices first (for dates older than 7 days)
         cached_prices = cache_service.get_historical_prices(symbol, start_d, end_d)
 
         # Determine which dates we still need to fetch
         # We need to fetch: dates not in cache AND dates within last 7 days
         cutoff_date = cache_service._get_cache_cutoff_date()
-
-        # If all requested dates are cached, return early
-        if end_d < cutoff_date and len(cached_prices) > 0:
-            # Check if we have all dates (approximately)
-            cache_key = f"{symbol}_{start_d}_{end_d}"
-            if cache_key in self._history_cache:
-                data, cached_at = self._history_cache[cache_key]
-                if datetime.now() - cached_at < self.cache_ttl:
-                    return data
 
         # Determine the fetch range - only fetch what's needed
         if cached_prices:
@@ -194,7 +214,11 @@ class PriceService:
 
         try:
             ticker = yf.Ticker(symbol)
-            history = ticker.history(start=fetch_start, end=end_d + timedelta(days=1))
+            history = _yf_call_with_retry(
+                ticker.history,
+                start=fetch_start,
+                end=end_d + timedelta(days=1),
+            )
 
             fetched_prices = {}
             for date_idx, row in history.iterrows():
@@ -210,7 +234,6 @@ class PriceService:
             all_prices = {**cached_prices, **fetched_prices}
 
             # Update memory cache
-            cache_key = f"{symbol}_{start_d}_{end_d}"
             self._history_cache[cache_key] = (all_prices, datetime.now())
 
             return all_prices
@@ -219,6 +242,136 @@ class PriceService:
             logger.error(f"Error fetching historical prices for {symbol}: {e}")
             # Return cached data if available, even on error
             return cached_prices if cached_prices else {}
+
+    def get_historical_prices_batch(
+        self,
+        symbols: list[str],
+        start_date: datetime,
+        end_date: Optional[datetime] = None,
+    ) -> dict[str, dict[date, Decimal]]:
+        """Batch version of get_historical_prices.
+
+        Uses a single yf.download() call instead of one ticker.history() per
+        symbol, which avoids hitting Yahoo's per-request rate limit when many
+        symbols are needed for one /api/performance request.
+
+        Honors both the persistent cache_service (for dates > cutoff) and the
+        in-memory _history_cache (5-min TTL).
+        """
+        if not symbols:
+            return {}
+        if end_date is None:
+            end_date = datetime.now()
+
+        start_d = start_date.date() if isinstance(start_date, datetime) else start_date
+        end_d = end_date.date() if isinstance(end_date, datetime) else end_date
+
+        cutoff_date = cache_service._get_cache_cutoff_date()
+        results: dict[str, dict[date, Decimal]] = {}
+        need_fetch: dict[str, date] = {}  # symbol -> earliest date to fetch
+
+        for symbol in symbols:
+            cache_key = f"{symbol}_{start_d}_{end_d}"
+            if cache_key in self._history_cache:
+                data, cached_at = self._history_cache[cache_key]
+                if datetime.now() - cached_at < self.cache_ttl:
+                    results[symbol] = data
+                    continue
+
+            cached_prices = cache_service.get_historical_prices(symbol, start_d, end_d)
+            results[symbol] = dict(cached_prices)
+
+            if cached_prices:
+                earliest_cached = min(cached_prices.keys())
+                if earliest_cached <= start_d:
+                    fetch_start = max(start_d, cutoff_date - timedelta(days=7))
+                else:
+                    fetch_start = start_d
+            else:
+                fetch_start = start_d
+
+            if fetch_start <= end_d:
+                need_fetch[symbol] = fetch_start
+
+        if need_fetch:
+            # Group by fetch_start so we batch as much as possible (most symbols
+            # share the same start when called from /api/performance).
+            by_start: dict[date, list[str]] = {}
+            for symbol, fs in need_fetch.items():
+                by_start.setdefault(fs, []).append(symbol)
+
+            for fetch_start, group in by_start.items():
+                try:
+                    data = _yf_call_with_retry(
+                        yf.download,
+                        group,
+                        start=fetch_start.isoformat(),
+                        end=(end_d + timedelta(days=1)).isoformat(),
+                        progress=False,
+                        group_by="ticker" if len(group) > 1 else None,
+                    )
+                except Exception as e:
+                    logger.error(f"Error in batch historical fetch for {group}: {e}")
+                    continue
+
+                for symbol in group:
+                    try:
+                        if len(group) == 1:
+                            sd = data
+                        else:
+                            if symbol not in data.columns.get_level_values(0):
+                                continue
+                            sd = data[symbol]
+
+                        if sd is None or sd.empty:
+                            continue
+
+                        fetched: dict[date, Decimal] = {}
+                        for ts, price in sd["Close"].dropna().items():
+                            d = ts.date() if hasattr(ts, "date") else ts
+                            fetched[d] = Decimal(str(price))
+
+                        if fetched:
+                            cache_service.save_historical_prices_batch(symbol, fetched)
+                            results[symbol].update(fetched)
+                    except Exception as e:
+                        logger.error(f"Error processing batch historical data for {symbol}: {e}")
+
+        now = datetime.now()
+        for symbol in symbols:
+            cache_key = f"{symbol}_{start_d}_{end_d}"
+            self._history_cache[cache_key] = (results.get(symbol, {}), now)
+
+        return results
+
+    def get_year_start_prices_batch(
+        self, symbols: list[str], year: int
+    ) -> dict[str, Optional[Decimal]]:
+        """Return each symbol's closing price on the last trading day of ``year - 1``.
+
+        Used as the baseline for YTD performance for the given calendar year.
+        Reuses ``get_historical_prices_batch`` (and its cache); for stocks this
+        will be Dec 31 (or the last weekday before), for crypto Dec 31 itself.
+        """
+        if not symbols:
+            return {}
+
+        prior_year_end = date(year - 1, 12, 31)
+        # Look back a couple of weeks to be safe (long holiday weekends, etc.)
+        fetch_start = datetime.combine(prior_year_end - timedelta(days=14), datetime.min.time())
+        fetch_end = datetime.combine(prior_year_end, datetime.max.time())
+
+        historical = self.get_historical_prices_batch(symbols, fetch_start, fetch_end)
+
+        results: dict[str, Optional[Decimal]] = {}
+        for symbol in symbols:
+            prices = historical.get(symbol) or {}
+            applicable = [d for d in prices.keys() if d <= prior_year_end]
+            if applicable:
+                results[symbol] = prices[max(applicable)]
+            else:
+                results[symbol] = None
+        return results
 
     def _is_crypto_symbol(self, symbol: str) -> bool:
         """Return True if this symbol is a 24/7 crypto asset."""

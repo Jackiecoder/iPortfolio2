@@ -46,6 +46,28 @@ async def wait_for_data(page):
     await asyncio.sleep(5)
 
 
+# localStorage keys controlling per-card collapse state. Set BEFORE the page
+# loads so the cards mount in collapsed form (saves vertical space in the
+# screenshot and skips chart rendering for sections we don't care about).
+COLLAPSED_PREFS = {
+    # Summary cards: '1' = expanded, '0' or absent = collapsed
+    "summaryCardsExpanded": "0",
+    # Per-card chevron toggles: '1' = collapsed, '0' or absent = expanded
+    "cardCollapsed:pnlChartBody": "1",
+    "cardCollapsed:portfolioChartBody": "1",
+    "cardCollapsed:allocationChartBody": "1",
+}
+
+
+async def apply_collapse_prefs(page):
+    """Set localStorage so all foldable sections render collapsed."""
+    for key, value in COLLAPSED_PREFS.items():
+        await page.evaluate(
+            "([k, v]) => localStorage.setItem(k, v)",
+            [key, value],
+        )
+
+
 async def take_screenshots(browser):
     """Take screenshots in both normal and anonymous modes."""
     SCREENSHOT_DIR.mkdir(exist_ok=True)
@@ -61,6 +83,7 @@ async def take_screenshots(browser):
     # Screenshot 1: Normal mode
     await page.goto(URL)
     await page.evaluate("localStorage.setItem('anonymousMode', 'false')")
+    await apply_collapse_prefs(page)
     await page.reload()
     await wait_for_data(page)
 
@@ -70,6 +93,7 @@ async def take_screenshots(browser):
 
     # Screenshot 2: Anonymous mode
     await page.evaluate("localStorage.setItem('anonymousMode', 'true')")
+    await apply_collapse_prefs(page)
     await page.reload()
     await wait_for_data(page)
 

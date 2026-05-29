@@ -115,7 +115,6 @@ const symbolToCategory = {
     'DIA': 'Index',
     'SCHD': 'Index',
     'VYM': 'Index',
-    'SOXX': 'Index',
 
     // Cash
     'CASH': 'Cash',
@@ -301,6 +300,12 @@ function formatPrice(symbol, value, alwaysShow = false) {
         minimumFractionDigits: dp,
         maximumFractionDigits: dp
     }).format(value);
+}
+
+// Strip "-USD" suffix for display (BTC-USD → BTC)
+function displaySymbol(symbol) {
+    if (!symbol) return symbol;
+    return symbol.replace(/-USD$/i, '');
 }
 
 function formatNumber(value, decimals = 2) {
@@ -514,6 +519,24 @@ async function fetchDailyPnl(useCache = true) {
     }
 }
 
+async function fetchMonthlyPnlData(useCache = true) {
+    const cacheKey = 'monthly_pnl_data';
+    if (useCache) {
+        const cached = apiCache.get(cacheKey);
+        if (cached) return cached;
+    }
+    try {
+        const response = await fetch('/api/daily-pnl?num_days=400');
+        if (!response.ok) throw new Error('Failed to fetch monthly P&L data');
+        const data = await response.json();
+        apiCache.set(cacheKey, data);
+        return data;
+    } catch (error) {
+        console.error('Error fetching monthly P&L data:', error);
+        return null;
+    }
+}
+
 async function fetchDividends(useCache = true) {
     const cacheKey = 'dividends';
     if (useCache) {
@@ -636,6 +659,24 @@ function updateSummaryCards(summary) {
     const pnlTooltip = `Unrealized P&L = Investment Value - Cost Basis\n${formatCurrency(summary.investment_market_value)} - ${formatCurrency(summary.total_cost_basis)} = ${formatCurrency(summary.total_unrealized_pnl)}`;
     pnlElement.dataset.tooltip = pnlTooltip;
 
+    // LT/ST breakdown of unrealized P&L (live)
+    const unrealLtSt = document.getElementById('unrealizedLtSt');
+    if (unrealLtSt) {
+        if (summary.lt_unrealized_pnl != null && summary.st_unrealized_pnl != null) {
+            const lt = summary.lt_unrealized_pnl;
+            const st = summary.st_unrealized_pnl;
+            const ltSign = lt >= 0 ? '+' : '';
+            const stSign = st >= 0 ? '+' : '';
+            const ltClass = lt >= 0 ? 'text-success' : 'text-danger';
+            const stClass = st >= 0 ? 'text-success' : 'text-danger';
+            unrealLtSt.innerHTML = `<span class="text-muted">LT </span><span class="${ltClass}">${ltSign}${formatCurrencyAlways(lt)}</span>`
+                + `<span class="text-muted mx-1">|</span>`
+                + `<span class="text-muted">ST </span><span class="${stClass}">${stSign}${formatCurrencyAlways(st)}</span>`;
+        } else {
+            unrealLtSt.textContent = '';
+        }
+    }
+
     const totalPnlElement = document.getElementById('totalPnl');
     totalPnlElement.textContent = formatCurrency(summary.total_pnl);
     totalPnlElement.className = `card-text fs-4 fw-bold mb-0 has-tooltip ${summary.total_pnl >= 0 ? 'text-success' : 'text-danger'}`;
@@ -660,6 +701,31 @@ function updateSummaryCards(summary) {
     const ytdPctEl = document.getElementById('ytdPnlPercent');
     ytdPctEl.textContent = `${ytdSign}${ytdPct.toFixed(2)}%`;
     ytdPctEl.className = `card-text fs-6 mb-0 ${ytdColor}`;
+
+    const ltSt = document.getElementById('ytdLtSt');
+    if (ltSt && summary.ytd_lt_pnl != null && summary.ytd_st_pnl != null) {
+        const lt = summary.ytd_lt_pnl;
+        const st = summary.ytd_st_pnl;
+        const ltSign = lt >= 0 ? '+' : '';
+        const stSign = st >= 0 ? '+' : '';
+        const ltClass = lt >= 0 ? 'text-success' : 'text-danger';
+        const stClass = st >= 0 ? 'text-success' : 'text-danger';
+        ltSt.innerHTML = `<span class="text-muted">LT </span><span class="${ltClass}">${ltSign}${formatCurrencyAlways(lt)}</span>`
+            + `<span class="text-muted mx-1">|</span>`
+            + `<span class="text-muted">ST </span><span class="${stClass}">${stSign}${formatCurrencyAlways(st)}</span>`;
+    }
+
+    // Condensed strip (always visible, regardless of collapse state)
+    function setStrip(id, val, fmt = formatCurrency) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (val == null) { el.textContent = '--'; el.className = ''; return; }
+        el.textContent = fmt(val);
+        el.className = val >= 0 ? 'text-success fw-semibold' : 'text-danger fw-semibold';
+    }
+    setStrip('stripUnrealizedPnl', summary.total_unrealized_pnl);
+    setStrip('stripTotalPnl', summary.total_pnl);
+    setStrip('stripYtdPnl', summary.ytd_pnl);
 }
 
 function sortHoldings(holdings, column, direction) {
@@ -757,12 +823,14 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
     const weightedAnnualTooltip = 'title="Per-lot cost-basis weighted CAGR"';
 
     // Allocation %, Target %, Δ Target (group-aware)
+    const category = getCategory(h.symbol);
+    const isCategoryLevelTarget = category === 'Individual Stocks'; // uses category-level target, not per-symbol
     const targetKey = getTargetKey(h.symbol);
     const isGrouped = !!targetGroups[targetKey];
     const groupMV = isGrouped ? getGroupMarketValue(h.symbol, holdings) : (h.market_value || 0);
     const allocPct = totalInvValue > 0 ? (h.market_value || 0) / totalInvValue * 100 : 0;
     const groupAllocPct = totalInvValue > 0 ? groupMV / totalInvValue * 100 : 0;
-    const targetPct = getTargetPct(h.symbol);
+    const targetPct = isCategoryLevelTarget ? null : getTargetPct(h.symbol);
     const hasTarget = targetPct != null && targetPct > 0;
     const isCanonical = !isGrouped || targetKey === h.symbol;
     const deltaTarget = hasTarget && isCanonical ? (targetPct / 100 * totalInvValue - groupMV) : null;
@@ -770,21 +838,20 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
     const groupAllocBadge = isGrouped ? ` <span class="cat-target-sum" title="${targetKey} group total">${groupAllocPct.toFixed(1)}%</span>` : '';
     const allocPctText = `${allocPct.toFixed(1)}%${groupAllocBadge}`;
     const allocTitle = isGrouped ? `title="${targetKey} group: ${groupAllocPct.toFixed(1)}%"` : '';
-    const category = getCategory(h.symbol);
     const catTargetSum = categoryTargetSums[category];
-    const catSumHtml = catTargetSum != null ? `<span class="cat-target-sum" title="${category} target total">${catTargetSum.toFixed(1)}%</span>` : '';
+    const catSumHtml = !isCategoryLevelTarget && catTargetSum != null ? `<span class="cat-target-sum" title="${category} target total">${catTargetSum.toFixed(1)}%</span>` : '';
     const targetPctText = hasTarget ? `${targetPct.toFixed(1)}%` : '--';
-    // Non-canonical grouped members: hide target and delta columns
-    const targetCellContent = !isCanonical
-        ? ''
-        : `${targetPctText} ${catSumHtml}`;
+    // Individual Stocks: no per-symbol target; non-canonical grouped members: hide target and delta columns
+    const targetCellContent = isCategoryLevelTarget
+        ? '--'
+        : (!isCanonical ? '' : `${targetPctText} ${catSumHtml}`);
     let deltaTargetHtml = '';
     if (deltaTarget !== null) {
         const targetAmt = targetPct / 100 * totalInvValue;
         const dtSign = deltaTarget >= 0 ? '+' : '';
         const dtClass = deltaTarget >= 0 ? 'delta-buy' : 'delta-sell';
         deltaTargetHtml = `<div class="delta-target-wrap"><span class="delta-target-amt">${formatCurrencyAlways(targetAmt)}</span><span class="${dtClass}">${dtSign}${formatCurrencyAlways(deltaTarget)}</span></div>`;
-    } else if (!isCanonical) {
+    } else if (!isCanonical || isCategoryLevelTarget) {
         deltaTargetHtml = '';
     } else {
         deltaTargetHtml = '<span class="text-muted">--</span>';
@@ -792,29 +859,65 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
 
     return `
     <tr class="holding-row" data-symbol="${h.symbol}" style="cursor:pointer;">
-        <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${h.symbol}</strong></td>
-        <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<br><span class="text-muted" style="font-size:0.75em;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)} / ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</span>` : ''}</td>
+        <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong></td>
+        <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)}</div><div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</div>` : ''}</td>
         <td data-col="2">${formatPrice(h.symbol, h.avg_cost)}</td>
         <td data-col="3">${formatCurrency(h.cost_basis)}</td>
         <td data-col="4">${formatPrice(h.symbol, h.current_price, true)} ${dailyChangePctHtml}</td>
         <td data-col="5" class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
+        <td data-col="17" class="${(h.ytd_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl != null ? `${h.ytd_pnl >= 0 ? '+' : ''}${formatCurrencyAlways(h.ytd_pnl)}` : '--'}${buildLtStBreakdownHtml(h.lt_ytd_pnl, h.st_ytd_pnl)}</td>
+        <td data-col="18" class="${(h.ytd_pnl_percent || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl_percent != null ? formatPercent(h.ytd_pnl_percent) : '--'}</td>
         <td data-col="6">${formatCurrency(h.market_value)}</td>
         <td data-col="7" ${allocTitle}>${allocPctText}</td>
-        <td data-col="8" class="target-pct-cell" data-symbol="${targetKey}">${targetCellContent}</td>
+        <td data-col="8" ${isCategoryLevelTarget ? '' : `class="target-pct-cell" data-symbol="${targetKey}"`}>${targetCellContent}</td>
         <td data-col="9">${deltaTargetHtml}</td>
-        <td data-col="10" class="${h.unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(h.unrealized_pnl)}</td>
+        <td data-col="10" class="${h.unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(h.unrealized_pnl)}${buildLtStBreakdownHtml(h.lt_unrealized_pnl, h.st_unrealized_pnl)}</td>
         <td data-col="11" class="${h.pnl_percent >= 0 ? 'text-success' : 'text-danger'}">${formatPercent(h.pnl_percent)}</td>
+        <td data-col="14" class="${(h.realized_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.realized_pnl != null ? formatCurrency(h.realized_pnl) : '--'}${buildLtStBreakdownHtml(h.lt_realized_pnl, h.st_realized_pnl)}</td>
+        <td data-col="15" class="${(h.total_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.total_pnl != null ? formatCurrency(h.total_pnl) : '--'}</td>
+        <td data-col="16" class="${(h.total_pnl_percent || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.total_pnl_percent != null ? formatPercent(h.total_pnl_percent) : '--'}</td>
         <td data-col="12" class="${annualReturnClass}" ${annualTooltip}>${annualReturnText}</td>
         <td data-col="13" class="${weightedAnnualReturnClass}" ${weightedAnnualTooltip}>${weightedAnnualReturnText}</td>
     </tr>`;
+}
+
+// Helper: render LT/ST sub-line under a P&L cell.
+// Returns empty string if both are null/0 or splits aren't meaningful.
+function buildLtStBreakdownHtml(lt, st) {
+    if (lt == null && st == null) return '';
+    const ltVal = lt || 0;
+    const stVal = st || 0;
+    if (ltVal === 0 && stVal === 0) return '';
+    const fmt = (v) => `${v >= 0 ? '+' : ''}${formatCurrencyAlways(v)}`;
+    const ltCls = ltVal >= 0 ? 'text-success' : 'text-danger';
+    const stCls = stVal >= 0 ? 'text-success' : 'text-danger';
+    return `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">LT <span class="${ltCls}">${fmt(ltVal)}</span></div>`
+         + `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST <span class="${stCls}">${fmt(stVal)}</span></div>`;
 }
 
 function buildTotalRowHtml(holdings, totalInvValue) {
     const totalMV = holdings.reduce((s, h) => s + (h.market_value || 0), 0);
     const totalCost = holdings.reduce((s, h) => s + (h.cost_basis || 0), 0);
     const totalPnl = holdings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0);
+    const totalLtUnreal = holdings.reduce((s, h) => s + (h.lt_unrealized_pnl || 0), 0);
+    const totalStUnreal = holdings.reduce((s, h) => s + (h.st_unrealized_pnl || 0), 0);
+    const totalRealized = holdings.reduce((s, h) => s + (h.realized_pnl || 0), 0);
+    const totalLtReal = holdings.reduce((s, h) => s + (h.lt_realized_pnl || 0), 0);
+    const totalStReal = holdings.reduce((s, h) => s + (h.st_realized_pnl || 0), 0);
+    const totalTotalPnl = totalPnl + totalRealized;
     const totalDaily = holdings.reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    const totalYtd = holdings.reduce((s, h) => s + (h.ytd_pnl || 0), 0);
+    const totalLtYtd = holdings.reduce((s, h) => s + (h.lt_ytd_pnl || 0), 0);
+    const totalStYtd = holdings.reduce((s, h) => s + (h.st_ytd_pnl || 0), 0);
+    const totalYtdBaseline = holdings.reduce(
+        (s, h) => s + ((h.market_value || 0) - (h.ytd_pnl || 0)), 0);
+    const totalYtdPct = totalYtdBaseline > 0 ? (totalYtd / totalYtdBaseline * 100) : 0;
     const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost * 100) : 0;
+    // Total % uses all-time invested cost (current + sold) for parity with Total P&L semantics
+    // Approximation here: sum of per-symbol all-time cost ≈ totalCost + (sum cost of sales).
+    // We don't have sold cost per holding row, so fall back to totalCost which is close enough
+    // for a top-line %; users get exact numbers in the Daily P&L summary card.
+    const totalTotalPnlPct = totalCost > 0 ? (totalTotalPnl / totalCost * 100) : 0;
 
     // Only count canonical target keys (skip orphaned non-canonical grouped symbols)
     const canonicalTargets = Object.entries(targetAllocations).filter(([key]) => {
@@ -841,7 +944,11 @@ function buildTotalRowHtml(holdings, totalInvValue) {
 
     const totalDailyClass = totalDaily >= 0 ? 'text-success' : 'text-danger';
     const totalDailySign = totalDaily >= 0 ? '+' : '';
+    const totalYtdClass = totalYtd >= 0 ? 'text-success' : 'text-danger';
+    const totalYtdSign = totalYtd >= 0 ? '+' : '';
     const totalPnlClass = totalPnl >= 0 ? 'text-success' : 'text-danger';
+    const totalRealizedClass = totalRealized >= 0 ? 'text-success' : 'text-danger';
+    const totalTotalPnlClass = totalTotalPnl >= 0 ? 'text-success' : 'text-danger';
 
     return `
         <tr class="total-row">
@@ -850,12 +957,17 @@ function buildTotalRowHtml(holdings, totalInvValue) {
             <td data-col="3"><strong>${formatCurrency(totalCost)}</strong></td>
             <td data-col="4"></td>
             <td data-col="5" class="${totalDailyClass}"><strong>${totalDailySign}${formatCurrencyAlways(totalDaily)}</strong></td>
+            <td data-col="17" class="${totalYtdClass}"><strong>${totalYtdSign}${formatCurrencyAlways(totalYtd)}</strong>${buildLtStBreakdownHtml(totalLtYtd, totalStYtd)}</td>
+            <td data-col="18" class="${totalYtdClass}"><strong>${formatPercent(totalYtdPct)}</strong></td>
             <td data-col="6"><strong>${formatCurrency(totalMV)}</strong></td>
             <td data-col="7"><strong>100.0%</strong></td>
             <td data-col="8"><strong>${targetSumText}</strong>${targetWarn}</td>
             <td data-col="9">${netDeltaHtml}</td>
-            <td data-col="10" class="${totalPnlClass}"><strong>${formatCurrency(totalPnl)}</strong></td>
+            <td data-col="10" class="${totalPnlClass}"><strong>${formatCurrency(totalPnl)}</strong>${buildLtStBreakdownHtml(totalLtUnreal, totalStUnreal)}</td>
             <td data-col="11" class="${totalPnlClass}"><strong>${formatPercent(totalPnlPct)}</strong></td>
+            <td data-col="14" class="${totalRealizedClass}"><strong>${formatCurrency(totalRealized)}</strong>${buildLtStBreakdownHtml(totalLtReal, totalStReal)}</td>
+            <td data-col="15" class="${totalTotalPnlClass}"><strong>${formatCurrency(totalTotalPnl)}</strong></td>
+            <td data-col="16" class="${totalTotalPnlClass}"><strong>${formatPercent(totalTotalPnlPct)}</strong></td>
             <td data-col="12"></td><td data-col="13"></td>
         </tr>`;
 }
@@ -866,8 +978,21 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
     const mv = catHoldings.reduce((s, h) => s + (h.market_value || 0), 0);
     const cost = catHoldings.reduce((s, h) => s + (h.cost_basis || 0), 0);
     const pnl = catHoldings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0);
+    const ltUnreal = catHoldings.reduce((s, h) => s + (h.lt_unrealized_pnl || 0), 0);
+    const stUnreal = catHoldings.reduce((s, h) => s + (h.st_unrealized_pnl || 0), 0);
+    const realized = catHoldings.reduce((s, h) => s + (h.realized_pnl || 0), 0);
+    const ltReal = catHoldings.reduce((s, h) => s + (h.lt_realized_pnl || 0), 0);
+    const stReal = catHoldings.reduce((s, h) => s + (h.st_realized_pnl || 0), 0);
+    const totalCatPnl = pnl + realized;
     const daily = catHoldings.reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    const ytd = catHoldings.reduce((s, h) => s + (h.ytd_pnl || 0), 0);
+    const ltYtd = catHoldings.reduce((s, h) => s + (h.lt_ytd_pnl || 0), 0);
+    const stYtd = catHoldings.reduce((s, h) => s + (h.st_ytd_pnl || 0), 0);
+    const ytdBaseline = catHoldings.reduce(
+        (s, h) => s + ((h.market_value || 0) - (h.ytd_pnl || 0)), 0);
+    const ytdPct = ytdBaseline > 0 ? (ytd / ytdBaseline * 100) : 0;
     const pnlPct = cost > 0 ? (pnl / cost * 100) : 0;
+    const totalCatPnlPct = cost > 0 ? (totalCatPnl / cost * 100) : 0;
     const allocPct = totalInvValue > 0 ? (mv / totalInvValue * 100) : 0;
     const catTargetSum = categoryTargetSums[catName];
     const catTargetText = catTargetSum != null ? `${catTargetSum.toFixed(1)}%` : '--';
@@ -884,7 +1009,11 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
 
     const dailyClass = daily >= 0 ? 'text-success' : 'text-danger';
     const dailySign = daily >= 0 ? '+' : '';
+    const ytdClass = ytd >= 0 ? 'text-success' : 'text-danger';
+    const ytdSign = ytd >= 0 ? '+' : '';
     const pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+    const realizedClass = realized >= 0 ? 'text-success' : 'text-danger';
+    const totalCatPnlClass = totalCatPnl >= 0 ? 'text-success' : 'text-danger';
 
     return `
         <tr class="category-header-row" style="background-color: #fef9e7; border-left: 4px solid ${color};">
@@ -893,12 +1022,17 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
             <td data-col="3"><strong>${formatCurrency(cost)}</strong></td>
             <td data-col="4" class="${dailyClass}"><strong>${formatPercent(mv > 0 ? (daily / (mv - daily) * 100) : 0)}</strong></td>
             <td data-col="5" class="${dailyClass}"><strong>${dailySign}${formatCurrencyAlways(daily)}</strong></td>
+            <td data-col="17" class="${ytdClass}"><strong>${ytdSign}${formatCurrencyAlways(ytd)}</strong>${buildLtStBreakdownHtml(ltYtd, stYtd)}</td>
+            <td data-col="18" class="${ytdClass}"><strong>${formatPercent(ytdPct)}</strong></td>
             <td data-col="6"><strong>${formatCurrency(mv)}</strong></td>
             <td data-col="7"><strong>${allocPct.toFixed(1)}%</strong></td>
-            <td data-col="8"><strong>${catTargetText}</strong></td>
+            <td data-col="8" ${catName === 'Individual Stocks' ? `class="target-pct-cell" data-symbol="category:Individual Stocks" style="cursor:pointer;"` : ''}><strong>${catTargetText}</strong></td>
             <td data-col="9">${catDeltaHtml}</td>
-            <td data-col="10" class="${pnlClass}"><strong>${formatCurrency(pnl)}</strong></td>
+            <td data-col="10" class="${pnlClass}"><strong>${formatCurrency(pnl)}</strong>${buildLtStBreakdownHtml(ltUnreal, stUnreal)}</td>
             <td data-col="11" class="${pnlClass}"><strong>${formatPercent(pnlPct)}</strong></td>
+            <td data-col="14" class="${realizedClass}"><strong>${formatCurrency(realized)}</strong>${buildLtStBreakdownHtml(ltReal, stReal)}</td>
+            <td data-col="15" class="${totalCatPnlClass}"><strong>${formatCurrency(totalCatPnl)}</strong></td>
+            <td data-col="16" class="${totalCatPnlClass}"><strong>${formatPercent(totalCatPnlPct)}</strong></td>
             <td data-col="12"></td><td data-col="13"></td>
         </tr>`;
 }
@@ -909,7 +1043,7 @@ function renderHoldingsTable(holdings) {
     if (!holdings || holdings.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="14" class="empty-state">
+                <td colspan="19" class="empty-state">
                     <p>No holdings found</p>
                     <p>Upload a CSV file to get started</p>
                 </td>
@@ -922,19 +1056,21 @@ function renderHoldingsTable(holdings) {
     const totalInvValue = holdings
         .reduce((sum, h) => sum + (h.market_value || 0), 0);
 
-    // Pre-compute category target sums
+    // Pre-compute category target sums from targetAllocations.
+    // Categories with a "category:<name>" key use that directly (e.g. Individual Stocks).
+    // Others sum their individual symbol targets.
     const categoryTargetSums = {};
-    const seenTargetKeys = new Set();
-    holdings.forEach(h => {
-        const tKey = getTargetKey(h.symbol);
-        if (seenTargetKeys.has(tKey)) return;
-        seenTargetKeys.add(tKey);
-        const pct = targetAllocations[tKey];
+    for (const [key, pct] of Object.entries(targetAllocations)) {
         if (pct != null && pct > 0) {
-            const cat = getCategory(h.symbol);
-            categoryTargetSums[cat] = (categoryTargetSums[cat] || 0) + pct;
+            if (key.startsWith('category:')) {
+                const catName = key.slice('category:'.length);
+                categoryTargetSums[catName] = pct;
+            } else if (getCategory(key) !== 'Individual Stocks') {
+                const cat = getCategory(key);
+                categoryTargetSums[cat] = (categoryTargetSums[cat] || 0) + pct;
+            }
         }
-    });
+    }
 
     // Sort holdings
     const sortedHoldings = sortHoldings(holdings, holdingsSortColumn, holdingsSortDirection);
@@ -996,13 +1132,13 @@ async function toggleTransactionDetail(holdingRow) {
     const detailRow = document.createElement('tr');
     detailRow.className = 'txn-detail-row';
     detailRow.dataset.symbol = symbol;
-    detailRow.innerHTML = `<td colspan="14"><div class="txn-detail-container"><span class="text-muted small">Loading...</span></div></td>`;
+    detailRow.innerHTML = `<td colspan="17"><div class="txn-detail-container"><span class="text-muted small">Loading...</span></div></td>`;
     holdingRow.insertAdjacentElement('afterend', detailRow);
 
-    // Fetch (use cache if available)
+    // Fetch all transactions (no limit) so running totals are accurate
     if (!transactionCache[symbol]) {
         try {
-            const res = await fetch(`/api/transactions/${symbol}?limit=20&actions=BUY,SELL`);
+            const res = await fetch(`/api/transactions/${symbol}?limit=10000&actions=BUY,SELL,GIFT,SPLIT`);
             if (!res.ok) throw new Error('Failed to fetch');
             const data = await res.json();
             transactionCache[symbol] = data.transactions;
@@ -1018,6 +1154,36 @@ async function toggleTransactionDetail(holdingRow) {
         return;
     }
 
+    // Compute running quantity and avg cost using FIFO lot tracking (oldest → newest)
+    const oldestFirst = [...txns].reverse();
+    let lots = []; // [{qty, costPerShare}] in purchase order
+    for (const t of oldestFirst) {
+        const qty = t.quantity || 0;
+        const price = t.ave_price != null ? t.ave_price
+                      : (qty > 0 && t.amount != null ? Math.abs(t.amount) / qty : 0);
+        if (t.action === 'BUY') {
+            lots.push({ qty, costPerShare: price });
+        } else if (t.action === 'GIFT' || t.action === 'SPLIT') {
+            lots.push({ qty, costPerShare: 0 });
+        } else if (t.action === 'SELL') {
+            // Remove shares FIFO
+            let remaining = qty;
+            while (remaining > 1e-9 && lots.length > 0) {
+                if (lots[0].qty <= remaining + 1e-9) {
+                    remaining -= lots[0].qty;
+                    lots.shift();
+                } else {
+                    lots[0].qty -= remaining;
+                    remaining = 0;
+                }
+            }
+        }
+        const totalQty = lots.reduce((s, l) => s + l.qty, 0);
+        const totalCost = lots.reduce((s, l) => s + l.qty * l.costPerShare, 0);
+        t._runningQty = totalQty;
+        t._runningAvgCost = totalQty > 1e-9 ? totalCost / totalQty : 0;
+    }
+
     const actionClass = (action) => {
         switch (action) {
             case 'BUY': case 'GIFT': return 'txn-buy';
@@ -1031,12 +1197,17 @@ async function toggleTransactionDetail(holdingRow) {
         const qty = t.quantity !== null ? formatNumber(t.quantity, 4) : '--';
         const price = t.ave_price !== null ? formatPrice(symbol, t.ave_price, true) : '--';
         const amount = t.amount !== null ? formatCurrencyAlways(t.amount) : '--';
+        const heldQty = t._runningQty != null ? formatNumber(t._runningQty, 4) : '--';
+        const avgCostAfter = (t._runningQty > 0 && t._runningAvgCost != null)
+            ? formatPrice(symbol, t._runningAvgCost, true) : '--';
         return `<tr>
             <td>${t.date}</td>
             <td><span class="txn-action ${actionClass(t.action)}">${t.action}</span></td>
             <td>${qty}</td>
             <td>${price}</td>
             <td>${amount}</td>
+            <td class="text-muted">${heldQty}</td>
+            <td class="text-muted">${avgCostAfter}</td>
         </tr>`;
     }).join('');
 
@@ -1049,6 +1220,8 @@ async function toggleTransactionDetail(holdingRow) {
                     <th>Quantity</th>
                     <th>Price</th>
                     <th>Amount</th>
+                    <th>Held Qty</th>
+                    <th>Avg Cost</th>
                 </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -1254,7 +1427,7 @@ function renderSoldTable() {
     // Build rows
     let rows = sortedAssets.map(s => `
         <tr>
-            <td>${getAssetIconHtml(s.symbol)}<strong>${s.symbol}</strong></td>
+            <td>${getAssetIconHtml(s.symbol)}<strong>${displaySymbol(s.symbol)}</strong></td>
             <td>${formatNumber(s.quantity, 4)}</td>
             <td>${formatPrice(s.symbol, s.avg_cost)}</td>
             <td>${formatCurrency(s.cost_basis)}</td>
@@ -1660,10 +1833,10 @@ function updateDailyPnlList(dailyPnlData, intraday) {
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-    // Build days list from the /api/daily-pnl response
+    // Build days list from the /api/daily-pnl response (need ~35 days for 5 weeks)
     const rawDays = (dailyPnlData && dailyPnlData.daily_pnl) ? [...dailyPnlData.daily_pnl].reverse() : [];
 
-    const days = rawDays.slice(0, 14).map(entry => {
+    const days = rawDays.slice(0, 42).map(entry => {
         const dateStr = (entry.date || '').substring(0, 10);
         let change = entry.daily_pnl;
         let changePct = entry.daily_pnl_percent;
@@ -1682,7 +1855,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         // Skip today if no data yet
         if (change === 0 && dateStr === todayStr && todayDailyPnl === null) return null;
 
-        return { date: entry.date, change, changePct, assetChanges };
+        return { date: dateStr, change, changePct, assetChanges };
     }).filter(Boolean);
 
     if (days.length === 0) {
@@ -1690,42 +1863,306 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         return;
     }
 
-    container.innerHTML = days.map((d, i) => {
-        const dateStr = d.date.length > 10 ? d.date.substring(0, 10) : d.date;
-        const [y, m, day] = dateStr.split('-');
-        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        const label = `${monthNames[parseInt(m) - 1]} ${parseInt(day)}`;
-        const colorClass = d.change >= 0 ? 'text-success' : 'text-danger';
-        const sign = d.change >= 0 ? '+' : '';
-        const amountStr = `${sign}${formatCurrencyAlways(d.change)}`;
-        const pctStr = `${sign}${d.changePct.toFixed(2)}%`;
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-        const breakdownRows = [...d.assetChanges].sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl)).map(a => {
-            const aSign = a.pnl >= 0 ? '+' : '';
-            const aClass = a.pnl >= 0 ? 'text-success' : 'text-danger';
+    // Compute Monday-of-week (ISO week start) for a YYYY-MM-DD string
+    function mondayOf(dateStr) {
+        const [y, m, d] = dateStr.split('-').map(Number);
+        const dt = new Date(y, m - 1, d);
+        const dow = dt.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+        const offset = (dow === 0) ? 6 : (dow - 1);
+        dt.setDate(dt.getDate() - offset);
+        return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    }
+
+    // Group days by week (Monday-start)
+    const weekMap = new Map();
+    for (const d of days) {
+        const key = mondayOf(d.date);
+        if (!weekMap.has(key)) weekMap.set(key, []);
+        weekMap.get(key).push(d);
+    }
+
+    // Pick the 5 most recent weeks. Newest (current) on the LEFT.
+    const weekKeys = [...weekMap.keys()].sort().reverse().slice(0, 5);
+
+    if (weekKeys.length === 0) {
+        container.innerHTML = '<div class="text-center text-muted py-4">No data available</div>';
+        return;
+    }
+
+    function fmtMD(dt) {
+        return `${monthNames[dt.getMonth()]} ${dt.getDate()}`;
+    }
+
+    const columnsHtml = weekKeys.map((wkKey, wkIdx) => {
+        const wkDays = weekMap.get(wkKey).slice().sort((a, b) => a.date.localeCompare(b.date));
+        const weekSum = wkDays.reduce((s, d) => s + (d.change || 0), 0);
+        const weekSign = weekSum >= 0 ? '+' : '';
+        const weekClass = weekSum >= 0 ? 'text-success' : 'text-danger';
+
+        // Aggregate per-asset for the week
+        const assetAgg = {};
+        wkDays.forEach(d => {
+            (d.assetChanges || []).forEach(a => {
+                assetAgg[a.symbol] = (assetAgg[a.symbol] || 0) + (a.pnl || 0);
+            });
+        });
+        const aggSorted = Object.entries(assetAgg)
+            .filter(([, v]) => Math.abs(v) > 0.005)
+            .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+
+        const breakdownRows = aggSorted.map(([sym, pnl]) => {
+            const cls = pnl >= 0 ? 'text-success' : 'text-danger';
+            const sgn = pnl >= 0 ? '+' : '';
             return `<div class="daily-pnl-breakdown-row">
-                <span class="breakdown-symbol">${getAssetIconHtml(a.symbol)}${a.symbol}</span>
-                <span class="${aClass}">${anonymousMode ? '***' : aSign + formatCurrencyAlways(a.pnl)}</span>
+                <span class="breakdown-symbol">${getAssetIconHtml(sym)}${sym}</span>
+                <span class="${cls}">${anonymousMode ? '***' : sgn + formatCurrencyAlways(pnl)}</span>
+            </div>`;
+        }).join('') || `<div class="text-muted small text-center py-2">No moves</div>`;
+
+        // Week header label "Apr 28 – May 4"
+        const [wy, wm, wd] = wkKey.split('-').map(Number);
+        const weekStart = new Date(wy, wm - 1, wd);
+        const weekEnd = new Date(wy, wm - 1, wd + 6);
+        const isCurrent = wkIdx === 0;
+        const headerLabel = `${fmtMD(weekStart)} – ${fmtMD(weekEnd)}${isCurrent ? ' <span class="weekly-pnl-badge">current</span>' : ''}`;
+
+        const dayRowsHtml = wkDays.map((d, di) => {
+            const [yy, mm, dd] = d.date.split('-').map(Number);
+            const label = `${monthNames[mm - 1]} ${dd}`;
+            const colorClass = d.change >= 0 ? 'text-success' : 'text-danger';
+            const sign = d.change >= 0 ? '+' : '';
+            const amountStr = `${sign}${formatCurrencyAlways(d.change)}`;
+            const pctStr = `${sign}${(d.changePct ?? 0).toFixed(2)}%`;
+            const dow = new Date(yy, mm - 1, dd).getDay();
+            const weekendClass = (dow === 0 || dow === 6) ? ' weekend' : '';
+
+            const dayBreakdownRows = [...(d.assetChanges || [])]
+                .filter(a => Math.abs(a.pnl || 0) > 0.005)
+                .sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl))
+                .map(a => {
+                    const aSign = a.pnl >= 0 ? '+' : '';
+                    const aClass = a.pnl >= 0 ? 'text-success' : 'text-danger';
+                    return `<div class="daily-pnl-breakdown-row">
+                        <span class="breakdown-symbol">${getAssetIconHtml(a.symbol)}${a.symbol}</span>
+                        <span class="${aClass}">${anonymousMode ? '***' : aSign + formatCurrencyAlways(a.pnl)}</span>
+                    </div>`;
+                }).join('') || `<div class="text-muted small text-center py-1">No moves</div>`;
+
+            return `<div class="daily-pnl-item${weekendClass}" data-wk="${wkIdx}" data-di="${di}" style="cursor:pointer;flex-direction:column;align-items:stretch;">
+                <div class="daily-pnl-item-row">
+                    <span class="date"><i class="bi bi-chevron-right daily-pnl-chevron me-1"></i>${label}</span>
+                    <span class="values ${colorClass}">
+                        <span class="pnl-amount">${amountStr}</span>
+                        ${anonymousMode ? '' : `<span class="pnl-percent">(${pctStr})</span>`}
+                    </span>
+                </div>
+                <div class="daily-pnl-breakdown" style="display:none;">${dayBreakdownRows}</div>
             </div>`;
         }).join('');
 
-        return `<div class="daily-pnl-item" data-idx="${i}" style="cursor:pointer;flex-direction:column;align-items:stretch;">
-            <div class="daily-pnl-item-row">
-                <span class="date"><i class="bi bi-chevron-right daily-pnl-chevron me-1"></i>${label}</span>
-                <span class="values ${colorClass}">
-                    <span class="pnl-amount">${amountStr}</span>
-                    ${anonymousMode ? '' : `<span class="pnl-percent">(${pctStr})</span>`}
+        return `<div class="weekly-pnl-col${isCurrent ? ' is-current' : ''}" data-wk="${wkIdx}">
+            <div class="weekly-pnl-header">${headerLabel}</div>
+            <div class="weekly-pnl-days">${dayRowsHtml}</div>
+            <div class="weekly-pnl-summary" data-wk-summary>
+                <span class="date"><i class="bi bi-chevron-right weekly-pnl-chevron me-1"></i>Weekly</span>
+                <span class="values ${weekClass}">
+                    <span class="pnl-amount">${weekSign}${formatCurrencyAlways(weekSum)}</span>
                 </span>
             </div>
-            <div class="daily-pnl-breakdown" style="display:none;">${breakdownRows}</div>
+            <div class="weekly-pnl-breakdown" style="display:none;">${breakdownRows}</div>
         </div>`;
     }).join('');
 
-    // Click to expand breakdown
+    container.innerHTML = `<div class="weekly-pnl-grid">${columnsHtml}</div>`;
+
+    // Click to expand a single day
     container.querySelectorAll('.daily-pnl-item').forEach(item => {
-        item.addEventListener('click', () => {
+        item.addEventListener('click', (ev) => {
+            ev.stopPropagation();
             const breakdown = item.querySelector('.daily-pnl-breakdown');
             const chevron = item.querySelector('.daily-pnl-chevron');
+            const isOpen = breakdown.style.display !== 'none';
+            breakdown.style.display = isOpen ? 'none' : 'block';
+            chevron.classList.toggle('rotated', !isOpen);
+        });
+    });
+
+    // Click to expand the weekly summary
+    container.querySelectorAll('.weekly-pnl-summary').forEach(sum => {
+        sum.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const breakdown = sum.parentElement.querySelector('.weekly-pnl-breakdown');
+            const chevron = sum.querySelector('.weekly-pnl-chevron');
+            const isOpen = breakdown.style.display !== 'none';
+            breakdown.style.display = isOpen ? 'none' : 'block';
+            chevron.classList.toggle('rotated', !isOpen);
+        });
+    });
+}
+
+function updateMonthlyPnlList(dailyPnlData) {
+    const container = document.getElementById('monthlyPnlList');
+    if (!container) return;
+
+    const rawDays = (dailyPnlData && dailyPnlData.daily_pnl) ? [...dailyPnlData.daily_pnl] : [];
+    if (rawDays.length === 0) {
+        container.innerHTML = '<div class="text-center text-muted py-4">No data available</div>';
+        return;
+    }
+
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    function mondayOf(dateStr) {
+        const [y, m, d] = dateStr.split('-').map(Number);
+        const dt = new Date(y, m - 1, d);
+        const dow = dt.getDay();
+        const offset = dow === 0 ? 6 : dow - 1;
+        dt.setDate(dt.getDate() - offset);
+        return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    }
+
+    // Group by YYYY-MM
+    const monthMap = new Map();
+    for (const entry of rawDays) {
+        const key = entry.date.substring(0, 7);
+        if (!monthMap.has(key)) monthMap.set(key, []);
+        monthMap.get(key).push(entry);
+    }
+
+    // Newest first, max 12 months
+    const monthKeys = [...monthMap.keys()].sort().reverse().slice(0, 12);
+    if (monthKeys.length === 0) {
+        container.innerHTML = '<div class="text-center text-muted py-4">No data available</div>';
+        return;
+    }
+
+    const columnsHtml = monthKeys.map((monthKey, mIdx) => {
+        const [y, m] = monthKey.split('-').map(Number);
+        const isCurrent = mIdx === 0;
+        const monthLabel = `${monthNames[m - 1]} ${y}`;
+        const days = monthMap.get(monthKey);
+
+        // Group days by ISO week (Monday-start)
+        const weekMap = new Map();
+        for (const d of days) {
+            const wk = mondayOf(d.date);
+            if (!weekMap.has(wk)) weekMap.set(wk, []);
+            weekMap.get(wk).push(d);
+        }
+        const weekKeys = [...weekMap.keys()].sort();
+
+        // Monthly totals
+        const monthTotal = days.reduce((s, d) => s + (d.daily_pnl || 0), 0);
+        const monthSign = monthTotal >= 0 ? '+' : '';
+        const monthClass = monthTotal >= 0 ? 'text-success' : 'text-danger';
+
+        // Per-asset aggregate for monthly footer
+        const monthAssetAgg = {};
+        days.forEach(d => {
+            (d.asset_changes || []).forEach(a => {
+                monthAssetAgg[a.symbol] = (monthAssetAgg[a.symbol] || 0) + (a.pnl || 0);
+            });
+        });
+        const monthAssetSorted = Object.entries(monthAssetAgg)
+            .filter(([, v]) => Math.abs(v) > 0.005)
+            .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+
+        const monthBreakdownRows = monthAssetSorted.map(([sym, pnl]) => {
+            const cls = pnl >= 0 ? 'text-success' : 'text-danger';
+            const sgn = pnl >= 0 ? '+' : '';
+            return `<div class="daily-pnl-breakdown-row">
+                <span class="breakdown-symbol">${getAssetIconHtml(sym)}${sym}</span>
+                <span class="${cls}">${anonymousMode ? '***' : sgn + formatCurrencyAlways(pnl)}</span>
+            </div>`;
+        }).join('') || `<div class="text-muted small text-center py-2">No data</div>`;
+
+        // Build week rows
+        const weekRowsHtml = weekKeys.map((wkKey, wIdx) => {
+            const wkDays = weekMap.get(wkKey).slice().sort((a, b) => a.date.localeCompare(b.date));
+            const weekSum = wkDays.reduce((s, d) => s + (d.daily_pnl || 0), 0);
+            const weekSign = weekSum >= 0 ? '+' : '';
+            const weekClass = weekSum >= 0 ? 'text-success' : 'text-danger';
+
+            // Week label: "May 5–7" (only days that have data)
+            const first = wkDays[0].date;
+            const last = wkDays[wkDays.length - 1].date;
+            const [fy, fm, fd] = first.split('-').map(Number);
+            const [ly, lm, ld] = last.split('-').map(Number);
+            const startLbl = `${monthNames[fm - 1]} ${fd}`;
+            const endLbl   = `${monthNames[lm - 1]} ${ld}`;
+            const weekLabel = first === last ? startLbl : `${startLbl}–${endLbl}`;
+
+            // Day rows inside expanded week
+            const dayRowsHtml = wkDays.map(d => {
+                const [dy, dm, dd] = d.date.split('-').map(Number);
+                const dayLabel = `${monthNames[dm - 1]} ${dd}`;
+                const dayClass = d.daily_pnl >= 0 ? 'text-success' : 'text-danger';
+                const daySign  = d.daily_pnl >= 0 ? '+' : '';
+
+                const assetRows = [...(d.asset_changes || [])]
+                    .filter(a => Math.abs(a.pnl || 0) > 0.005)
+                    .sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl))
+                    .map(a => {
+                        const aSign = a.pnl >= 0 ? '+' : '';
+                        const aClass = a.pnl >= 0 ? 'text-success' : 'text-danger';
+                        return `<div class="daily-pnl-breakdown-row" style="padding-left:0.5rem">
+                            <span class="breakdown-symbol">${getAssetIconHtml(a.symbol)}${a.symbol}</span>
+                            <span class="${aClass}">${anonymousMode ? '***' : aSign + formatCurrencyAlways(a.pnl)}</span>
+                        </div>`;
+                    }).join('');
+
+                return `<div class="monthly-pnl-day-item">
+                    <div class="monthly-pnl-day-row">
+                        <span class="day-label">${dayLabel}</span>
+                        <span class="${dayClass} pnl-amount">${anonymousMode ? '***' : daySign + formatCurrencyAlways(d.daily_pnl)}</span>
+                    </div>
+                    ${assetRows ? `<div class="monthly-pnl-asset-rows">${assetRows}</div>` : ''}
+                </div>`;
+            }).join('');
+
+            return `<div class="monthly-pnl-week-item" data-mi="${mIdx}" data-wi="${wIdx}">
+                <div class="monthly-pnl-week-item-row">
+                    <span class="week-label"><i class="bi bi-chevron-right monthly-pnl-week-chevron me-1"></i>${weekLabel}</span>
+                    <span class="${weekClass} pnl-amount">${anonymousMode ? '***' : weekSign + formatCurrencyAlways(weekSum)}</span>
+                </div>
+                <div class="monthly-pnl-week-breakdown" style="display:none;">${dayRowsHtml}</div>
+            </div>`;
+        }).join('');
+
+        return `<div class="monthly-pnl-col${isCurrent ? ' is-current' : ''}">
+            <div class="monthly-pnl-header">${monthLabel}${isCurrent ? ' <span class="weekly-pnl-badge">current</span>' : ''}</div>
+            <div class="monthly-pnl-weeks">${weekRowsHtml}</div>
+            <div class="monthly-pnl-summary">
+                <span class="date"><i class="bi bi-chevron-right weekly-pnl-chevron me-1"></i>Monthly</span>
+                <span class="${monthClass}"><span class="pnl-amount">${anonymousMode ? '***' : monthSign + formatCurrencyAlways(monthTotal)}</span></span>
+            </div>
+            <div class="monthly-pnl-summary-breakdown" style="display:none;">${monthBreakdownRows}</div>
+        </div>`;
+    }).join('');
+
+    container.innerHTML = `<div class="monthly-pnl-grid">${columnsHtml}</div>`;
+
+    // Expand/collapse week rows
+    container.querySelectorAll('.monthly-pnl-week-item').forEach(item => {
+        item.addEventListener('click', ev => {
+            ev.stopPropagation();
+            const breakdown = item.querySelector('.monthly-pnl-week-breakdown');
+            const chevron   = item.querySelector('.monthly-pnl-week-chevron');
+            const isOpen = breakdown.style.display !== 'none';
+            breakdown.style.display = isOpen ? 'none' : 'block';
+            chevron.classList.toggle('rotated', !isOpen);
+        });
+    });
+
+    // Expand/collapse monthly summary footer
+    container.querySelectorAll('.monthly-pnl-summary').forEach(sum => {
+        sum.addEventListener('click', ev => {
+            ev.stopPropagation();
+            const breakdown = sum.parentElement.querySelector('.monthly-pnl-summary-breakdown');
+            const chevron   = sum.querySelector('.weekly-pnl-chevron');
             const isOpen = breakdown.style.display !== 'none';
             breakdown.style.display = isOpen ? 'none' : 'block';
             chevron.classList.toggle('rotated', !isOpen);
@@ -2572,7 +3009,7 @@ function updateAllocationChart(holdings, view = 'assets') {
         // Sort by value
         categoryHoldings.sort((a, b) => b.market_value - a.market_value);
 
-        labels = categoryHoldings.map(h => h.symbol);
+        labels = categoryHoldings.map(h => displaySymbol(h.symbol));
         data = categoryHoldings.map(h => h.market_value);
 
         // Colors based on category (dark to light, largest value gets darkest)
@@ -2652,7 +3089,7 @@ function updateAllocationChart(holdings, view = 'assets') {
 
         majorHoldings.sort((a, b) => b.market_value - a.market_value);
 
-        labels = majorHoldings.map(h => h.symbol);
+        labels = majorHoldings.map(h => displaySymbol(h.symbol));
         data = majorHoldings.map(h => h.market_value);
 
         if (otherValue > 0) {
@@ -2735,9 +3172,9 @@ function updateAllocationChart(holdings, view = 'assets') {
                                 otherHoldings.forEach(h => {
                                     const pct = ((h.market_value / displayTotal) * 100).toFixed(1);
                                     if (anonymousMode) {
-                                        lines.push(`  ${h.symbol}: *** (${pct}%)`);
+                                        lines.push(`  ${displaySymbol(h.symbol)}: *** (${pct}%)`);
                                     } else {
-                                        lines.push(`  ${h.symbol}: ${formatCurrencyAlways(h.market_value)} (${pct}%)`);
+                                        lines.push(`  ${displaySymbol(h.symbol)}: ${formatCurrencyAlways(h.market_value)} (${pct}%)`);
                                     }
                                 });
                                 return lines;
@@ -2782,13 +3219,14 @@ function updateAnnualTable(performance) {
     if (!performance || !performance.performance || performance.performance.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" class="empty-state">No performance data available</td>
+                <td colspan="7" class="empty-state">No performance data available</td>
             </tr>
         `;
         return;
     }
 
     const data = performance.performance;
+    const realizedByYear = performance.realized_by_year || {};
 
     // Group data by year - get first and last data point for each year
     const yearlyData = {};
@@ -2838,13 +3276,16 @@ function updateAnnualTable(performance) {
         const totalInvested = startValue + netInvested;
         const pnlPercent = totalInvested > 0 ? (pnl / totalInvested) * 100 : 0;
 
+        const realized = realizedByYear[year] || null;
+
         rows.push({
             year,
             startValue,
             endValue,
             netInvested,
             pnl,
-            pnlPercent
+            pnlPercent,
+            realized
         });
     });
 
@@ -2857,6 +3298,22 @@ function updateAnnualTable(performance) {
         const pnlPercentFormula = `P&L% = P&L ÷ (Start Value + Net Invested) × 100
 = ${formatCurrency(r.pnl)} ÷ ${formatCurrency(totalInvested)} × 100
 = ${r.pnlPercent.toFixed(2)}%`;
+
+        let realizedCell;
+        if (r.realized && Math.abs(r.realized.total) > 0.005) {
+            const rz = r.realized;
+            const realizedFormula = `Realized = proceeds − cost basis on positions sold in ${r.year}
+ST (held < 1yr): ${formatCurrency(rz.st)}
+LT (held ≥ 1yr): ${formatCurrency(rz.lt)}
+Total: ${formatCurrency(rz.total)}`;
+            realizedCell = `<td class="has-tooltip" data-tooltip="${realizedFormula.replace(/"/g, '&quot;')}">
+                <div class="${rz.total >= 0 ? 'text-success' : 'text-danger'} fw-semibold">${formatCurrency(rz.total)}</div>
+                <div class="small text-muted">ST ${formatCurrency(rz.st)} · LT ${formatCurrency(rz.lt)}</div>
+            </td>`;
+        } else {
+            realizedCell = `<td class="text-muted">—</td>`;
+        }
+
         return `
         <tr>
             <td><strong>${r.year}</strong></td>
@@ -2865,6 +3322,7 @@ function updateAnnualTable(performance) {
             <td>${formatCurrency(r.netInvested)}</td>
             <td class="${r.pnl >= 0 ? 'text-success' : 'text-danger'} has-tooltip" data-tooltip="${pnlFormula.replace(/"/g, '&quot;')}">${formatCurrency(r.pnl)}</td>
             <td class="${r.pnlPercent >= 0 ? 'text-success' : 'text-danger'} has-tooltip" data-tooltip="${pnlPercentFormula.replace(/"/g, '&quot;')}">${formatPercent(r.pnlPercent)}</td>
+            ${realizedCell}
         </tr>
     `}).join('');
 
@@ -3009,6 +3467,9 @@ async function loadAllData() {
     // Fetch daily P&L list (EST midnight boundary for crypto)
     fetchList.push(fetchDailyPnl());
 
+    // Kick off monthly P&L fetch in parallel (larger dataset, separate cache key)
+    const monthlyPnlPromise = fetchMonthlyPnlData();
+
     const results = await Promise.all(fetchList);
     const [summary, allPerformance, dividends, sold, intradayResult, pnlData] = results;
     const portfolioPerformance = needsSeparatePortfolioFetch ? results[6] : allPerformance;
@@ -3041,6 +3502,12 @@ async function loadAllData() {
     // Update daily P&L list
     if (dailyPnlData) {
         updateDailyPnlList(dailyPnlData, intraday);
+    }
+
+    // Update monthly P&L list (awaits the parallel fetch started above)
+    const monthlyPnlData = await monthlyPnlPromise;
+    if (monthlyPnlData) {
+        updateMonthlyPnlList(monthlyPnlData);
     }
 
     // Update Portfolio Value chart based on portfolioPeriod
@@ -3435,12 +3902,17 @@ document.addEventListener('DOMContentLoaded', () => {
         { col: 3, label: 'Invested' },
         { col: 4, label: 'Price' },
         { col: 5, label: 'Today' },
+        { col: 17, label: 'YTD' },
+        { col: 18, label: 'YTD %' },
         { col: 6, label: 'Market Value' },
         { col: 7, label: 'Alloc %' },
         { col: 8, label: 'Target %' },
         { col: 9, label: '\u0394 Target' },
-        { col: 10, label: 'P&L ($)' },
-        { col: 11, label: 'P&L (%)' },
+        { col: 10, label: 'Unrealized P&L' },
+        { col: 11, label: 'Unrealized %' },
+        { col: 14, label: 'Realized P&L' },
+        { col: 15, label: 'Total P&L' },
+        { col: 16, label: 'Total %' },
         { col: 12, label: 'Annual %' },
         { col: 13, label: 'W-Annual %' },
     ];
@@ -3489,6 +3961,75 @@ document.addEventListener('DOMContentLoaded', () => {
 
     applyColumnVisibility();
 
+    // Generic per-card collapse buttons (Investment P&L, Monthly Investment,
+    // Asset Allocation, etc.). Wires up any <button class="card-collapse-btn"
+    // data-collapse-target="..."> to toggle the matching element id.
+    (function initCardCollapseButtons() {
+        document.querySelectorAll('.card-collapse-btn').forEach(btn => {
+            const targetId = btn.dataset.collapseTarget;
+            if (!targetId) return;
+            const target = document.getElementById(targetId);
+            if (!target) return;
+            const STORAGE_KEY = `cardCollapsed:${targetId}`;
+            const collapsed = localStorage.getItem(STORAGE_KEY) === '1';
+
+            function applyState(isCollapsed) {
+                target.style.display = isCollapsed ? 'none' : '';
+                btn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+                const icon = btn.querySelector('i');
+                if (icon) {
+                    icon.classList.toggle('bi-chevron-down', isCollapsed);
+                    icon.classList.toggle('bi-chevron-up', !isCollapsed);
+                }
+            }
+            applyState(collapsed);
+
+            btn.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                const willCollapse = target.style.display !== 'none';
+                applyState(willCollapse);
+                localStorage.setItem(STORAGE_KEY, willCollapse ? '1' : '0');
+                // Charts inside collapsed panels should resize when re-shown
+                if (!willCollapse && window.Chart) {
+                    setTimeout(() => {
+                        target.querySelectorAll('canvas').forEach(c => {
+                            const inst = Chart.getChart(c);
+                            if (inst) inst.resize();
+                        });
+                    }, 0);
+                }
+            });
+        });
+    })();
+
+    // Summary cards collapse: persist + restore state
+    (function initSummaryCollapse() {
+        const btn = document.getElementById('summaryToggleBtn');
+        const panel = document.getElementById('summaryCardsCollapse');
+        const icon = document.getElementById('summaryToggleIcon');
+        const label = document.getElementById('summaryToggleLabel');
+        if (!btn || !panel) return;
+        const STORAGE_KEY = 'summaryCardsExpanded';
+        const expanded = localStorage.getItem(STORAGE_KEY) === '1';
+
+        function applyState(isOpen) {
+            panel.classList.toggle('show', isOpen);
+            btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            if (icon) {
+                icon.classList.toggle('bi-chevron-down', !isOpen);
+                icon.classList.toggle('bi-chevron-up', isOpen);
+            }
+            if (label) label.textContent = isOpen ? 'Hide summary' : 'Show summary';
+        }
+        applyState(expanded);
+
+        btn.addEventListener('click', () => {
+            const nowOpen = !panel.classList.contains('show');
+            applyState(nowOpen);
+            localStorage.setItem(STORAGE_KEY, nowOpen ? '1' : '0');
+        });
+    })();
+
     // Load data
     loadAllData();
 
@@ -3501,4 +4042,641 @@ document.addEventListener('DOMContentLoaded', () => {
             opt.classList.add('active');
         }
     });
+
+    // -----------------------------------------------------------------------
+    // Simulator event listeners
+    // -----------------------------------------------------------------------
+    initSimulator();
 });
+
+
+// ============================================================================
+//  PORTFOLIO SIMULATOR
+// ============================================================================
+
+let simPerfChart = null;
+let simDriftChart = null;
+let simIntervalDays = 7;
+
+const SIM_COLORS = [
+    '#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#8b5cf6',
+    '#0891b2', '#65a30d', '#ea580c', '#db2777', '#0284c7',
+];
+
+function initSimulator() {
+    // Set default dates: 5 years ago → today
+    const today = new Date();
+    const fiveYearsAgo = new Date(today);
+    fiveYearsAgo.setFullYear(today.getFullYear() - 5);
+
+    const fmt = d => d.toISOString().slice(0, 10);
+    document.getElementById('simStartDate').value = fmt(fiveYearsAgo);
+    document.getElementById('simEndDate').value   = fmt(today);
+
+    // Seed default allocation
+    simClearRows();
+    simAddRow('VOO',  60);
+    simAddRow('QQQM', 40);
+    simUpdateWeightBadge();
+
+    // Preset buttons
+    document.querySelectorAll('.sim-preset-btn').forEach(btn => {
+        btn.addEventListener('click', () => simApplyPreset(btn.dataset.preset));
+    });
+
+    // Add row
+    document.getElementById('simAddRowBtn').addEventListener('click', () => {
+        simAddRow('', '');
+    });
+
+    // Interval buttons
+    document.querySelectorAll('.sim-interval-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.sim-interval-btn').forEach(b => {
+                b.classList.remove('btn-primary', 'active');
+                b.classList.add('btn-outline-secondary');
+            });
+            btn.classList.remove('btn-outline-secondary');
+            btn.classList.add('btn-primary', 'active');
+            simIntervalDays = parseInt(btn.dataset.days, 10);
+        });
+    });
+
+    // DCA summary label
+    const dcaFreq = document.getElementById('simDcaFreq');
+    const dcaAmt  = document.getElementById('simDcaAmount');
+    const updateDcaSummary = () => {
+        const freq = dcaFreq.value;
+        const amt  = parseFloat(dcaAmt.value) || 0;
+        const el = document.getElementById('simDcaSummary');
+        if (freq === 'none' || amt <= 0) {
+            el.textContent = 'No recurring contributions.';
+            el.className = 'small text-muted mt-1';
+        } else {
+            const labels = { weekly: 'every week', biweekly: 'every 2 weeks', monthly: 'every month' };
+            el.textContent = `Invests $${amt.toLocaleString('en-US')} ${labels[freq]}`;
+            el.className = 'small text-primary fw-semibold mt-1';
+        }
+    };
+    dcaFreq.addEventListener('change', updateDcaSummary);
+    dcaAmt.addEventListener('input', updateDcaSummary);
+    updateDcaSummary();
+
+    // Run button
+    document.getElementById('simRunBtn').addEventListener('click', runSimulation);
+
+    // Page toggle
+    document.getElementById('pageTrackerBtn').addEventListener('click', () => switchPage('tracker'));
+    document.getElementById('pageSimulatorBtn').addEventListener('click', () => switchPage('simulator'));
+}
+
+function switchPage(page) {
+    const trackerPage   = document.getElementById('trackerPage');
+    const simulatorPage = document.getElementById('simulatorPage');
+    const trackerBtn    = document.getElementById('pageTrackerBtn');
+    const simulatorBtn  = document.getElementById('pageSimulatorBtn');
+
+    if (page === 'tracker') {
+        trackerPage.style.display   = '';
+        simulatorPage.style.display = 'none';
+        trackerBtn.className    = 'btn btn-light btn-sm px-3';
+        simulatorBtn.className  = 'btn btn-outline-light btn-sm px-3';
+    } else {
+        trackerPage.style.display   = 'none';
+        simulatorPage.style.display = '';
+        trackerBtn.className    = 'btn btn-outline-light btn-sm px-3';
+        simulatorBtn.className  = 'btn btn-light btn-sm px-3';
+    }
+}
+
+// ---- Allocation row helpers ------------------------------------------------
+
+function simClearRows() {
+    document.getElementById('simAllocRows').innerHTML = '';
+}
+
+function simAddRow(symbol = '', weight = '') {
+    const container = document.getElementById('simAllocRows');
+    const div = document.createElement('div');
+    div.className = 'sim-alloc-row';
+    div.innerHTML = `
+        <input type="text" class="form-control sim-alloc-symbol" placeholder="TICKER"
+               value="${symbol}" maxlength="12">
+        <input type="number" class="form-control sim-alloc-weight" placeholder="%" min="0"
+               max="100" step="1" value="${weight}">
+        <button class="sim-alloc-remove" title="Remove"><i class="bi bi-x-lg"></i></button>`;
+
+    div.querySelector('.sim-alloc-symbol').addEventListener('input', e => {
+        e.target.value = e.target.value.toUpperCase();
+    });
+    div.querySelector('.sim-alloc-weight').addEventListener('input', simUpdateWeightBadge);
+    div.querySelector('.sim-alloc-remove').addEventListener('click', () => {
+        div.remove();
+        simUpdateWeightBadge();
+    });
+
+    container.appendChild(div);
+    simUpdateWeightBadge();
+}
+
+function simGetAllocations() {
+    const rows = document.querySelectorAll('.sim-alloc-row');
+    const result = [];
+    rows.forEach(row => {
+        const sym = row.querySelector('.sim-alloc-symbol').value.trim().toUpperCase();
+        const wt  = parseFloat(row.querySelector('.sim-alloc-weight').value) || 0;
+        if (sym && wt > 0) result.push({ symbol: sym, weight: wt });
+    });
+    return result;
+}
+
+function simUpdateWeightBadge() {
+    const allocs = simGetAllocations();
+    const total  = allocs.reduce((s, a) => s + a.weight, 0);
+    const badge  = document.getElementById('simWeightSum');
+    badge.textContent = total.toFixed(0) + ' %';
+    badge.classList.remove('ok', 'warn', 'bg-secondary');
+    if (Math.abs(total - 100) < 0.5) {
+        badge.classList.add('ok');
+    } else if (total > 0) {
+        badge.classList.add('warn');
+    } else {
+        badge.classList.add('bg-secondary');
+    }
+}
+
+function simApplyPreset(preset) {
+    simClearRows();
+    if (preset === '6040') {
+        simAddRow('VOO', 60);
+        simAddRow('TLT', 40);
+    } else if (preset === 'allindex') {
+        simAddRow('VOO',  50);
+        simAddRow('QQQM', 50);
+    } else if (preset === 'techgrowth') {
+        simAddRow('QQQM', 60);
+        simAddRow('SOXX', 40);
+    } else if (preset === 'current') {
+        // Pull from live holdings
+        if (holdingsData && holdingsData.length > 0) {
+            const investments = holdingsData.filter(h => h.symbol !== 'CASH' && h.market_value > 0);
+            const totalMv     = investments.reduce((s, h) => s + (h.market_value || 0), 0);
+            if (totalMv > 0) {
+                investments.forEach(h => {
+                    const pct = (h.market_value / totalMv * 100).toFixed(1);
+                    simAddRow(h.symbol, pct);
+                });
+            } else {
+                showToast('No holdings data yet — load the Tracker first.', 'warning');
+                simAddRow('VOO', 60);
+                simAddRow('QQQM', 40);
+            }
+        } else {
+            showToast('No holdings data yet — load the Tracker first.', 'warning');
+            simAddRow('VOO', 60);
+            simAddRow('QQQM', 40);
+        }
+    }
+    simUpdateWeightBadge();
+}
+
+// ---- Run -------------------------------------------------------------------
+
+async function runSimulation() {
+    const errEl  = document.getElementById('simRunError');
+    const runBtn = document.getElementById('simRunBtn');
+    errEl.classList.add('d-none');
+
+    const allocs     = simGetAllocations();
+    const startDate  = document.getElementById('simStartDate').value;
+    const endDate    = document.getElementById('simEndDate').value;
+    const capital    = parseFloat(document.getElementById('simCapital').value) || 0;
+    const rebalance  = document.getElementById('simRebalance').value;
+    const benchmark  = document.getElementById('simBenchmark').value.trim().toUpperCase() || null;
+    const dcaFreq    = document.getElementById('simDcaFreq').value;
+    const dcaAmount  = parseFloat(document.getElementById('simDcaAmount').value) || 0;
+
+    if (allocs.length === 0) {
+        errEl.textContent = 'Add at least one asset with a positive weight.';
+        errEl.classList.remove('d-none');
+        return;
+    }
+    if (!startDate || !endDate || startDate >= endDate) {
+        errEl.textContent = 'Invalid date range.';
+        errEl.classList.remove('d-none');
+        return;
+    }
+    if (capital <= 0 && (dcaFreq === 'none' || dcaAmount <= 0)) {
+        errEl.textContent = 'Set an initial lump sum, DCA contribution, or both.';
+        errEl.classList.remove('d-none');
+        return;
+    }
+
+    // Loading state
+    runBtn.disabled = true;
+    runBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Running…';
+
+    try {
+        const body = {
+            allocations:         allocs,
+            start_date:          startDate,
+            end_date:            endDate,
+            initial_capital:     capital,
+            rebalance_frequency: rebalance,
+            data_interval_days:  simIntervalDays,
+            benchmark:           benchmark || '',
+            dca_frequency:       dcaFreq,
+            dca_amount:          dcaAmount,
+        };
+        const resp = await fetch('/api/simulator/run', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+            throw new Error(err.detail || 'Server error');
+        }
+        const data = await resp.json();
+        renderSimResults(data);
+    } catch (e) {
+        errEl.textContent = 'Error: ' + e.message;
+        errEl.classList.remove('d-none');
+    } finally {
+        runBtn.disabled = false;
+        runBtn.innerHTML = '<i class="bi bi-play-fill me-2"></i>Run Simulation';
+    }
+}
+
+// ---- Render results --------------------------------------------------------
+
+function renderSimResults(data) {
+    document.getElementById('simPlaceholder').style.display = 'none';
+    document.getElementById('simResults').style.display     = '';
+
+    const { data_points, metrics, benchmark_data, benchmark_metrics, config } = data;
+
+    renderSimMetricCards(metrics, benchmark_metrics, config);
+    renderSimPerfChart(data_points, benchmark_data, benchmark_metrics);
+    renderSimDriftChart(data_points, config.allocations.map(a => a.symbol));
+    renderSimComparisonTable(metrics, benchmark_metrics, config);
+
+    // Benchmark badge
+    const badge = document.getElementById('simBenchmarkBadge');
+    if (benchmark_metrics) {
+        badge.textContent = 'vs ' + benchmark_metrics.symbol;
+        badge.classList.remove('d-none');
+    } else {
+        badge.classList.add('d-none');
+    }
+}
+
+// ---- Metric cards ----------------------------------------------------------
+
+function renderSimMetricCards(metrics, benchMetrics, config) {
+    const fmt$ = v => '$' + (v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+    const fmtPct = v => (v >= 0 ? '+' : '') + (v || 0).toFixed(2) + '%';
+    const colClass = v => v >= 0 ? 'text-success' : 'text-danger';
+
+    const isDca = config && config.dca_frequency && config.dca_frequency !== 'none' && config.dca_amount > 0;
+    const cagrLabel = isDca ? 'Money-Wtd CAGR' : 'CAGR';
+
+    const cards = [
+        {
+            icon:  'bi-wallet2',
+            label: 'Final Value',
+            value: fmt$(metrics.final_value),
+            cls:   '',
+            bench: benchMetrics ? fmt$(benchMetrics.final_value) : null,
+        },
+        {
+            icon:  'bi-cash-stack',
+            label: 'Total Invested',
+            value: fmt$(metrics.total_invested),
+            cls:   '',
+            bench: null,
+            sub:   isDca
+                ? `${config.dca_count} × $${config.dca_amount.toLocaleString('en-US')} (${config.dca_frequency})`
+                : 'lump sum',
+        },
+        {
+            icon:  'bi-graph-up-arrow',
+            label: 'Total Return',
+            value: fmtPct(metrics.total_return),
+            cls:   colClass(metrics.total_return),
+            bench: benchMetrics ? fmtPct(benchMetrics.total_return) : null,
+            bCls:  benchMetrics ? colClass(benchMetrics.total_return) : '',
+        },
+        {
+            icon:  'bi-speedometer2',
+            label: cagrLabel,
+            value: fmtPct(metrics.cagr),
+            cls:   colClass(metrics.cagr),
+            bench: benchMetrics ? fmtPct(benchMetrics.cagr) : null,
+            bCls:  benchMetrics ? colClass(benchMetrics.cagr) : '',
+        },
+        {
+            icon:  'bi-arrow-down-circle',
+            label: 'Max Drawdown',
+            value: '-' + (metrics.max_drawdown || 0).toFixed(2) + '%',
+            cls:   'text-danger',
+            bench: benchMetrics ? '-' + (benchMetrics.max_drawdown || 0).toFixed(2) + '%' : null,
+            bCls:  'text-danger',
+        },
+        {
+            icon:  'bi-award',
+            label: 'Sharpe Ratio',
+            value: (metrics.sharpe_ratio || 0).toFixed(2),
+            cls:   colClass(metrics.sharpe_ratio),
+            bench: benchMetrics ? (benchMetrics.sharpe_ratio || 0).toFixed(2) : null,
+            bCls:  benchMetrics ? colClass(benchMetrics.sharpe_ratio) : '',
+        },
+    ];
+
+    const container = document.getElementById('simMetricCards');
+    container.innerHTML = cards.map(c => `
+        <div class="col-6 col-md-4 col-lg-4">
+            <div class="card border-0 shadow-sm sim-metric-card h-100">
+                <div class="card-body text-center py-3">
+                    <div class="metric-label"><i class="bi ${c.icon} me-1"></i>${c.label}</div>
+                    <div class="metric-value ${c.cls}">${c.value}</div>
+                    ${c.sub
+                        ? `<div class="metric-bench">${c.sub}</div>`
+                        : (c.bench !== null
+                            ? `<div class="metric-bench ${c.bCls || ''}">bench: ${c.bench}</div>`
+                            : '')}
+                </div>
+            </div>
+        </div>`).join('');
+}
+
+// ---- Performance line chart ------------------------------------------------
+
+function renderSimPerfChart(dataPoints, benchData, benchMetrics) {
+    const labels = dataPoints.map(d => d.date);
+    const portVals = dataPoints.map(d => d.value);
+
+    const datasets = [
+        {
+            label: 'Portfolio',
+            data:  portVals,
+            borderColor: '#2563eb',
+            backgroundColor: 'rgba(37,99,235,0.08)',
+            borderWidth: 2,
+            fill: true,
+            pointRadius: 0,
+            tension: 0.1,
+        },
+        {
+            // Step-style "invested-to-date" line — shows the cost basis growing
+            // each DCA period
+            label: 'Total Invested',
+            data:  dataPoints.map(d => d.invested),
+            borderColor: 'rgba(107,114,128,0.7)',
+            backgroundColor: 'transparent',
+            borderWidth: 1.2,
+            borderDash: [3, 3],
+            fill: false,
+            pointRadius: 0,
+            stepped: 'before',
+        },
+    ];
+
+    // Rebalance markers
+    const rebalancePoints = dataPoints
+        .filter(d => d.rebalanced)
+        .map(d => ({ x: d.date, y: d.value }));
+
+    if (rebalancePoints.length > 0) {
+        datasets.push({
+            label: 'Rebalance',
+            data:  rebalancePoints,
+            type:  'scatter',
+            pointRadius: 4,
+            pointStyle: 'triangle',
+            backgroundColor: 'rgba(245,158,11,0.8)',
+            borderColor: '#f59e0b',
+            borderWidth: 1,
+            showLine: false,
+        });
+    }
+
+    if (benchData && benchData.length > 0) {
+        datasets.push({
+            label: benchMetrics ? benchMetrics.symbol + ' (DCA)' : 'Benchmark',
+            data:  benchData.map(d => d.value),
+            borderColor: '#16a34a',
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            borderDash: [5, 3],
+            fill: false,
+            pointRadius: 0,
+            tension: 0.1,
+        });
+    }
+
+    if (simPerfChart) simPerfChart.destroy();
+    const ctx = document.getElementById('simPerfChart').getContext('2d');
+    simPerfChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { position: 'top', labels: { boxWidth: 12, font: { size: 12 } } },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => {
+                            if (ctx.dataset.type === 'scatter') return ' Rebalanced';
+                            const v = ctx.parsed.y;
+                            return ` ${ctx.dataset.label}: $${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+                        },
+                    },
+                },
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: { unit: 'month', tooltipFormat: 'MMM d, yyyy' },
+                    grid: { display: false },
+                    ticks: { maxTicksLimit: 8, font: { size: 11 } },
+                },
+                y: {
+                    grid: { color: 'rgba(0,0,0,0.05)' },
+                    ticks: {
+                        font: { size: 11 },
+                        callback: v => '$' + v.toLocaleString('en-US', { maximumFractionDigits: 0 }),
+                    },
+                },
+            },
+        },
+    });
+}
+
+// ---- Allocation drift stacked area chart -----------------------------------
+
+function renderSimDriftChart(dataPoints, symbols) {
+    const labels = dataPoints.map(d => d.date);
+
+    const datasets = symbols.map((sym, i) => ({
+        label: sym,
+        data:  dataPoints.map(d => d.allocations[sym] ?? 0),
+        backgroundColor: SIM_COLORS[i % SIM_COLORS.length] + '99',
+        borderColor:     SIM_COLORS[i % SIM_COLORS.length],
+        borderWidth: 1,
+        fill: true,
+        pointRadius: 0,
+        tension: 0.1,
+    }));
+
+    // Target lines (dashed) for each symbol
+    // We can infer target from initial allocation
+    const initAlloc = dataPoints[0]?.allocations || {};
+    symbols.forEach((sym, i) => {
+        const target = initAlloc[sym];
+        if (target !== undefined) {
+            datasets.push({
+                label: sym + ' target',
+                data:  labels.map(() => target),
+                borderColor: SIM_COLORS[i % SIM_COLORS.length],
+                borderWidth: 1,
+                borderDash: [4, 3],
+                backgroundColor: 'transparent',
+                fill: false,
+                pointRadius: 0,
+                tension: 0,
+            });
+        }
+    });
+
+    if (simDriftChart) simDriftChart.destroy();
+    const ctx = document.getElementById('simDriftChart').getContext('2d');
+    simDriftChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: {
+                        boxWidth: 12,
+                        font: { size: 11 },
+                        filter: item => !item.text.includes(' target'),
+                    },
+                },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => {
+                            if (ctx.dataset.label.includes(' target')) return null;
+                            return ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%`;
+                        },
+                    },
+                },
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: { unit: 'month', tooltipFormat: 'MMM d, yyyy' },
+                    grid: { display: false },
+                    ticks: { maxTicksLimit: 8, font: { size: 11 } },
+                },
+                y: {
+                    stacked: true,
+                    min: 0,
+                    max: 100,
+                    grid: { color: 'rgba(0,0,0,0.05)' },
+                    ticks: {
+                        font: { size: 11 },
+                        callback: v => v + '%',
+                    },
+                },
+            },
+        },
+    });
+}
+
+// ---- Comparison table -------------------------------------------------------
+
+function renderSimComparisonTable(metrics, benchMetrics, config) {
+    const bench = benchMetrics;
+    const isDca = config && config.dca_frequency && config.dca_frequency !== 'none' && config.dca_amount > 0;
+    const cagrLabel = isDca ? 'CAGR (XIRR)' : 'CAGR';
+
+    // Update headers
+    const portHdr  = document.getElementById('simCmpPortHeader');
+    const benchHdr = document.getElementById('simCmpBenchHeader');
+    portHdr.textContent  = 'Your Portfolio';
+    benchHdr.textContent = bench ? bench.symbol + ' (DCA)' : '—';
+
+    const fmt$ = v => '$' + (v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+
+    const rows = [
+        {
+            label: 'Total Invested',
+            port:  fmt$(metrics.total_invested),
+            bench: bench ? fmt$(bench.total_invested) : '—',
+            portCls: '', benchCls: '',
+        },
+        {
+            label: 'Final Value',
+            port:  fmt$(metrics.final_value),
+            bench: bench ? fmt$(bench.final_value) : '—',
+            portCls:  metrics.final_value > metrics.total_invested ? 'text-success' : 'text-danger',
+            benchCls: bench ? (bench.final_value > bench.total_invested ? 'text-success' : 'text-danger') : '',
+        },
+        {
+            label: 'Net Profit',
+            port:  fmt$(metrics.final_value - metrics.total_invested),
+            bench: bench ? fmt$(bench.final_value - bench.total_invested) : '—',
+            portCls:  metrics.final_value > metrics.total_invested ? 'text-success' : 'text-danger',
+            benchCls: bench ? (bench.final_value > bench.total_invested ? 'text-success' : 'text-danger') : '',
+        },
+        {
+            label: 'Total Return',
+            port:  (metrics.total_return >= 0 ? '+' : '') + (metrics.total_return || 0).toFixed(2) + '%',
+            bench: bench ? (bench.total_return >= 0 ? '+' : '') + (bench.total_return || 0).toFixed(2) + '%' : '—',
+            portCls:  metrics.total_return >= 0 ? 'text-success' : 'text-danger',
+            benchCls: bench ? (bench.total_return >= 0 ? 'text-success' : 'text-danger') : '',
+        },
+        {
+            label: cagrLabel,
+            port:  (metrics.cagr >= 0 ? '+' : '') + (metrics.cagr || 0).toFixed(2) + '%',
+            bench: bench ? (bench.cagr >= 0 ? '+' : '') + (bench.cagr || 0).toFixed(2) + '%' : '—',
+            portCls:  metrics.cagr >= 0 ? 'text-success' : 'text-danger',
+            benchCls: bench ? (bench.cagr >= 0 ? 'text-success' : 'text-danger') : '',
+        },
+        {
+            label: 'Max Drawdown',
+            port:  '-' + (metrics.max_drawdown || 0).toFixed(2) + '%',
+            bench: bench ? '-' + (bench.max_drawdown || 0).toFixed(2) + '%' : '—',
+            portCls: 'text-danger', benchCls: 'text-danger',
+        },
+        {
+            label: 'Ann. Volatility',
+            port:  (metrics.annualised_volatility || 0).toFixed(2) + '%',
+            bench: bench ? (bench.annualised_volatility || 0).toFixed(2) + '%' : '—',
+            portCls: '', benchCls: '',
+        },
+        {
+            label: 'Sharpe Ratio',
+            port:  (metrics.sharpe_ratio || 0).toFixed(2),
+            bench: bench ? (bench.sharpe_ratio || 0).toFixed(2) : '—',
+            portCls:  metrics.sharpe_ratio >= 1 ? 'text-success' : (metrics.sharpe_ratio < 0 ? 'text-danger' : ''),
+            benchCls: bench
+                ? (bench.sharpe_ratio >= 1 ? 'text-success' : (bench.sharpe_ratio < 0 ? 'text-danger' : ''))
+                : '',
+        },
+    ];
+
+    document.getElementById('simComparisonBody').innerHTML = rows.map(r => `
+        <tr>
+            <td>${r.label}</td>
+            <td class="fw-semibold ${r.portCls}">${r.port}</td>
+            <td class="${r.benchCls}">${r.bench}</td>
+        </tr>`).join('');
+}
