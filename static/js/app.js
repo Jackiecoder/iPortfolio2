@@ -1,5 +1,41 @@
 // Portfolio Tracker Frontend Application
 
+// --- Access token: attached to every API request as a Bearer header. ---
+// Stored in localStorage; prompted for once on the first 401.
+(function setupAuth() {
+    const TOKEN_KEY = 'iportfolio_token';
+    let prompting = false;
+
+    window.getAccessToken = () => localStorage.getItem(TOKEN_KEY) || '';
+    window.clearAccessToken = () => localStorage.removeItem(TOKEN_KEY);
+
+    function promptForToken() {
+        if (prompting) return;
+        prompting = true;
+        const t = window.prompt('Enter access token:');
+        if (t) {
+            localStorage.setItem(TOKEN_KEY, t.trim());
+            location.reload();
+        } else {
+            prompting = false;
+        }
+    }
+
+    const origFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+        const headers = new Headers(init.headers || {});
+        const token = window.getAccessToken();
+        if (token) headers.set('Authorization', 'Bearer ' + token);
+        return origFetch(input, { ...init, headers }).then((resp) => {
+            if (resp.status === 401) {
+                window.clearAccessToken();
+                promptForToken();
+            }
+            return resp;
+        });
+    };
+})();
+
 // Chart instances
 let performanceChart = null;
 let investmentChart = null;

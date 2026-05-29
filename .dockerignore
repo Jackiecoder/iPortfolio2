@@ -1,0 +1,27 @@
+# Virtualenv / Python caches
+venv/
+__pycache__/
+*/__pycache__/
+*.pyc
+
+# Local data (source of truth is Postgres; also gitignored)
+data/
+original_data/
+*.db
+
+# Local-only tooling and artifacts
+screenshots/
+logs/
+*.pid
+screenshot.py
+*.sh
+
+# Docs / dev
+.git/
+.gitignore
+.claude/
+*.md
+sample.csv
+slides-content.json
+agent-skills-presentation.html
+.DS_Store

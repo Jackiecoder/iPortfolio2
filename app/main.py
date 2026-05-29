@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+import os
 from datetime import date as date_type
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -9,7 +10,7 @@ from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ValidationError
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
@@ -48,6 +49,31 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Templates
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+# --- Auth ---
+# When API_TOKEN is set, every request except the page shell, static assets and
+# the health check must carry "Authorization: Bearer <API_TOKEN>". When it's
+# unset (local dev), auth is disabled.
+API_TOKEN = os.environ.get("API_TOKEN")
+_PUBLIC_PREFIXES = ("/static", "/healthz", "/favicon")
+
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    if API_TOKEN:
+        path = request.url.path
+        if path != "/" and not path.startswith(_PUBLIC_PREFIXES):
+            header = request.headers.get("Authorization", "")
+            token = header[7:] if header.startswith("Bearer ") else ""
+            if token != API_TOKEN:
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
+@app.get("/healthz")
+async def healthz():
+    """Liveness/readiness probe for Cloud Run."""
+    return {"status": "ok"}
 
 # Global portfolio instance (reloaded from CSV files)
 portfolio: Optional[Portfolio] = None
@@ -96,6 +122,8 @@ def load_portfolio() -> Portfolio:
 @app.on_event("startup")
 async def startup_event():
     """Apply DB schema (idempotent) and load portfolio data on startup."""
+    if not API_TOKEN:
+        logger.warning("API_TOKEN not set — authentication is DISABLED (dev mode).")
     init_schema()
     load_portfolio()
 
