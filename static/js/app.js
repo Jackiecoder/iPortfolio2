@@ -9,12 +9,21 @@
     window.getAccessToken = () => localStorage.getItem(TOKEN_KEY) || '';
     window.clearAccessToken = () => localStorage.removeItem(TOKEN_KEY);
 
+    function normalizeToken(raw) {
+        let token = (raw || '').trim();
+        token = token.replace(/^API_TOKEN=/i, '').trim();
+        token = token.replace(/^Bearer\s+/i, '').trim();
+        token = token.replace(/^['"]|['"]$/g, '').trim();
+        return token;
+    }
+
     function promptForToken() {
         if (prompting) return;
         prompting = true;
         const t = window.prompt('Enter access token:');
-        if (t) {
-            localStorage.setItem(TOKEN_KEY, t.trim());
+        const token = normalizeToken(t);
+        if (token) {
+            localStorage.setItem(TOKEN_KEY, token);
             location.reload();
         } else {
             prompting = false;
