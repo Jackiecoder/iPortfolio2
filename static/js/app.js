@@ -38,7 +38,7 @@
         ].join(';');
 
         overlay.innerHTML = `
-            <div style="width:min(560px,100%);background:#fff;border-radius:8px;box-shadow:0 24px 80px rgba(0,0,0,.35);padding:22px;color:#111827;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+            <div class="access-token-panel" style="width:min(560px,100%);background:#fff;border-radius:8px;box-shadow:0 24px 80px rgba(0,0,0,.35);padding:22px;color:#111827;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
                 <h2 style="font-size:20px;margin:0 0 8px;">Access token required</h2>
                 <p style="margin:0 0 16px;color:#4b5563;line-height:1.45;">${message}</p>
                 <input id="accessTokenInput" type="password" autocomplete="off" spellcheck="false"
