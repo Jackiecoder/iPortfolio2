@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+import mimetypes
 import os
 from datetime import date as date_type
 from datetime import datetime, timedelta
@@ -11,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
@@ -52,6 +53,10 @@ app = FastAPI(
 )
 
 # Mount static files
+# Ensure the web app manifest is served with a manifest content-type (the
+# extension isn't in the default mimetypes db on all platforms).
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Templates
@@ -62,7 +67,7 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # the health check must carry "Authorization: Bearer <API_TOKEN>". When it's
 # unset (local dev), auth is disabled.
 API_TOKEN = os.environ.get("API_TOKEN")
-_PUBLIC_PREFIXES = ("/static", "/healthz", "/api/healthz", "/favicon")
+_PUBLIC_PREFIXES = ("/static", "/healthz", "/api/healthz", "/favicon", "/sw.js", "/manifest.webmanifest")
 
 
 @app.middleware("http")
@@ -82,6 +87,20 @@ async def require_token(request: Request, call_next):
 async def healthz():
     """Liveness/readiness probe for Cloud Run."""
     return {"status": "ok"}
+
+
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    """Serve the PWA service worker from the root so it controls the whole site.
+
+    A worker served from /static/ would be scoped to /static/ and could not
+    control navigations at /, so it must live at the origin root.
+    """
+    return FileResponse(
+        STATIC_DIR / "sw.js",
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+    )
 
 # Global portfolio instance (reloaded from CSV files)
 portfolio: Optional[Portfolio] = None
