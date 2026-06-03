@@ -1221,3 +1221,25 @@ body {
 .sim-dca-box .form-label-sm {
     color: #1e40af;
 }
+
+/* ---- Intraday news attribution panel ---- */
+.news-recap-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+    max-height: 420px;
+    overflow-y: auto;
+    color: #374151;
+}
+.news-ticker {
+    background: #d1fae5;
+    color: #065f46;
+    font-weight: 600;
+    border-radius: 4px;
+    padding: 0 4px;
+    cursor: pointer;
+}
+.news-ticker:hover {
+    background: #10b981;
+    color: #fff;
+}
