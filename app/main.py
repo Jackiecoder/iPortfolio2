@@ -55,7 +55,7 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # the health check must carry "Authorization: Bearer <API_TOKEN>". When it's
 # unset (local dev), auth is disabled.
 API_TOKEN = os.environ.get("API_TOKEN")
-_PUBLIC_PREFIXES = ("/static", "/healthz", "/favicon")
+_PUBLIC_PREFIXES = ("/static", "/healthz", "/api/healthz", "/favicon")
 
 
 @app.middleware("http")
@@ -71,6 +71,7 @@ async def require_token(request: Request, call_next):
 
 
 @app.get("/healthz")
+@app.get("/api/healthz")
 async def healthz():
     """Liveness/readiness probe for Cloud Run."""
     return {"status": "ok"}
