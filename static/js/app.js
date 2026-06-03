@@ -1,10 +1,10 @@
 // Portfolio Tracker Frontend Application
 
 // --- Access token: attached to every API request as a Bearer header. ---
-// Stored in localStorage; prompted for once on the first 401.
+// Stored in localStorage; shown as an in-page prompt on the first 401.
 (function setupAuth() {
     const TOKEN_KEY = 'iportfolio_token';
-    let prompting = false;
+    let promptVisible = false;
 
     window.getAccessToken = () => localStorage.getItem(TOKEN_KEY) || '';
     window.clearAccessToken = () => localStorage.removeItem(TOKEN_KEY);
@@ -17,16 +17,81 @@
         return token;
     }
 
-    function promptForToken() {
-        if (prompting) return;
-        prompting = true;
-        const t = window.prompt('Enter access token:');
-        const token = normalizeToken(t);
-        if (token) {
-            localStorage.setItem(TOKEN_KEY, token);
-            location.reload();
+    function showTokenPrompt(message = 'Enter the access token to load portfolio data.') {
+        if (promptVisible) return;
+        promptVisible = true;
+
+        const existing = document.getElementById('accessTokenOverlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'accessTokenOverlay';
+        overlay.style.cssText = [
+            'position:fixed',
+            'inset:0',
+            'z-index:99999',
+            'background:rgba(15,23,42,.72)',
+            'display:flex',
+            'align-items:flex-start',
+            'justify-content:center',
+            'padding:72px 20px'
+        ].join(';');
+
+        overlay.innerHTML = `
+            <div style="width:min(560px,100%);background:#fff;border-radius:8px;box-shadow:0 24px 80px rgba(0,0,0,.35);padding:22px;color:#111827;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+                <h2 style="font-size:20px;margin:0 0 8px;">Access token required</h2>
+                <p style="margin:0 0 16px;color:#4b5563;line-height:1.45;">${message}</p>
+                <input id="accessTokenInput" type="password" autocomplete="off" spellcheck="false"
+                    placeholder="Paste token, API_TOKEN=..., or Bearer ..."
+                    style="width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:6px;padding:12px 14px;font-size:16px;">
+                <div id="accessTokenHint" style="min-height:20px;margin-top:8px;font-size:13px;color:#64748b;"></div>
+                <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+                    <button id="accessTokenClear" type="button" style="border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:9px 14px;cursor:pointer;">Clear</button>
+                    <button id="accessTokenSave" type="button" style="border:0;background:#0d6efd;color:#fff;border-radius:6px;padding:9px 16px;cursor:pointer;">Save & reload</button>
+                </div>
+            </div>
+        `;
+
+        const attach = () => {
+            document.body.appendChild(overlay);
+            const input = document.getElementById('accessTokenInput');
+            const hint = document.getElementById('accessTokenHint');
+
+            const updateHint = () => {
+                const token = normalizeToken(input.value);
+                hint.textContent = token ? `Token length: ${token.length}` : '';
+                hint.style.color = token && token.length !== 48 ? '#b45309' : '#64748b';
+            };
+
+            const save = () => {
+                const token = normalizeToken(input.value);
+                if (!token) {
+                    hint.textContent = 'Paste the 48-character token from Secret Manager.';
+                    hint.style.color = '#dc2626';
+                    return;
+                }
+                localStorage.setItem(TOKEN_KEY, token);
+                location.reload();
+            };
+
+            input.addEventListener('input', updateHint);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') save();
+            });
+            document.getElementById('accessTokenSave').addEventListener('click', save);
+            document.getElementById('accessTokenClear').addEventListener('click', () => {
+                window.clearAccessToken();
+                input.value = '';
+                updateHint();
+                input.focus();
+            });
+            input.focus();
+        };
+
+        if (document.body) {
+            attach();
         } else {
-            prompting = false;
+            window.addEventListener('DOMContentLoaded', attach, { once: true });
         }
     }
 
@@ -38,7 +103,7 @@
         return origFetch(input, { ...init, headers }).then((resp) => {
             if (resp.status === 401) {
                 window.clearAccessToken();
-                promptForToken();
+                showTokenPrompt('The saved token was missing or rejected. Paste the current token and reload.');
             }
             return resp;
         });
