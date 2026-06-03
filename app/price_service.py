@@ -6,12 +6,26 @@ import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
 from .cache_service import cache_service
 
 logger = logging.getLogger(__name__)
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _market_today() -> date:
+    """Return today's date in the US market timezone."""
+    return datetime.now(MARKET_TZ).date()
+
+
+def _to_market_naive(ts: datetime) -> datetime:
+    """Convert a timestamp to timezone-naive America/New_York time."""
+    if ts.tzinfo is None:
+        return ts
+    return ts.astimezone(MARKET_TZ).replace(tzinfo=None)
 
 
 def _yf_call_with_retry(fn, *args, **kwargs):
@@ -532,7 +546,6 @@ class PriceService:
             Previous close price as Decimal, or None if not available
         """
         try:
-            from datetime import date as _date
             ticker = yf.Ticker(symbol)
             # Get last 5 days of daily data
             history = ticker.history(period="5d")
@@ -540,7 +553,7 @@ class PriceService:
             if history.empty:
                 return None
 
-            return self._get_prev_close_from_series(history["Close"], _date.today())
+            return self._get_prev_close_from_series(history["Close"], _market_today())
 
         except Exception as e:
             logger.error(f"Error fetching previous close for {symbol}: {e}")
@@ -559,8 +572,7 @@ class PriceService:
         Returns:
             Dictionary mapping symbols to previous close prices
         """
-        from datetime import date as _date
-        today = _date.today()
+        today = _market_today()
         results = {}
 
         if not symbols:
@@ -628,8 +640,7 @@ class PriceService:
 
     def _is_within_yf_window(self, date_str: str, interval: str) -> bool:
         """True if yfinance still has data for this date (within its rolling window)."""
-        from datetime import date, timedelta
-        days_ago = (date.today() - date.fromisoformat(date_str)).days
+        days_ago = (_market_today() - date.fromisoformat(date_str)).days
         return days_ago < self._yf_window_days(interval)
 
     def get_intraday_prices(
@@ -662,7 +673,7 @@ class PriceService:
             if datetime.now() - cached_at < self.cache_ttl:
                 return data
 
-        today = date.today()
+        today = _market_today()
         today_str = today.isoformat()
         is_crypto = symbol.endswith('-USD')
 
@@ -789,8 +800,7 @@ class PriceService:
             else:
                 last_timestamp = history.index[-1].to_pydatetime()
                 if last_timestamp.tzinfo is not None:
-                    local_tz = datetime.now().astimezone().tzinfo
-                    last_timestamp = last_timestamp.astimezone(local_tz).replace(tzinfo=None)
+                    last_timestamp = _to_market_naive(last_timestamp)
                 end_date = last_timestamp.date()
 
                 if days == 1 and end_date != today:
@@ -803,9 +813,7 @@ class PriceService:
             for date_idx, row in history.iterrows():
                 try:
                     timestamp = date_idx.to_pydatetime()
-                    if timestamp.tzinfo is not None:
-                        local_tz = datetime.now().astimezone().tzinfo
-                        timestamp = timestamp.astimezone(local_tz).replace(tzinfo=None)
+                    timestamp = _to_market_naive(timestamp)
                     if timestamp.date() < start_date or timestamp.date() > end_date:
                         continue
                     close_price = row["Close"]

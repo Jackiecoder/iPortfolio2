@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from .models import (
     ActionType,
@@ -19,6 +20,17 @@ from .price_service import price_service
 from .split_service import split_service
 
 logger = logging.getLogger(__name__)
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _market_today() -> date:
+    """Return today's date in the US market timezone."""
+    return datetime.now(MARKET_TZ).date()
+
+
+def _market_now() -> datetime:
+    """Return current time in the US market timezone."""
+    return datetime.now(MARKET_TZ)
 
 
 class LotInfo:
@@ -77,7 +89,7 @@ class Portfolio:
         All quantities are adjusted to today's split-adjusted values.
         """
         symbol = txn.asset
-        today = date.today()
+        today = _market_today()
 
         # Get split adjustment factor from transaction date to today
         if self._adjust_splits and txn.action in (
@@ -263,7 +275,7 @@ class Portfolio:
             prices = price_service.get_prices_batch(symbols)
             prev_closes = price_service.get_previous_close_batch(symbols)
             year_start_prices = price_service.get_year_start_prices_batch(
-                symbols, date.today().year
+                symbols, _market_today().year
             )
             for holding in holdings:
                 price = prices.get(holding.symbol)
@@ -273,7 +285,7 @@ class Portfolio:
 
         # Calculate holding days and annualized return for each holding
         import math
-        today = date.today()
+        today = _market_today()
         for holding in holdings:
             holding_days = self.get_holding_days(holding.symbol)
             holding.holding_days = holding_days
@@ -434,7 +446,7 @@ class Portfolio:
             return Decimal("0")
 
         if as_of_date is None:
-            as_of_date = date.today()
+            as_of_date = _market_today()
 
         # Find the most recent snapshot on or before as_of_date
         applicable_dates = [d for d in self._cash_snapshots.keys() if d <= as_of_date]
@@ -491,7 +503,7 @@ class Portfolio:
 
         # If still holding, add current period
         if current_qty > 0 and period_start is not None:
-            holding_periods.append((period_start, date.today()))
+            holding_periods.append((period_start, _market_today()))
 
         # Calculate total holding days
         total_days = 0
@@ -645,7 +657,7 @@ class Portfolio:
         weighted_annualized_return = None
         if fetch_prices:
             import math
-            today = date.today()
+            today = _market_today()
             weighted_sum = Decimal("0")
             total_cost_basis_weight = Decimal("0")
 
@@ -799,7 +811,7 @@ class Portfolio:
         if start_date is None:
             start_date = min(t.date for t in self._transactions)
         if end_date is None:
-            end_date = date.today()
+            end_date = _market_today()
 
         # Try to get cached portfolio values first (for dates older than 7 days)
         cached_values = cache_service.get_portfolio_values(start_date, end_date)
@@ -941,7 +953,7 @@ class Portfolio:
         if not self._transactions:
             return []
 
-        today = date.today()
+        today = _market_today()
         start_date = today - timedelta(days=num_days)
 
         symbols = list({
@@ -1077,7 +1089,7 @@ class Portfolio:
         if start_date is None:
             start_date = min(t.date for t in self._transactions)
         if end_date is None:
-            end_date = date.today()
+            end_date = _market_today()
 
         # Category classification (matching frontend logic)
         def get_category(symbol: str) -> str:
@@ -1243,7 +1255,7 @@ class Portfolio:
                 all_times.add(p["time"])
 
         # Generate time slots from market open (or earlier for pre-market context)
-        now = datetime.now()
+        now = _market_now()
         current_time = now.strftime("%H:%M")
 
         # Add market hours markers if we have baseline (for drawing vertical lines)
@@ -1377,7 +1389,7 @@ class Portfolio:
         Works for dates within the last ~59 days (yfinance 5m/15m data limit).
         Uses transaction replay so holdings reflect the actual positions on that date.
         """
-        today = date.today()
+        today = _market_today()
         if target_date == today:
             return self.get_intraday_values(interval)
 
@@ -1508,7 +1520,7 @@ class Portfolio:
         """
         from datetime import datetime, timedelta
 
-        today = date.today()
+        today = _market_today()
         start_date = today - timedelta(days=days)
 
         # --- Replay transactions to build per-day quantities ---

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ValidationError
@@ -27,6 +28,12 @@ from .simulator import run_simulation
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def market_today() -> date_type:
+    """Return today's date in the US market timezone."""
+    return datetime.now(MARKET_TZ).date()
 
 # Application paths
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -198,7 +205,6 @@ async def get_summary():
         return cached
 
     try:
-        from datetime import date as _date
         summary = portfolio.get_portfolio_summary(fetch_prices=True)
 
         # YTD P&L: change in (investment_value - cost_basis) since Jan 1
@@ -206,8 +212,8 @@ async def get_summary():
         ytd_pnl_percent = 0.0
         ytd_lt_pnl = None
         ytd_st_pnl = None
-        today = _date.today()
-        jan1 = _date(today.year, 1, 1)
+        today = market_today()
+        jan1 = date_type(today.year, 1, 1)
         ytd_history = portfolio.get_historical_values(
             start_date=jan1, end_date=today
         )
@@ -569,12 +575,11 @@ async def get_intraday(
             detail=f"Invalid interval. Must be one of: {', '.join(valid_intervals)}"
         )
 
-    from datetime import date as _date
-    today = _date.today()
+    today = market_today()
     target_date = today
     if date:
         try:
-            target_date = _date.fromisoformat(date)
+            target_date = date_type.fromisoformat(date)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
         if target_date > today:
