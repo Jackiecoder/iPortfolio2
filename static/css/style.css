@@ -250,6 +250,17 @@ body {
         display: none;
     }
 
+    .tracker-tabs {
+        margin-left: -0.05rem;
+        margin-right: -0.05rem;
+        gap: 0.4rem;
+    }
+
+    .tracker-tabs .nav-link {
+        font-size: 0.84rem;
+        padding: 0.42rem 0.68rem;
+    }
+
     .card {
         border-radius: 0.5rem;
     }
@@ -468,6 +479,40 @@ body {
 
 .summary-strip-sep {
     color: #d1d5db;
+}
+
+/* Tracker tabs keep the dashboard short on mobile without hiding data. */
+.tracker-tabs {
+    gap: 0.5rem;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 0.15rem;
+    scrollbar-width: none;
+}
+
+.tracker-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.tracker-tabs .nav-link {
+    white-space: nowrap;
+    border: 1px solid #dbe3ef;
+    background: #fff;
+    color: #475569;
+    font-weight: 600;
+    padding: 0.45rem 0.85rem;
+    border-radius: 0.5rem;
+}
+
+.tracker-tabs .nav-link.active {
+    border-color: #0d6efd;
+    background: #0d6efd;
+    color: #fff;
+    box-shadow: 0 3px 10px rgba(13, 110, 253, 0.18);
+}
+
+.tracker-tab-content > .tab-pane > :last-child {
+    margin-bottom: 0 !important;
 }
 
 /* Daily P&L List */

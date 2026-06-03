@@ -3806,8 +3806,40 @@ async function addTransaction(payload) {
     });
 })();
 
+function resizeTrackerCharts() {
+    [
+        intradayChart,
+        pnlChart,
+        performanceChart,
+        investmentChart,
+        allocationChart,
+        simPerfChart,
+        simDriftChart,
+    ].forEach(chart => {
+        if (chart) {
+            chart.resize();
+            chart.update('none');
+        }
+    });
+}
+
 // Initial load and event handlers setup
 document.addEventListener('DOMContentLoaded', () => {
+    const savedTrackerTab = localStorage.getItem('trackerActiveTab');
+    if (savedTrackerTab) {
+        const tabButton = document.querySelector(`[data-bs-target="${savedTrackerTab}"]`);
+        if (tabButton && window.bootstrap) {
+            bootstrap.Tab.getOrCreateInstance(tabButton).show();
+        }
+    }
+
+    document.querySelectorAll('#trackerTabs [data-bs-toggle="pill"]').forEach(btn => {
+        btn.addEventListener('shown.bs.tab', (event) => {
+            localStorage.setItem('trackerActiveTab', event.target.dataset.bsTarget);
+            requestAnimationFrame(resizeTrackerCharts);
+        });
+    });
+
     // Period button event handlers
     document.querySelectorAll('.period-btn').forEach(btn => {
         btn.addEventListener('click', () => {

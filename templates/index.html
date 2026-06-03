@@ -10,7 +10,7 @@
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=22">
+    <link rel="stylesheet" href="/static/css/style.css?v=23">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -216,6 +216,32 @@
             </div>
         </div>
 
+        <ul class="nav nav-pills tracker-tabs mb-3" id="trackerTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="today-tab" data-bs-toggle="pill" data-bs-target="#trackerToday" type="button" role="tab" aria-controls="trackerToday" aria-selected="true">
+                    <i class="bi bi-clock me-1"></i>Today
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="performance-tab" data-bs-toggle="pill" data-bs-target="#trackerPerformance" type="button" role="tab" aria-controls="trackerPerformance" aria-selected="false">
+                    <i class="bi bi-graph-up me-1"></i>Performance
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="holdings-tab" data-bs-toggle="pill" data-bs-target="#trackerHoldings" type="button" role="tab" aria-controls="trackerHoldings" aria-selected="false">
+                    <i class="bi bi-briefcase me-1"></i>Holdings
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="income-tab" data-bs-toggle="pill" data-bs-target="#trackerIncome" type="button" role="tab" aria-controls="trackerIncome" aria-selected="false">
+                    <i class="bi bi-cash-coin me-1"></i>Income
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content tracker-tab-content" id="trackerTabContent">
+            <div class="tab-pane fade show active" id="trackerToday" role="tabpanel" aria-labelledby="today-tab" tabindex="0">
+
         <!-- Intraday P&L Chart -->
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -231,6 +257,9 @@
                 </div>
             </div>
         </div>
+            </div>
+
+            <div class="tab-pane fade" id="trackerPerformance" role="tabpanel" aria-labelledby="performance-tab" tabindex="0">
 
         <!-- P&L Chart Row -->
         <div class="row g-4 mb-4">
@@ -372,6 +401,41 @@
             </div>
         </div>
 
+        <!-- Annual Performance Table -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0"><i class="bi bi-calendar3 me-2"></i>Annual Performance</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="annualTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Year</th>
+                                <th>Start Value</th>
+                                <th>End Value</th>
+                                <th>Net Invested</th>
+                                <th title="Unrealized P&L change for the year (mark-to-market change of held positions, net of contributions).">P&L ($)</th>
+                                <th>P&L (%)</th>
+                                <th title="Realized P&L from positions sold during the year (proceeds − cost basis), split into short-term (held &lt; 1yr) and long-term (held &ge; 1yr).">Realized ($)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="annualBody">
+                            <tr>
+                                <td colspan="7" class="text-center text-muted py-4">
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                    Loading annual performance...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+            </div>
+
+            <div class="tab-pane fade" id="trackerHoldings" role="tabpanel" aria-labelledby="holdings-tab" tabindex="0">
+
         <!-- Holdings Table -->
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
@@ -459,37 +523,9 @@
             </div>
         </div>
 
-        <!-- Annual Performance Table -->
-        <div class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white border-0">
-                <h5 class="mb-0"><i class="bi bi-calendar3 me-2"></i>Annual Performance</h5>
             </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0" id="annualTable">
-                        <thead class="table-light">
-                            <tr>
-                                <th>Year</th>
-                                <th>Start Value</th>
-                                <th>End Value</th>
-                                <th>Net Invested</th>
-                                <th title="Unrealized P&L change for the year (mark-to-market change of held positions, net of contributions).">P&L ($)</th>
-                                <th>P&L (%)</th>
-                                <th title="Realized P&L from positions sold during the year (proceeds − cost basis), split into short-term (held &lt; 1yr) and long-term (held &ge; 1yr).">Realized ($)</th>
-                            </tr>
-                        </thead>
-                        <tbody id="annualBody">
-                            <tr>
-                                <td colspan="7" class="text-center text-muted py-4">
-                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
-                                    Loading annual performance...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
+
+            <div class="tab-pane fade" id="trackerIncome" role="tabpanel" aria-labelledby="income-tab" tabindex="0">
 
         <!-- Realized P&L Table -->
         <div class="card border-0 shadow-sm mb-4">
@@ -549,6 +585,8 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+        </div>
             </div>
         </div>
     </div><!-- /#trackerPage -->
@@ -774,6 +812,6 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/app.js?v=94"></script>
+    <script src="/static/js/app.js?v=95"></script>
 </body>
 </html>
