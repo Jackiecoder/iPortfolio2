@@ -41,6 +41,9 @@
                 </button>
             </div>
             <div class="d-flex gap-2 align-items-center">
+                <button id="installAppBtn" class="btn btn-light btn-sm d-none" title="Install Portfolio Tracker as an app">
+                    <i class="bi bi-download me-1"></i><span class="nav-label">Install App</span>
+                </button>
                 <button id="anonymousBtn" class="btn btn-outline-light btn-sm" title="Toggle Anonymous Mode">
                     <i class="bi bi-eye"></i>
                 </button>
@@ -830,6 +833,34 @@
                 );
             });
         }
+
+        // In-page "Install App" button (Chrome/Edge/Android fire beforeinstallprompt;
+        // iOS Safari does not — there users install via Share -> Add to Home Screen).
+        (function () {
+            let deferredPrompt = null;
+            const btn = document.getElementById('installAppBtn');
+            if (!btn) return;
+
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault();              // suppress the mini-infobar
+                deferredPrompt = e;
+                btn.classList.remove('d-none');  // reveal our button
+            });
+
+            btn.addEventListener('click', async () => {
+                if (!deferredPrompt) return;
+                deferredPrompt.prompt();
+                await deferredPrompt.userChoice;
+                deferredPrompt = null;
+                btn.classList.add('d-none');     // a prompt can only be used once
+            });
+
+            // Hide the button once installed (and if launched as an installed app).
+            window.addEventListener('appinstalled', () => btn.classList.add('d-none'));
+            if (window.matchMedia('(display-mode: standalone)').matches) {
+                btn.classList.add('d-none');
+            }
+        })();
     </script>
 </body>
 </html>
