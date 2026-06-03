@@ -253,10 +253,14 @@ body {
     .tracker-tabs {
         margin-left: -0.05rem;
         margin-right: -0.05rem;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 0.4rem;
+        overflow-x: visible;
     }
 
     .tracker-tabs .nav-link {
+        width: 100%;
         font-size: 0.84rem;
         padding: 0.42rem 0.68rem;
     }
