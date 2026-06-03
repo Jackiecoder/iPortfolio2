@@ -145,17 +145,194 @@ body {
 
 /* Table responsive adjustments */
 @media (max-width: 768px) {
+    body {
+        font-size: 0.95rem;
+    }
+
+    .navbar {
+        position: static;
+    }
+
+    .navbar .container-fluid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.55rem !important;
+        padding: 0.75rem;
+    }
+
+    .navbar-brand {
+        margin: 0;
+        font-size: 1.15rem;
+        line-height: 1.2;
+        white-space: nowrap;
+    }
+
+    .navbar .container-fluid > .d-flex.gap-1.mx-auto {
+        margin: 0 !important;
+        width: 100%;
+        display: grid !important;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.45rem !important;
+    }
+
+    .navbar .container-fluid > .d-flex.gap-2.align-items-center {
+        width: 100%;
+        display: grid !important;
+        grid-template-columns: 44px minmax(0, 1fr) 58px minmax(0, 1fr);
+        gap: 0.45rem !important;
+        align-items: stretch !important;
+    }
+
+    .navbar .btn,
+    .navbar .dropdown,
+    .navbar label.btn {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .navbar .dropdown .btn {
+        width: 100%;
+    }
+
+    #refreshCountdown:not(.d-none) {
+        display: inline-flex !important;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        padding: 0.4rem 0.5rem;
+    }
+
+    #addTxnBtn,
+    .navbar label.btn {
+        grid-column: span 2;
+    }
+
+    .navbar .btn {
+        min-height: 38px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+    }
+
+    .navbar .btn-sm {
+        font-size: 0.9rem;
+        padding: 0.45rem 0.5rem;
+    }
+
+    .navbar .nav-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    main.container-fluid {
+        padding: 0.85rem 0.75rem !important;
+    }
+
+    #trackerPage > .d-flex.align-items-center.gap-2.mb-2 {
+        align-items: flex-start !important;
+        gap: 0.55rem !important;
+    }
+
+    #summaryToggleBtn {
+        white-space: nowrap;
+        min-height: 38px;
+    }
+
+    .summary-strip {
+        flex: 1 1 180px;
+        gap: 0.25rem 0.45rem;
+        font-size: 0.86rem;
+        line-height: 1.55;
+    }
+
+    .summary-strip-sep {
+        display: none;
+    }
+
+    .card {
+        border-radius: 0.5rem;
+    }
+
+    .card-header {
+        padding: 0.85rem 0.9rem;
+    }
+
+    .card-body {
+        padding: 0.75rem;
+    }
+
+    .card-header h5 {
+        font-size: 1.05rem;
+    }
+
+    #intradayDatePicker {
+        width: 128px !important;
+        max-width: calc(100vw - 150px);
+    }
+
     .chart-container {
-        height: 250px;
+        height: 240px;
     }
 
     .pnl-chart-container {
-        height: 280px;
+        height: 285px;
     }
 
     .btn-group-sm .btn {
         padding: 0.25rem 0.4rem;
         font-size: 0.7rem;
+    }
+
+    .card-header .btn-group {
+        max-width: 100%;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    .card-header .btn-group::-webkit-scrollbar {
+        display: none;
+    }
+
+    .period-btn,
+    .portfolio-period-btn,
+    .portfolio-view-btn,
+    .allocation-view-btn {
+        flex: 0 0 auto;
+        min-width: 42px;
+    }
+
+    .tooltip-custom,
+    #intraday-tooltip {
+        max-width: calc(100vw - 32px) !important;
+        font-size: 0.75rem !important;
+    }
+}
+
+@media (max-width: 430px) {
+    .navbar-brand {
+        font-size: 1.05rem;
+    }
+
+    .navbar .container-fluid {
+        padding-left: 0.65rem;
+        padding-right: 0.65rem;
+    }
+
+    .navbar .container-fluid > .d-flex.gap-2.align-items-center {
+        grid-template-columns: 42px minmax(0, 1fr) 54px minmax(0, 1fr);
+    }
+
+    .navbar .btn-sm {
+        font-size: 0.84rem;
+    }
+
+    .summary-strip {
+        font-size: 0.82rem;
+    }
+
+    .pnl-chart-container {
+        height: 270px;
     }
 }
 
@@ -169,6 +346,10 @@ body {
 /* Navbar brand */
 .navbar-brand {
     font-weight: 600;
+}
+
+.navbar .container-fluid {
+    gap: 0.75rem;
 }
 
 /* Summary card values */

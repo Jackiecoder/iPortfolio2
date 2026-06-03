@@ -10,7 +10,7 @@
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=21">
+    <link rel="stylesheet" href="/static/css/style.css?v=22">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -51,13 +51,13 @@
                     <i class="bi bi-arrow-repeat spin me-1"></i><span id="countdownValue"></span>
                 </span>
                 <button id="refreshBtn" class="btn btn-light btn-sm">
-                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                    <i class="bi bi-arrow-clockwise me-1"></i><span class="nav-label">Refresh</span>
                 </button>
                 <button id="addTxnBtn" class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTxnModal">
-                    <i class="bi bi-plus-lg me-1"></i>Add Transaction
+                    <i class="bi bi-plus-lg me-1"></i><span class="nav-label">Add Transaction</span>
                 </button>
                 <label class="btn btn-outline-light btn-sm mb-0">
-                    <i class="bi bi-upload me-1"></i>Upload CSV
+                    <i class="bi bi-upload me-1"></i><span class="nav-label">Upload CSV</span>
                     <input type="file" id="fileInput" accept=".csv" hidden>
                 </label>
             </div>
