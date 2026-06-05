@@ -626,6 +626,13 @@
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h5 class="mb-0"><i class="bi bi-list-ul me-2"></i>All Transactions <span class="text-muted small ms-2" id="txnCount"></span></h5>
                 <div class="d-flex gap-2 align-items-center flex-wrap">
+                    <select id="txnRangeFilter" class="form-select form-select-sm" style="width:130px;" title="Time frame">
+                        <option value="7">Past week</option>
+                        <option value="30">Past month</option>
+                        <option value="90">Past 3 months</option>
+                        <option value="365">Past year</option>
+                        <option value="0">All time</option>
+                    </select>
                     <input type="search" id="txnSearch" class="form-control form-control-sm" placeholder="Filter by symbol…" style="width:160px;">
                     <select id="txnActionFilter" class="form-select form-select-sm" style="width:130px;">
                         <option value="">All actions</option>
@@ -897,7 +904,7 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/app.js?v=96"></script>
+    <script src="/static/js/app.js?v=97"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

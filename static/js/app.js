@@ -3602,10 +3602,21 @@ function renderTransactions() {
 
     const search = (document.getElementById('txnSearch')?.value || '').trim().toUpperCase();
     const actionFilter = document.getElementById('txnActionFilter')?.value || '';
+    const rangeDays = parseInt(document.getElementById('txnRangeFilter')?.value ?? '7', 10);
+
+    // Date cutoff for the selected time frame (0 = all time). ISO date strings
+    // compare lexicographically, so a plain string compare is sufficient.
+    let cutoff = '';
+    if (rangeDays > 0) {
+        const d = new Date();
+        d.setDate(d.getDate() - rangeDays);
+        cutoff = d.toISOString().slice(0, 10);
+    }
 
     const rows = allTransactions.filter(t =>
         (!search || (t.asset || '').toUpperCase().includes(search)) &&
-        (!actionFilter || t.action === actionFilter)
+        (!actionFilter || t.action === actionFilter) &&
+        (!cutoff || (t.date || '') >= cutoff)
     );
 
     const countEl = document.getElementById('txnCount');
@@ -3672,11 +3683,13 @@ async function deleteTransaction(txnId, btn) {
 function initTransactionsTab() {
     const search = document.getElementById('txnSearch');
     const actionFilter = document.getElementById('txnActionFilter');
+    const rangeFilter = document.getElementById('txnRangeFilter');
     const reloadBtn = document.getElementById('txnReloadBtn');
     const body = document.getElementById('txnBody');
 
     if (search) search.addEventListener('input', renderTransactions);
     if (actionFilter) actionFilter.addEventListener('change', renderTransactions);
+    if (rangeFilter) rangeFilter.addEventListener('change', renderTransactions);
     if (reloadBtn) reloadBtn.addEventListener('click', () => loadTransactions(true));
 
     // Event delegation for delete buttons (rows are re-rendered frequently).
