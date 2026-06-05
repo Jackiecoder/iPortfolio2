@@ -3562,6 +3562,132 @@ function escapeHtml(s) {
     ));
 }
 
+// ============================================================ TRANSACTIONS TAB
+// Full transaction browser with per-row delete, so mistaken records can be removed.
+let allTransactions = [];          // last-fetched full list
+let transactionsLoaded = false;    // lazy-load guard (fetched on first tab open)
+
+const TXN_ACTION_BADGE = {
+    BUY: 'bg-success', SELL: 'bg-danger', DIV: 'bg-info text-dark',
+    GIFT: 'bg-secondary', FEE: 'bg-warning text-dark', GAS: 'bg-warning text-dark',
+    CASH: 'bg-primary', FIX: 'bg-dark',
+};
+
+async function fetchAllTransactions() {
+    const response = await fetch('/api/transactions');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    return data.transactions || [];
+}
+
+async function loadTransactions(force = false) {
+    if (transactionsLoaded && !force) return;
+    const body = document.getElementById('txnBody');
+    if (!body) return;
+    body.innerHTML = `<tr><td colspan="10" class="text-center text-muted py-4">
+        <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading transactions...</td></tr>`;
+    try {
+        allTransactions = await fetchAllTransactions();
+        transactionsLoaded = true;
+        renderTransactions();
+    } catch (e) {
+        body.innerHTML = `<tr><td colspan="10" class="text-center text-danger py-4">
+            Failed to load transactions: ${escapeHtml(e.message)}</td></tr>`;
+    }
+}
+
+function renderTransactions() {
+    const body = document.getElementById('txnBody');
+    if (!body) return;
+
+    const search = (document.getElementById('txnSearch')?.value || '').trim().toUpperCase();
+    const actionFilter = document.getElementById('txnActionFilter')?.value || '';
+
+    const rows = allTransactions.filter(t =>
+        (!search || (t.asset || '').toUpperCase().includes(search)) &&
+        (!actionFilter || t.action === actionFilter)
+    );
+
+    const countEl = document.getElementById('txnCount');
+    if (countEl) {
+        countEl.textContent = rows.length === allTransactions.length
+            ? `${allTransactions.length} records`
+            : `${rows.length} of ${allTransactions.length} records`;
+    }
+
+    if (rows.length === 0) {
+        body.innerHTML = `<tr><td colspan="10" class="text-center text-muted py-4">No matching transactions.</td></tr>`;
+        return;
+    }
+
+    body.innerHTML = rows.map(t => {
+        const badge = TXN_ACTION_BADGE[t.action] || 'bg-secondary';
+        const qty = t.quantity != null ? formatNumber(t.quantity, 4) : '--';
+        const price = t.ave_price != null ? formatCurrency(t.ave_price) : '--';
+        const amount = t.amount != null ? formatCurrency(t.amount) : '--';
+        return `<tr data-txn-id="${t.id}">
+            <td class="text-nowrap">${escapeHtml(t.date || '--')}</td>
+            <td class="fw-semibold">${escapeHtml(t.asset || '--')}</td>
+            <td><span class="badge ${badge}">${escapeHtml(t.action || '')}</span></td>
+            <td class="text-end">${qty}</td>
+            <td class="text-end">${price}</td>
+            <td class="text-end">${amount}</td>
+            <td>${escapeHtml(t.broker || '--')}</td>
+            <td class="text-muted small">${escapeHtml(t.source || '')}</td>
+            <td class="text-muted small">${escapeHtml(t.comment || '')}</td>
+            <td class="text-end">
+                <button class="btn btn-sm btn-outline-danger txn-delete-btn" data-txn-id="${t.id}"
+                        title="Delete this transaction">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+async function deleteTransaction(txnId, btn) {
+    const txn = allTransactions.find(t => String(t.id) === String(txnId));
+    const label = txn
+        ? `${txn.date} · ${txn.action} ${txn.asset}` + (txn.quantity != null ? ` · qty ${formatNumber(txn.quantity, 4)}` : '')
+        : `transaction ${txnId}`;
+    if (!confirm(`Permanently delete this transaction?\n\n${label}\n\nThis cannot be undone.`)) return;
+
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; }
+    try {
+        const response = await fetch(`/api/transactions/${txnId}`, { method: 'DELETE' });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${response.status}`);
+        }
+        // Drop locally and re-render immediately, then refresh portfolio-wide numbers.
+        allTransactions = allTransactions.filter(t => String(t.id) !== String(txnId));
+        renderTransactions();
+        loadAllData();
+    } catch (e) {
+        alert(`Failed to delete: ${e.message}`);
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-trash"></i>'; }
+    }
+}
+
+function initTransactionsTab() {
+    const search = document.getElementById('txnSearch');
+    const actionFilter = document.getElementById('txnActionFilter');
+    const reloadBtn = document.getElementById('txnReloadBtn');
+    const body = document.getElementById('txnBody');
+
+    if (search) search.addEventListener('input', renderTransactions);
+    if (actionFilter) actionFilter.addEventListener('change', renderTransactions);
+    if (reloadBtn) reloadBtn.addEventListener('click', () => loadTransactions(true));
+
+    // Event delegation for delete buttons (rows are re-rendered frequently).
+    if (body) {
+        body.addEventListener('click', (e) => {
+            const btn = e.target.closest('.txn-delete-btn');
+            if (btn) deleteTransaction(btn.dataset.txnId, btn);
+        });
+    }
+}
+
 // Turn raw recap text into safe HTML: escape, linkify URLs, highlight held tickers.
 function renderNewsText(text, heldTickers) {
     let html = escapeHtml(text);
@@ -3914,10 +4040,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.querySelectorAll('#trackerTabs [data-bs-toggle="pill"]').forEach(btn => {
         btn.addEventListener('shown.bs.tab', (event) => {
-            localStorage.setItem('trackerActiveTab', event.target.dataset.bsTarget);
+            const target = event.target.dataset.bsTarget;
+            localStorage.setItem('trackerActiveTab', target);
             requestAnimationFrame(resizeTrackerCharts);
+            // Lazy-load the transactions list the first time its tab is opened.
+            if (target === '#trackerTransactions') loadTransactions();
         });
     });
+
+    initTransactionsTab();
+    // If the transactions tab was the last-active tab (restored above), load it now.
+    if (localStorage.getItem('trackerActiveTab') === '#trackerTransactions') {
+        loadTransactions();
+    }
 
     // Period button event handlers
     document.querySelectorAll('.period-btn').forEach(btn => {

@@ -37,6 +37,51 @@ def get_all_transactions() -> list[Transaction]:
     return transactions
 
 
+def get_all_transactions_with_meta() -> list[dict]:
+    """Load every transaction as plain dicts including id/broker/created_at.
+
+    Used by the transactions browser UI, which needs the row id to delete a
+    specific record. Unlike ``get_all_transactions`` this does not build
+    ``Transaction`` objects (no validation/derivation) so it surfaces rows
+    exactly as stored. Sorted newest-first.
+    """
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            """SELECT id, date, asset, action, amount, quantity, ave_price,
+                      source, comment, broker, created_at
+               FROM transactions
+               ORDER BY date DESC, id DESC"""
+        ).fetchall()
+
+    def _num(v):
+        return float(v) if v is not None else None
+
+    return [
+        {
+            "id": r[0],
+            "date": r[1].isoformat() if r[1] is not None else None,
+            "asset": r[2],
+            "action": r[3],
+            "amount": _num(r[4]),
+            "quantity": _num(r[5]),
+            "ave_price": _num(r[6]),
+            "source": r[7],
+            "comment": r[8],
+            "broker": r[9],
+            "created_at": r[10].isoformat() if r[10] is not None else None,
+        }
+        for r in rows
+    ]
+
+
+def delete_transaction(txn_id: int) -> bool:
+    """Permanently delete a transaction by id. Returns True if a row was removed."""
+    with get_pool().connection() as conn:
+        cur = conn.execute("DELETE FROM transactions WHERE id = %s", (txn_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def insert_transaction(txn: Transaction, broker: Optional[str] = None) -> int:
     """Insert one transaction; returns its new id."""
     with get_pool().connection() as conn:

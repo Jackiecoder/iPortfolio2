@@ -248,6 +248,11 @@
                     <i class="bi bi-cash-coin me-1"></i>Income
                 </button>
             </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="transactions-tab" data-bs-toggle="pill" data-bs-target="#trackerTransactions" type="button" role="tab" aria-controls="trackerTransactions" aria-selected="false">
+                    <i class="bi bi-list-ul me-1"></i>Transactions
+                </button>
+            </li>
         </ul>
 
         <div class="tab-content tracker-tab-content" id="trackerTabContent">
@@ -605,6 +610,61 @@
                                 <td colspan="3" class="text-center text-muted py-4">
                                     <div class="spinner-border spinner-border-sm me-2" role="status"></div>
                                     Loading dividends...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+            </div>
+
+            <div class="tab-pane fade" id="trackerTransactions" role="tabpanel" aria-labelledby="transactions-tab" tabindex="0">
+
+        <!-- All Transactions Table -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h5 class="mb-0"><i class="bi bi-list-ul me-2"></i>All Transactions <span class="text-muted small ms-2" id="txnCount"></span></h5>
+                <div class="d-flex gap-2 align-items-center flex-wrap">
+                    <input type="search" id="txnSearch" class="form-control form-control-sm" placeholder="Filter by symbol…" style="width:160px;">
+                    <select id="txnActionFilter" class="form-select form-select-sm" style="width:130px;">
+                        <option value="">All actions</option>
+                        <option value="BUY">BUY</option>
+                        <option value="SELL">SELL</option>
+                        <option value="DIV">DIV</option>
+                        <option value="GIFT">GIFT</option>
+                        <option value="FEE">FEE</option>
+                        <option value="GAS">GAS</option>
+                        <option value="CASH">CASH</option>
+                        <option value="FIX">FIX</option>
+                    </select>
+                    <button class="btn btn-sm btn-outline-secondary" id="txnReloadBtn" title="Reload transactions">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm mb-0 align-middle" id="txnTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Date</th>
+                                <th>Symbol</th>
+                                <th>Action</th>
+                                <th class="text-end">Quantity</th>
+                                <th class="text-end">Avg Price</th>
+                                <th class="text-end">Amount</th>
+                                <th>Broker</th>
+                                <th>Source</th>
+                                <th>Comment</th>
+                                <th class="text-end">Remove</th>
+                            </tr>
+                        </thead>
+                        <tbody id="txnBody">
+                            <tr>
+                                <td colspan="10" class="text-center text-muted py-4">
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                    Loading transactions...
                                 </td>
                             </tr>
                         </tbody>

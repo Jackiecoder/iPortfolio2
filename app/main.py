@@ -553,6 +553,36 @@ async def reload_portfolio(clear_history_cache: bool = Query(False, description=
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/transactions")
+async def list_all_transactions():
+    """Return every transaction (newest first) with its id and broker.
+
+    Powers the Transactions browser tab so the user can spot and remove
+    mistaken records. Rows are returned exactly as stored.
+    """
+    try:
+        return {"transactions": repository.get_all_transactions_with_meta()}
+    except Exception as e:
+        logger.error(f"Error listing transactions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/transactions/{txn_id}")
+async def delete_transaction(txn_id: int):
+    """Permanently delete a single transaction by id, then reload the portfolio."""
+    try:
+        deleted = repository.delete_transaction(txn_id)
+    except Exception as e:
+        logger.error(f"Error deleting transaction {txn_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Transaction {txn_id} not found")
+
+    _refresh_after_write()
+    return {"id": txn_id, "message": f"Deleted transaction {txn_id}"}
+
+
 @app.get("/api/transactions/{symbol}")
 async def get_transactions(
     symbol: str,
