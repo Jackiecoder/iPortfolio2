@@ -972,11 +972,11 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
         <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong></td>
         <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)}</div><div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</div>` : ''}</td>
         <td data-col="2">${formatPrice(h.symbol, h.avg_cost)}</td>
-        <td data-col="3">${formatCurrency(h.cost_basis)}</td>
         <td data-col="4">${formatPrice(h.symbol, h.current_price, true)} ${dailyChangePctHtml}</td>
         <td data-col="5" class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
         <td data-col="17" class="${(h.ytd_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl != null ? `${h.ytd_pnl >= 0 ? '+' : ''}${formatCurrencyAlways(h.ytd_pnl)}` : '--'}${buildLtStBreakdownHtml(h.lt_ytd_pnl, h.st_ytd_pnl)}</td>
         <td data-col="18" class="${(h.ytd_pnl_percent || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl_percent != null ? formatPercent(h.ytd_pnl_percent) : '--'}</td>
+        <td data-col="3">${formatCurrency(h.cost_basis)}</td>
         <td data-col="6">${formatCurrency(h.market_value)}</td>
         <td data-col="7" ${allocTitle}>${allocPctText}</td>
         <td data-col="8" ${isCategoryLevelTarget ? '' : `class="target-pct-cell" data-symbol="${targetKey}"`}>${targetCellContent}</td>
@@ -1064,11 +1064,11 @@ function buildTotalRowHtml(holdings, totalInvValue) {
         <tr class="total-row">
             <td data-col="0"><strong>TOTAL</strong></td>
             <td data-col="1"></td><td data-col="2"></td>
-            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong></td>
             <td data-col="4"></td>
             <td data-col="5" class="${totalDailyClass}"><strong>${totalDailySign}${formatCurrencyAlways(totalDaily)}</strong></td>
             <td data-col="17" class="${totalYtdClass}"><strong>${totalYtdSign}${formatCurrencyAlways(totalYtd)}</strong>${buildLtStBreakdownHtml(totalLtYtd, totalStYtd)}</td>
             <td data-col="18" class="${totalYtdClass}"><strong>${formatPercent(totalYtdPct)}</strong></td>
+            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong></td>
             <td data-col="6"><strong>${formatCurrency(totalMV)}</strong></td>
             <td data-col="7"><strong>100.0%</strong></td>
             <td data-col="8"><strong>${targetSumText}</strong>${targetWarn}</td>
@@ -1129,11 +1129,11 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
         <tr class="category-header-row" style="background-color: #fef9e7; border-left: 4px solid ${color};">
             <td data-col="0"><span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px;margin-right:6px;"></span><strong>${catName}</strong> <span class="text-muted">(${catHoldings.length})</span></td>
             <td data-col="1"></td><td data-col="2"></td>
-            <td data-col="3"><strong>${formatCurrency(cost)}</strong></td>
             <td data-col="4" class="${dailyClass}"><strong>${formatPercent(mv > 0 ? (daily / (mv - daily) * 100) : 0)}</strong></td>
             <td data-col="5" class="${dailyClass}"><strong>${dailySign}${formatCurrencyAlways(daily)}</strong></td>
             <td data-col="17" class="${ytdClass}"><strong>${ytdSign}${formatCurrencyAlways(ytd)}</strong>${buildLtStBreakdownHtml(ltYtd, stYtd)}</td>
             <td data-col="18" class="${ytdClass}"><strong>${formatPercent(ytdPct)}</strong></td>
+            <td data-col="3"><strong>${formatCurrency(cost)}</strong></td>
             <td data-col="6"><strong>${formatCurrency(mv)}</strong></td>
             <td data-col="7"><strong>${allocPct.toFixed(1)}%</strong></td>
             <td data-col="8" ${catName === 'Individual Stocks' ? `class="target-pct-cell" data-symbol="category:Individual Stocks" style="cursor:pointer;"` : ''}><strong>${catTargetText}</strong></td>
@@ -3562,6 +3562,145 @@ function escapeHtml(s) {
     ));
 }
 
+// ============================================================ TRANSACTIONS TAB
+// Full transaction browser with per-row delete, so mistaken records can be removed.
+let allTransactions = [];          // last-fetched full list
+let transactionsLoaded = false;    // lazy-load guard (fetched on first tab open)
+
+const TXN_ACTION_BADGE = {
+    BUY: 'bg-success', SELL: 'bg-danger', DIV: 'bg-info text-dark',
+    GIFT: 'bg-secondary', FEE: 'bg-warning text-dark', GAS: 'bg-warning text-dark',
+    CASH: 'bg-primary', FIX: 'bg-dark',
+};
+
+async function fetchAllTransactions() {
+    const response = await fetch('/api/transactions');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    return data.transactions || [];
+}
+
+async function loadTransactions(force = false) {
+    if (transactionsLoaded && !force) return;
+    const body = document.getElementById('txnBody');
+    if (!body) return;
+    body.innerHTML = `<tr><td colspan="10" class="text-center text-muted py-4">
+        <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading transactions...</td></tr>`;
+    try {
+        allTransactions = await fetchAllTransactions();
+        transactionsLoaded = true;
+        renderTransactions();
+    } catch (e) {
+        body.innerHTML = `<tr><td colspan="10" class="text-center text-danger py-4">
+            Failed to load transactions: ${escapeHtml(e.message)}</td></tr>`;
+    }
+}
+
+function renderTransactions() {
+    const body = document.getElementById('txnBody');
+    if (!body) return;
+
+    const search = (document.getElementById('txnSearch')?.value || '').trim().toUpperCase();
+    const actionFilter = document.getElementById('txnActionFilter')?.value || '';
+    const rangeDays = parseInt(document.getElementById('txnRangeFilter')?.value ?? '7', 10);
+
+    // Date cutoff for the selected time frame (0 = all time). ISO date strings
+    // compare lexicographically, so a plain string compare is sufficient.
+    let cutoff = '';
+    if (rangeDays > 0) {
+        const d = new Date();
+        d.setDate(d.getDate() - rangeDays);
+        cutoff = d.toISOString().slice(0, 10);
+    }
+
+    const rows = allTransactions.filter(t =>
+        (!search || (t.asset || '').toUpperCase().includes(search)) &&
+        (!actionFilter || t.action === actionFilter) &&
+        (!cutoff || (t.date || '') >= cutoff)
+    );
+
+    const countEl = document.getElementById('txnCount');
+    if (countEl) {
+        countEl.textContent = rows.length === allTransactions.length
+            ? `${allTransactions.length} records`
+            : `${rows.length} of ${allTransactions.length} records`;
+    }
+
+    if (rows.length === 0) {
+        body.innerHTML = `<tr><td colspan="10" class="text-center text-muted py-4">No matching transactions.</td></tr>`;
+        return;
+    }
+
+    body.innerHTML = rows.map(t => {
+        const badge = TXN_ACTION_BADGE[t.action] || 'bg-secondary';
+        const qty = t.quantity != null ? formatNumber(t.quantity, 4) : '--';
+        const price = t.ave_price != null ? formatCurrency(t.ave_price) : '--';
+        const amount = t.amount != null ? formatCurrency(t.amount) : '--';
+        return `<tr data-txn-id="${t.id}">
+            <td class="text-nowrap">${escapeHtml(t.date || '--')}</td>
+            <td class="fw-semibold">${escapeHtml(t.asset || '--')}</td>
+            <td><span class="badge ${badge}">${escapeHtml(t.action || '')}</span></td>
+            <td class="text-end">${qty}</td>
+            <td class="text-end">${price}</td>
+            <td class="text-end">${amount}</td>
+            <td>${escapeHtml(t.broker || '--')}</td>
+            <td class="text-muted small">${escapeHtml(t.source || '')}</td>
+            <td class="text-muted small">${escapeHtml(t.comment || '')}</td>
+            <td class="text-end">
+                <button class="btn btn-sm btn-outline-danger txn-delete-btn" data-txn-id="${t.id}"
+                        title="Delete this transaction">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+async function deleteTransaction(txnId, btn) {
+    const txn = allTransactions.find(t => String(t.id) === String(txnId));
+    const label = txn
+        ? `${txn.date} · ${txn.action} ${txn.asset}` + (txn.quantity != null ? ` · qty ${formatNumber(txn.quantity, 4)}` : '')
+        : `transaction ${txnId}`;
+    if (!confirm(`Permanently delete this transaction?\n\n${label}\n\nThis cannot be undone.`)) return;
+
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; }
+    try {
+        const response = await fetch(`/api/transactions/${txnId}`, { method: 'DELETE' });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${response.status}`);
+        }
+        // Drop locally and re-render immediately, then refresh portfolio-wide numbers.
+        allTransactions = allTransactions.filter(t => String(t.id) !== String(txnId));
+        renderTransactions();
+        loadAllData();
+    } catch (e) {
+        alert(`Failed to delete: ${e.message}`);
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-trash"></i>'; }
+    }
+}
+
+function initTransactionsTab() {
+    const search = document.getElementById('txnSearch');
+    const actionFilter = document.getElementById('txnActionFilter');
+    const rangeFilter = document.getElementById('txnRangeFilter');
+    const reloadBtn = document.getElementById('txnReloadBtn');
+    const body = document.getElementById('txnBody');
+
+    if (search) search.addEventListener('input', renderTransactions);
+    if (actionFilter) actionFilter.addEventListener('change', renderTransactions);
+    if (rangeFilter) rangeFilter.addEventListener('change', renderTransactions);
+    if (reloadBtn) reloadBtn.addEventListener('click', () => loadTransactions(true));
+
+    // Event delegation for delete buttons (rows are re-rendered frequently).
+    if (body) {
+        body.addEventListener('click', (e) => {
+            const btn = e.target.closest('.txn-delete-btn');
+            if (btn) deleteTransaction(btn.dataset.txnId, btn);
+        });
+    }
+}
+
 // Turn raw recap text into safe HTML: escape, linkify URLs, highlight held tickers.
 function renderNewsText(text, heldTickers) {
     let html = escapeHtml(text);
@@ -3914,10 +4053,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.querySelectorAll('#trackerTabs [data-bs-toggle="pill"]').forEach(btn => {
         btn.addEventListener('shown.bs.tab', (event) => {
-            localStorage.setItem('trackerActiveTab', event.target.dataset.bsTarget);
+            const target = event.target.dataset.bsTarget;
+            localStorage.setItem('trackerActiveTab', target);
             requestAnimationFrame(resizeTrackerCharts);
+            // Lazy-load the transactions list the first time its tab is opened.
+            if (target === '#trackerTransactions') loadTransactions();
         });
     });
+
+    initTransactionsTab();
+    // If the transactions tab was the last-active tab (restored above), load it now.
+    if (localStorage.getItem('trackerActiveTab') === '#trackerTransactions') {
+        loadTransactions();
+    }
 
     // Period button event handlers
     document.querySelectorAll('.period-btn').forEach(btn => {
