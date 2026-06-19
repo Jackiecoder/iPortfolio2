@@ -2927,6 +2927,21 @@ function updateIntradayChart(intraday, interval = '5m') {
                 intersect: false,
                 mode: 'index'
             },
+            // Hovering the chart drives the "Today's Top Movers" card below:
+            // it shows that time point's daily P&L and movers instead of a popup.
+            onHover: (event, activeElements, chart) => {
+                const ds = chart.data.datasets[0];
+                if (activeElements && activeElements.length > 0) {
+                    const idx = activeElements[0].index;
+                    const ac = ds.assetChangesData ? ds.assetChangesData[idx] : null;
+                    if (ac != null && ds.data[idx] != null) {
+                        renderTopMoversAtTime(chart.data.labels[idx], ds.data[idx],
+                            ds.pnlPercentData ? ds.pnlPercentData[idx] : null, ac);
+                        return;
+                    }
+                }
+                renderTopMovers(holdingsData);
+            },
             plugins: {
                 legend: {
                     display: false
@@ -2973,6 +2988,9 @@ function updateIntradayChart(intraday, interval = '5m') {
         },
         plugins: [marketHoursPlugin]
     });
+
+    // Leaving the chart restores the current (live) snapshot in the Top Movers card.
+    ctx.canvas.onmouseleave = () => renderTopMovers(holdingsData);
 }
 
 function updateAllocationChart(holdings, view = 'assets') {
@@ -3625,51 +3643,63 @@ function initTransactionsTab() {
 // Replaces the old news panel under the Intraday P&L chart.
 const TOP_MOVERS_LIMIT = 10;
 
-function renderTopMovers(holdings) {
+// Fill the gainers/losers tables from normalized movers: [{symbol, amt, pct}].
+function _fillMoverTables(items) {
     const gainersBody = document.getElementById('topGainersBody');
     const losersBody = document.getElementById('topLosersBody');
     if (!gainersBody || !losersBody) return;
+
+    const row = (it) => {
+        const cls = it.amt >= 0 ? 'text-success' : 'text-danger';
+        const sign = it.amt >= 0 ? '+' : '';
+        return `<tr>
+            <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong></td>
+            <td class="text-end ${cls}">${sign}${formatCurrencyAlways(it.amt)}</td>
+            <td class="text-end ${cls}">${it.pct != null ? formatPercent(it.pct) : '--'}</td>
+        </tr>`;
+    };
+    const empty = '<tr><td colspan="3" class="text-center text-muted py-3">None.</td></tr>';
+
+    const gainers = items.filter(i => i.amt > 0).sort((a, b) => b.amt - a.amt).slice(0, TOP_MOVERS_LIMIT);
+    const losers = items.filter(i => i.amt < 0).sort((a, b) => a.amt - b.amt).slice(0, TOP_MOVERS_LIMIT);
+    gainersBody.innerHTML = gainers.length ? gainers.map(row).join('') : empty;
+    losersBody.innerHTML = losers.length ? losers.map(row).join('') : empty;
+}
+
+// Header: optional time label + total daily P&L ($ and %).
+function _setTopMoversHeader(amt, pct, timeLabel) {
+    const timeEl = document.getElementById('topMoversTime');
     const totalEl = document.getElementById('topMoversDailyTotal');
+    if (timeEl) timeEl.textContent = timeLabel ? `${timeLabel} · ` : '';
+    if (totalEl) {
+        const sign = amt >= 0 ? '+' : '';
+        const pctText = pct != null ? ` (${sign}${pct.toFixed(2)}%)` : '';
+        totalEl.textContent = `${sign}${formatCurrencyAlways(amt)}${pctText}`;
+        totalEl.className = `fw-semibold ${amt >= 0 ? 'text-success' : 'text-danger'}`;
+    }
+}
 
-    const movers = (holdings || []).filter(h =>
-        h.symbol !== 'CASH' && h.daily_change_amount != null && h.daily_change_amount !== 0
-    );
+// Default view: current (end-of-day / live) per-holding daily moves.
+function renderTopMovers(holdings) {
+    const items = (holdings || [])
+        .filter(h => h.symbol !== 'CASH' && h.daily_change_amount != null && h.daily_change_amount !== 0)
+        .map(h => ({ symbol: h.symbol, amt: h.daily_change_amount, pct: h.daily_change_percent }));
 
-    // Total daily P&L (and %) across all holdings (not just the ones shown).
-    // % is vs the start-of-day value (current market value minus today's change),
-    // matching the per-category daily % elsewhere.
+    // % is vs the start-of-day value (market value minus today's change).
     const totalDaily = (holdings || []).reduce((s, h) => s + (h.daily_change_amount || 0), 0);
     const totalMV = (holdings || []).reduce((s, h) => s + (h.market_value || 0), 0);
     const startVal = totalMV - totalDaily;
-    if (totalEl) {
-        const sign = totalDaily >= 0 ? '+' : '';
-        const pctText = startVal > 0 ? ` (${sign}${(totalDaily / startVal * 100).toFixed(2)}%)` : '';
-        totalEl.textContent = `${sign}${formatCurrencyAlways(totalDaily)}${pctText}`;
-        totalEl.className = `fw-semibold ${totalDaily >= 0 ? 'text-success' : 'text-danger'}`;
-    }
+    _setTopMoversHeader(totalDaily, startVal > 0 ? (totalDaily / startVal * 100) : null, '');
+    _fillMoverTables(items);
+}
 
-    const row = (h) => {
-        const amt = h.daily_change_amount;
-        const pct = h.daily_change_percent;
-        const cls = amt >= 0 ? 'text-success' : 'text-danger';
-        const sign = amt >= 0 ? '+' : '';
-        return `<tr>
-            <td><strong>${escapeHtml(displaySymbol(h.symbol))}</strong></td>
-            <td class="text-end ${cls}">${sign}${formatCurrencyAlways(amt)}</td>
-            <td class="text-end ${cls}">${pct != null ? formatPercent(pct) : '--'}</td>
-        </tr>`;
-    };
-    const empty = '<tr><td colspan="3" class="text-center text-muted py-3">None today.</td></tr>';
-
-    const gainers = movers.filter(h => h.daily_change_amount > 0)
-        .sort((a, b) => b.daily_change_amount - a.daily_change_amount)
-        .slice(0, TOP_MOVERS_LIMIT);
-    const losers = movers.filter(h => h.daily_change_amount < 0)
-        .sort((a, b) => a.daily_change_amount - b.daily_change_amount)
-        .slice(0, TOP_MOVERS_LIMIT);
-
-    gainersBody.innerHTML = gainers.length ? gainers.map(row).join('') : empty;
-    losersBody.innerHTML = losers.length ? losers.map(row).join('') : empty;
+// Hover view: movers as of a specific intraday time point.
+function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges) {
+    const items = (assetChanges || [])
+        .filter(a => a.symbol !== 'CASH' && a.pnl != null && Math.abs(a.pnl) >= 0.01)
+        .map(a => ({ symbol: a.symbol, amt: a.pnl, pct: a.pnl_percent }));
+    _setTopMoversHeader(pnl || 0, pnlPercent != null ? pnlPercent : null, timeLabel);
+    _fillMoverTables(items);
 }
 
 // Main data loading function
