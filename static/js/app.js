@@ -3690,13 +3690,14 @@ function initTransactionsTab() {
 }
 
 // ---- Today's Top Movers -----------------------------------------------------
-// Per-holding daily P&L contributions, sorted by today's $ impact. Replaces the
-// old news panel under the Intraday P&L chart.
+// Per-holding daily P&L: top 10 gainers (left) and top 10 losers (right).
+// Replaces the old news panel under the Intraday P&L chart.
 const TOP_MOVERS_LIMIT = 10;
 
 function renderTopMovers(holdings) {
-    const body = document.getElementById('topMoversBody');
-    if (!body) return;
+    const gainersBody = document.getElementById('topGainersBody');
+    const losersBody = document.getElementById('topLosersBody');
+    if (!gainersBody || !losersBody) return;
     const totalEl = document.getElementById('topMoversDailyTotal');
 
     const movers = (holdings || []).filter(h =>
@@ -3710,30 +3711,28 @@ function renderTopMovers(holdings) {
         totalEl.className = `fw-semibold ${totalDaily >= 0 ? 'text-success' : 'text-danger'}`;
     }
 
-    if (movers.length === 0) {
-        body.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-3">No price moves today.</td></tr>`;
-        return;
-    }
-
-    // Biggest movers by absolute $ impact, then displayed gainers-first.
-    const top = movers
-        .sort((a, b) => Math.abs(b.daily_change_amount) - Math.abs(a.daily_change_amount))
-        .slice(0, TOP_MOVERS_LIMIT)
-        .sort((a, b) => b.daily_change_amount - a.daily_change_amount);
-
-    body.innerHTML = top.map(h => {
+    const row = (h) => {
         const amt = h.daily_change_amount;
         const pct = h.daily_change_percent;
         const cls = amt >= 0 ? 'text-success' : 'text-danger';
         const sign = amt >= 0 ? '+' : '';
         return `<tr>
             <td><strong>${escapeHtml(displaySymbol(h.symbol))}</strong></td>
-            <td class="text-end">${formatPrice(h.symbol, h.current_price, true)}</td>
             <td class="text-end ${cls}">${sign}${formatCurrencyAlways(amt)}</td>
             <td class="text-end ${cls}">${pct != null ? formatPercent(pct) : '--'}</td>
-            <td class="text-end">${anonymousMode ? '***' : formatCurrency(h.market_value)}</td>
         </tr>`;
-    }).join('');
+    };
+    const empty = '<tr><td colspan="3" class="text-center text-muted py-3">None today.</td></tr>';
+
+    const gainers = movers.filter(h => h.daily_change_amount > 0)
+        .sort((a, b) => b.daily_change_amount - a.daily_change_amount)
+        .slice(0, TOP_MOVERS_LIMIT);
+    const losers = movers.filter(h => h.daily_change_amount < 0)
+        .sort((a, b) => a.daily_change_amount - b.daily_change_amount)
+        .slice(0, TOP_MOVERS_LIMIT);
+
+    gainersBody.innerHTML = gainers.length ? gainers.map(row).join('') : empty;
+    losersBody.innerHTML = losers.length ? losers.map(row).join('') : empty;
 }
 
 // Main data loading function

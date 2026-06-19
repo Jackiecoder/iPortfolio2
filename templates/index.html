@@ -280,22 +280,42 @@
                 <h5 class="mb-0"><i class="bi bi-arrow-down-up me-2"></i>Today's Top Movers</h5>
                 <span class="small">Daily P&amp;L: <span id="topMoversDailyTotal" class="fw-semibold">--</span></span>
             </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover table-sm mb-0 align-middle">
-                        <thead class="table-light">
-                            <tr>
-                                <th>Symbol</th>
-                                <th class="text-end">Price</th>
-                                <th class="text-end">Today</th>
-                                <th class="text-end">Today %</th>
-                                <th class="text-end">Market Value</th>
-                            </tr>
-                        </thead>
-                        <tbody id="topMoversBody">
-                            <tr><td colspan="5" class="text-center text-muted py-3">Loading…</td></tr>
-                        </tbody>
-                    </table>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="fw-semibold text-success mb-2"><i class="bi bi-caret-up-fill me-1"></i>Top Gainers</div>
+                        <div class="table-responsive">
+                            <table class="table table-hover table-sm mb-0 align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th class="text-end">Today</th>
+                                        <th class="text-end">Today %</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="topGainersBody">
+                                    <tr><td colspan="3" class="text-center text-muted py-3">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="fw-semibold text-danger mb-2"><i class="bi bi-caret-down-fill me-1"></i>Top Losers</div>
+                        <div class="table-responsive">
+                            <table class="table table-hover table-sm mb-0 align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th class="text-end">Today</th>
+                                        <th class="text-end">Today %</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="topLosersBody">
+                                    <tr><td colspan="3" class="text-center text-muted py-3">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -916,7 +936,7 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/app.js?v=100"></script>
+    <script src="/static/js/app.js?v=101"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {
