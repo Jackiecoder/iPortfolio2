@@ -2683,6 +2683,27 @@ function updatePnlChart(performance) {
 }
 
 // Plugin to draw vertical lines for market open/close and current P&L label
+// Dashed vertical line at the hovered x-position on the intraday chart.
+const hoverLinePlugin = {
+    id: 'hoverLine',
+    afterDraw: (chart) => {
+        const active = chart.getActiveElements();
+        if (!active || !active.length) return;
+        const x = active[0].element.x;
+        const { top, bottom } = chart.chartArea;
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(107, 114, 128, 0.7)';
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+        ctx.restore();
+    }
+};
+
 const marketHoursPlugin = {
     id: 'marketHours',
     afterDraw: (chart) => {
@@ -2986,7 +3007,7 @@ function updateIntradayChart(intraday, interval = '5m') {
                 }
             }
         },
-        plugins: [marketHoursPlugin]
+        plugins: [marketHoursPlugin, hoverLinePlugin]
     });
 
     // Leaving the chart restores the latest intraday point in the Top Movers card.
