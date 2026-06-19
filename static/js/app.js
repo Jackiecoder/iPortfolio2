@@ -2935,78 +2935,9 @@ function updateIntradayChart(intraday, interval = '5m') {
                     display: false
                 },
                 tooltip: {
-                    enabled: false,
-                    external: function(context) {
-                        let el = document.getElementById('intraday-tooltip');
-                        if (!el) {
-                            el = document.createElement('div');
-                            el.id = 'intraday-tooltip';
-                            el.style.cssText = 'position:fixed;background:#212529;color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;pointer-events:none;z-index:9999;opacity:0;transition:opacity 0.15s;white-space:nowrap;line-height:1.6;';
-                            document.body.appendChild(el);
-                        }
-
-                        const tooltip = context.tooltip;
-                        if (tooltip.opacity === 0) {
-                            el.style.opacity = '0';
-                            return;
-                        }
-
-                        const dataPoints = tooltip.dataPoints;
-                        if (!dataPoints || !dataPoints[0] || dataPoints[0].raw === null) {
-                            el.style.opacity = '0';
-                            return;
-                        }
-
-                        const dp = dataPoints[0];
-                        const pnl = dp.raw;
-                        const dataIndex = dp.dataIndex;
-                        const dataset = dp.dataset;
-                        const pnlPercent = dataset.pnlPercentData[dataIndex];
-                        if (pnlPercent === null) { el.style.opacity = '0'; return; }
-
-                        const pnlColor = pnl >= 0 ? '#10b981' : '#ef4444';
-                        const sign = pnl >= 0 ? '+' : '';
-
-                        let html = `<div style="color:#9ca3af;margin-bottom:4px">Time: ${dp.label}</div>`;
-                        html += `<div style="color:${pnlColor}">Daily P&L: ${sign}${formatCurrencyAlways(pnl)}</div>`;
-                        if (!anonymousMode) {
-                            const pctSign = pnlPercent >= 0 ? '+' : '';
-                            html += `<div style="color:${pnlColor}">Daily P&L %: ${pctSign}${pnlPercent.toFixed(2)}%</div>`;
-                        }
-
-                        // Top Movers
-                        const assetChanges = dataset.assetChangesData[dataIndex];
-                        if (assetChanges && assetChanges.length > 0) {
-                            const nonZero = assetChanges.filter(a => Math.abs(a.pnl) >= 0.01).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
-                            if (nonZero.length > 0) {
-                                html += `<div style="color:#6b7280;margin-top:6px;border-top:1px solid #374151;padding-top:4px">── Top Movers ──</div>`;
-                                nonZero.forEach(asset => {
-                                    const c = asset.pnl >= 0 ? '#10b981' : '#ef4444';
-                                    const s = asset.pnl >= 0 ? '+' : '';
-                                    if (anonymousMode) {
-                                        html += `<div><span style="color:#d1d5db">${asset.symbol}:</span> <span style="color:${c}">${s}${formatCurrencyAlways(asset.pnl)}</span></div>`;
-                                    } else {
-                                        const ps = asset.pnl_percent >= 0 ? '+' : '';
-                                        html += `<div><span style="color:#d1d5db">${asset.symbol}:</span> <span style="color:${c}">${s}${formatCurrencyAlways(asset.pnl)} (${ps}${asset.pnl_percent.toFixed(2)}%)</span></div>`;
-                                    }
-                                });
-                            }
-                        }
-
-                        el.innerHTML = html;
-                        el.style.opacity = '1';
-
-                        // Position tooltip
-                        const chartRect = context.chart.canvas.getBoundingClientRect();
-                        let x = chartRect.left + tooltip.caretX + 12;
-                        let y = chartRect.top + tooltip.caretY - 12;
-                        const elRect = el.getBoundingClientRect();
-                        if (x + elRect.width > window.innerWidth - 8) x = x - elRect.width - 24;
-                        if (y + elRect.height > window.innerHeight - 8) y = window.innerHeight - elRect.height - 8;
-                        if (y < 8) y = 8;
-                        el.style.left = x + 'px';
-                        el.style.top = y + 'px';
-                    }
+                    // Hover popup removed — daily P&L, P&L %, and top movers now
+                    // live in the persistent "Today's Top Movers" card below.
+                    enabled: false
                 }
             },
             scales: {
@@ -3704,10 +3635,16 @@ function renderTopMovers(holdings) {
         h.symbol !== 'CASH' && h.daily_change_amount != null && h.daily_change_amount !== 0
     );
 
-    // Total daily P&L across all holdings (not just the ones shown).
+    // Total daily P&L (and %) across all holdings (not just the ones shown).
+    // % is vs the start-of-day value (current market value minus today's change),
+    // matching the per-category daily % elsewhere.
     const totalDaily = (holdings || []).reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    const totalMV = (holdings || []).reduce((s, h) => s + (h.market_value || 0), 0);
+    const startVal = totalMV - totalDaily;
     if (totalEl) {
-        totalEl.textContent = `${totalDaily >= 0 ? '+' : ''}${formatCurrencyAlways(totalDaily)}`;
+        const sign = totalDaily >= 0 ? '+' : '';
+        const pctText = startVal > 0 ? ` (${sign}${(totalDaily / startVal * 100).toFixed(2)}%)` : '';
+        totalEl.textContent = `${sign}${formatCurrencyAlways(totalDaily)}${pctText}`;
         totalEl.className = `fw-semibold ${totalDaily >= 0 ? 'text-success' : 'text-danger'}`;
     }
 
