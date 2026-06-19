@@ -1344,8 +1344,8 @@ function updateHoldingsTable(holdings) {
     renderHoldingsTable(holdingsData);
     // Also update category table
     updateCategoryTable(holdingsData);
-    // Today tab: refresh the Top Movers table from the same per-holding data
-    renderTopMovers(holdingsData);
+    // Today tab: refresh the Top Movers card (defaults to the latest intraday point)
+    renderTopMoversDefault();
 }
 
 function updateCategoryTable(holdings) {
@@ -2940,7 +2940,7 @@ function updateIntradayChart(intraday, interval = '5m') {
                         return;
                     }
                 }
-                renderTopMovers(holdingsData);
+                renderTopMoversDefault();
             },
             plugins: {
                 legend: {
@@ -2989,8 +2989,11 @@ function updateIntradayChart(intraday, interval = '5m') {
         plugins: [marketHoursPlugin]
     });
 
-    // Leaving the chart restores the current (live) snapshot in the Top Movers card.
-    ctx.canvas.onmouseleave = () => renderTopMovers(holdingsData);
+    // Leaving the chart restores the latest intraday point in the Top Movers card.
+    ctx.canvas.onmouseleave = () => renderTopMoversDefault();
+
+    // Show the latest point immediately once the chart (re)builds.
+    renderTopMoversDefault();
 }
 
 function updateAllocationChart(holdings, view = 'assets') {
@@ -3700,6 +3703,21 @@ function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges) {
         .map(a => ({ symbol: a.symbol, amt: a.pnl, pct: a.pnl_percent }));
     _setTopMoversHeader(pnl || 0, pnlPercent != null ? pnlPercent : null, timeLabel);
     _fillMoverTables(items);
+}
+
+// Default (not hovering): show the latest intraday data point's time + movers.
+// Falls back to the live per-holding snapshot if the chart isn't ready yet.
+function renderTopMoversDefault() {
+    const ds = (typeof intradayChart !== 'undefined' && intradayChart)
+        ? intradayChart.data.datasets[0] : null;
+    if (ds && Number.isInteger(ds.lastDataIndex) && ds.lastDataIndex >= 0
+        && ds.assetChangesData && ds.assetChangesData[ds.lastDataIndex]) {
+        const i = ds.lastDataIndex;
+        renderTopMoversAtTime(intradayChart.data.labels[i], ds.data[i],
+            ds.pnlPercentData ? ds.pnlPercentData[i] : null, ds.assetChangesData[i]);
+    } else {
+        renderTopMovers(holdingsData);
+    }
 }
 
 // Main data loading function
