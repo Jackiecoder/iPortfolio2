@@ -1344,6 +1344,8 @@ function updateHoldingsTable(holdings) {
     renderHoldingsTable(holdingsData);
     // Also update category table
     updateCategoryTable(holdingsData);
+    // Today tab: refresh the Top Movers table from the same per-holding data
+    renderTopMovers(holdingsData);
 }
 
 function updateCategoryTable(holdings) {
@@ -3540,20 +3542,6 @@ async function loadIntradayData(date = undefined, useCache = true) {
     } finally {
         if (overlay) overlay.style.display = 'none';
     }
-
-    // If the news panel is open, refresh it for the newly selected day.
-    const newsPanel = document.getElementById('intradayNewsPanel');
-    if (newsPanel && !newsPanel.classList.contains('d-none')) {
-        loadNewsRecap();
-    }
-}
-
-// ---- Intraday news attribution (sellthenews MCP) ----------------------------
-let newsLoadedForDate = null;
-
-function intradaySelectedDate() {
-    const dp = document.getElementById('intradayDatePicker');
-    return (dp && dp.value) || new Date().toISOString().slice(0, 10);
 }
 
 function escapeHtml(s) {
@@ -3701,63 +3689,51 @@ function initTransactionsTab() {
     }
 }
 
-// Turn raw recap text into safe HTML: escape, linkify URLs, highlight held tickers.
-function renderNewsText(text, heldTickers) {
-    let html = escapeHtml(text);
-    // Linkify bare URLs.
-    html = html.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener">link</a>');
-    // Highlight tickers the user holds (longest first to avoid partial overlap).
-    const held = [...(heldTickers || [])].filter(t => t && t !== 'CASH')
-        .sort((a, b) => b.length - a.length);
-    for (const t of held) {
-        const re = new RegExp('\\b' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
-        html = html.replace(re, `<span class="news-ticker" data-ticker="${t}">${t}</span>`);
-    }
-    return html;
-}
+// ---- Today's Top Movers -----------------------------------------------------
+// Per-holding daily P&L contributions, sorted by today's $ impact. Replaces the
+// old news panel under the Intraday P&L chart.
+const TOP_MOVERS_LIMIT = 10;
 
-async function loadNewsRecap() {
-    const content = document.getElementById('intradayNewsContent');
-    if (!content) return;
-    const date = intradaySelectedDate();
-    newsLoadedForDate = date;
-    content.innerHTML = '<span class="text-muted">Loading news…</span>';
-    try {
-        const resp = await fetch(`/api/news/intraday-recap?date=${date}`);
-        const d = await resp.json();
-        if (!d.available) {
-            content.innerHTML = `<span class="text-muted"><i class="bi bi-info-circle me-1"></i>News unavailable for ${date}${d.reason ? ' (' + escapeHtml(d.reason) + ')' : ''}.</span>`;
-            return;
-        }
-        content.innerHTML =
-            `<div class="news-recap-body">${renderNewsText(d.text, d.held_tickers)}</div>` +
-            `<div id="intradayStockNews" class="mt-3"></div>`;
-    } catch (e) {
-        console.error('news recap fetch failed', e);
-        content.innerHTML = '<span class="text-danger">Failed to load news.</span>';
-    }
-}
+function renderTopMovers(holdings) {
+    const body = document.getElementById('topMoversBody');
+    if (!body) return;
+    const totalEl = document.getElementById('topMoversDailyTotal');
 
-async function loadStockNews(ticker) {
-    const box = document.getElementById('intradayStockNews');
-    if (!box) return;
-    box.innerHTML = `<div class="text-muted small">Loading ${escapeHtml(ticker)} news…</div>`;
-    try {
-        const resp = await fetch(`/api/news/stock?ticker=${encodeURIComponent(ticker)}`);
-        const d = await resp.json();
-        if (!d.available) {
-            box.innerHTML = `<div class="text-muted small">No news for ${escapeHtml(ticker)}.</div>`;
-            return;
-        }
-        box.innerHTML =
-            `<div class="card card-body bg-light border-0">` +
-            `<div class="fw-semibold mb-1"><i class="bi bi-graph-up me-1"></i>${escapeHtml(ticker)} news</div>` +
-            `<div class="news-recap-body">${renderNewsText(d.text, [ticker])}</div>` +
-            `</div>`;
-    } catch (e) {
-        console.error('stock news fetch failed', e);
-        box.innerHTML = '<div class="text-danger small">Failed to load stock news.</div>';
+    const movers = (holdings || []).filter(h =>
+        h.symbol !== 'CASH' && h.daily_change_amount != null && h.daily_change_amount !== 0
+    );
+
+    // Total daily P&L across all holdings (not just the ones shown).
+    const totalDaily = (holdings || []).reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    if (totalEl) {
+        totalEl.textContent = `${totalDaily >= 0 ? '+' : ''}${formatCurrencyAlways(totalDaily)}`;
+        totalEl.className = `fw-semibold ${totalDaily >= 0 ? 'text-success' : 'text-danger'}`;
     }
+
+    if (movers.length === 0) {
+        body.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-3">No price moves today.</td></tr>`;
+        return;
+    }
+
+    // Biggest movers by absolute $ impact, then displayed gainers-first.
+    const top = movers
+        .sort((a, b) => Math.abs(b.daily_change_amount) - Math.abs(a.daily_change_amount))
+        .slice(0, TOP_MOVERS_LIMIT)
+        .sort((a, b) => b.daily_change_amount - a.daily_change_amount);
+
+    body.innerHTML = top.map(h => {
+        const amt = h.daily_change_amount;
+        const pct = h.daily_change_percent;
+        const cls = amt >= 0 ? 'text-success' : 'text-danger';
+        const sign = amt >= 0 ? '+' : '';
+        return `<tr>
+            <td><strong>${escapeHtml(displaySymbol(h.symbol))}</strong></td>
+            <td class="text-end">${formatPrice(h.symbol, h.current_price, true)}</td>
+            <td class="text-end ${cls}">${sign}${formatCurrencyAlways(amt)}</td>
+            <td class="text-end ${cls}">${pct != null ? formatPercent(pct) : '--'}</td>
+            <td class="text-end">${anonymousMode ? '***' : formatCurrency(h.market_value)}</td>
+        </tr>`;
+    }).join('');
 }
 
 // Main data loading function
@@ -4091,30 +4067,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const dateParam = selectedDate === todayVal ? null : selectedDate;
             // Always bypass frontend cache when user explicitly switches dates
             loadIntradayData(dateParam, false);
-        });
-    }
-
-    // Intraday news panel: lazy-load on first expand, reload if date changed.
-    const newsToggle = document.getElementById('intradayNewsToggle');
-    const newsPanel = document.getElementById('intradayNewsPanel');
-    const newsChevron = document.getElementById('intradayNewsChevron');
-    if (newsToggle && newsPanel) {
-        newsToggle.addEventListener('click', () => {
-            const opening = newsPanel.classList.contains('d-none');
-            newsPanel.classList.toggle('d-none', !opening);
-            newsToggle.setAttribute('aria-expanded', String(opening));
-            if (newsChevron) {
-                newsChevron.classList.toggle('bi-chevron-down', !opening);
-                newsChevron.classList.toggle('bi-chevron-up', opening);
-            }
-            if (opening && newsLoadedForDate !== intradaySelectedDate()) {
-                loadNewsRecap();
-            }
-        });
-        // Click a highlighted held ticker to pull its headlines.
-        newsPanel.addEventListener('click', (e) => {
-            const tk = e.target.closest('.news-ticker');
-            if (tk) loadStockNews(tk.dataset.ticker);
         });
     }
 
