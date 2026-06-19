@@ -972,8 +972,8 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
         <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong></td>
         <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)}</div><div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</div>` : ''}</td>
         <td data-col="2">${formatPrice(h.symbol, h.avg_cost)}</td>
-        <td data-col="3">${formatCurrency(h.cost_basis)}</td>
         <td data-col="4">${formatPrice(h.symbol, h.current_price, true)} ${dailyChangePctHtml}</td>
+        <td data-col="3">${formatCurrency(h.cost_basis)}</td>
         <td data-col="5" class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
         <td data-col="17" class="${(h.ytd_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl != null ? `${h.ytd_pnl >= 0 ? '+' : ''}${formatCurrencyAlways(h.ytd_pnl)}` : '--'}${buildLtStBreakdownHtml(h.lt_ytd_pnl, h.st_ytd_pnl)}</td>
         <td data-col="18" class="${(h.ytd_pnl_percent || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl_percent != null ? formatPercent(h.ytd_pnl_percent) : '--'}</td>
@@ -1064,8 +1064,8 @@ function buildTotalRowHtml(holdings, totalInvValue) {
         <tr class="total-row">
             <td data-col="0"><strong>TOTAL</strong></td>
             <td data-col="1"></td><td data-col="2"></td>
-            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong></td>
             <td data-col="4"></td>
+            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong></td>
             <td data-col="5" class="${totalDailyClass}"><strong>${totalDailySign}${formatCurrencyAlways(totalDaily)}</strong></td>
             <td data-col="17" class="${totalYtdClass}"><strong>${totalYtdSign}${formatCurrencyAlways(totalYtd)}</strong>${buildLtStBreakdownHtml(totalLtYtd, totalStYtd)}</td>
             <td data-col="18" class="${totalYtdClass}"><strong>${formatPercent(totalYtdPct)}</strong></td>
@@ -1129,8 +1129,8 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
         <tr class="category-header-row" style="background-color: #fef9e7; border-left: 4px solid ${color};">
             <td data-col="0"><span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px;margin-right:6px;"></span><strong>${catName}</strong> <span class="text-muted">(${catHoldings.length})</span></td>
             <td data-col="1"></td><td data-col="2"></td>
-            <td data-col="3"><strong>${formatCurrency(cost)}</strong></td>
             <td data-col="4" class="${dailyClass}"><strong>${formatPercent(mv > 0 ? (daily / (mv - daily) * 100) : 0)}</strong></td>
+            <td data-col="3"><strong>${formatCurrency(cost)}</strong></td>
             <td data-col="5" class="${dailyClass}"><strong>${dailySign}${formatCurrencyAlways(daily)}</strong></td>
             <td data-col="17" class="${ytdClass}"><strong>${ytdSign}${formatCurrencyAlways(ytd)}</strong>${buildLtStBreakdownHtml(ltYtd, stYtd)}</td>
             <td data-col="18" class="${ytdClass}"><strong>${formatPercent(ytdPct)}</strong></td>
