@@ -3678,11 +3678,12 @@ function _fillMoverTables(items) {
         const sign = it.amt >= 0 ? '+' : '';
         return `<tr>
             <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong></td>
+            <td class="text-end">${it.price != null ? formatPrice(it.symbol, it.price, true) : '--'}</td>
             <td class="text-end ${cls}">${sign}${formatCurrencyAlways(it.amt)}</td>
             <td class="text-end ${cls}">${it.pct != null ? formatPercent(it.pct) : '--'}</td>
         </tr>`;
     };
-    const empty = '<tr><td colspan="3" class="text-center text-muted py-3">None.</td></tr>';
+    const empty = '<tr><td colspan="4" class="text-center text-muted py-3">None.</td></tr>';
 
     const gainers = items.filter(i => i.amt > 0).sort((a, b) => b.amt - a.amt).slice(0, TOP_MOVERS_LIMIT);
     const losers = items.filter(i => i.amt < 0).sort((a, b) => a.amt - b.amt).slice(0, TOP_MOVERS_LIMIT);
@@ -3707,7 +3708,7 @@ function _setTopMoversHeader(amt, pct, timeLabel) {
 function renderTopMovers(holdings) {
     const items = (holdings || [])
         .filter(h => h.symbol !== 'CASH' && h.daily_change_amount != null && h.daily_change_amount !== 0)
-        .map(h => ({ symbol: h.symbol, amt: h.daily_change_amount, pct: h.daily_change_percent }));
+        .map(h => ({ symbol: h.symbol, amt: h.daily_change_amount, pct: h.daily_change_percent, price: h.current_price }));
 
     // % is vs the start-of-day value (market value minus today's change).
     const totalDaily = (holdings || []).reduce((s, h) => s + (h.daily_change_amount || 0), 0);
@@ -3721,7 +3722,7 @@ function renderTopMovers(holdings) {
 function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges) {
     const items = (assetChanges || [])
         .filter(a => a.symbol !== 'CASH' && a.pnl != null && Math.abs(a.pnl) >= 0.01)
-        .map(a => ({ symbol: a.symbol, amt: a.pnl, pct: a.pnl_percent }));
+        .map(a => ({ symbol: a.symbol, amt: a.pnl, pct: a.pnl_percent, price: a.current_price }));
     _setTopMoversHeader(pnl || 0, pnlPercent != null ? pnlPercent : null, timeLabel);
     _fillMoverTables(items);
 }
