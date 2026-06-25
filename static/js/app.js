@@ -3374,24 +3374,15 @@ function updateAnnualTable(performance) {
         });
     });
 
-    // Render table rows (most recent year first)
-    tbody.innerHTML = rows.reverse().map(r => {
-        const totalInvested = r.startValue + r.netInvested;
-        const pnlFormula = `P&L = End Value - Start Value - Net Invested
-= ${formatCurrency(r.endValue)} - ${formatCurrency(r.startValue)} - ${formatCurrency(r.netInvested)}
-= ${formatCurrency(r.pnl)}`;
-        const pnlPercentFormula = `P&L% = P&L ÷ (Start Value + Net Invested) × 100
-= ${formatCurrency(r.pnl)} ÷ ${formatCurrency(totalInvested)} × 100
-= ${r.pnlPercent.toFixed(2)}%`;
+    const realizedDetails = performance.realized_details_by_year || {};
 
+    // Render table rows (most recent year first). Each year row is clickable to
+    // expand a detail row with the P&L breakdown + that year's realized sales.
+    tbody.innerHTML = rows.reverse().map(r => {
         let realizedCell;
         if (r.realized && Math.abs(r.realized.total) > 0.005) {
             const rz = r.realized;
-            const realizedFormula = `Realized = proceeds − cost basis on positions sold in ${r.year}
-ST (held < 1yr): ${formatCurrency(rz.st)}
-LT (held ≥ 1yr): ${formatCurrency(rz.lt)}
-Total: ${formatCurrency(rz.total)}`;
-            realizedCell = `<td class="has-tooltip" data-tooltip="${realizedFormula.replace(/"/g, '&quot;')}">
+            realizedCell = `<td>
                 <div class="${rz.total >= 0 ? 'text-success' : 'text-danger'} fw-semibold">${formatCurrency(rz.total)}</div>
                 <div class="small text-muted">ST ${formatCurrency(rz.st)} · LT ${formatCurrency(rz.lt)}</div>
             </td>`;
@@ -3399,20 +3390,100 @@ Total: ${formatCurrency(rz.total)}`;
             realizedCell = `<td class="text-muted">—</td>`;
         }
 
-        return `
-        <tr>
-            <td><strong>${r.year}</strong></td>
+        const yearRow = `
+        <tr class="annual-year-row" data-year="${r.year}" style="cursor:pointer">
+            <td><i class="bi bi-chevron-right annual-chevron me-1"></i><strong>${r.year}</strong></td>
             <td>${formatCurrency(r.startValue)}</td>
             <td>${formatCurrency(r.endValue)}</td>
             <td>${formatCurrency(r.netInvested)}</td>
-            <td class="${r.pnl >= 0 ? 'text-success' : 'text-danger'} has-tooltip" data-tooltip="${pnlFormula.replace(/"/g, '&quot;')}">${formatCurrency(r.pnl)}</td>
-            <td class="${r.pnlPercent >= 0 ? 'text-success' : 'text-danger'} has-tooltip" data-tooltip="${pnlPercentFormula.replace(/"/g, '&quot;')}">${formatPercent(r.pnlPercent)}</td>
+            <td class="${r.pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(r.pnl)}</td>
+            <td class="${r.pnlPercent >= 0 ? 'text-success' : 'text-danger'}">${formatPercent(r.pnlPercent)}</td>
             ${realizedCell}
-        </tr>
-    `}).join('');
+        </tr>`;
 
-    // Setup tooltips for the new rows
-    setupTooltips();
+        const detailRow = `
+        <tr class="annual-detail-row d-none" data-year-detail="${r.year}">
+            <td colspan="7" class="bg-light">${buildAnnualDetail(r, realizedDetails[r.year] || [])}</td>
+        </tr>`;
+
+        return yearRow + detailRow;
+    }).join('');
+
+    // Toggle a year's detail row on click (idempotent: replaces any prior handler).
+    tbody.onclick = (e) => {
+        const yearRow = e.target.closest('.annual-year-row');
+        if (!yearRow) return;
+        const year = yearRow.dataset.year;
+        const detail = tbody.querySelector(`.annual-detail-row[data-year-detail="${year}"]`);
+        const chevron = yearRow.querySelector('.annual-chevron');
+        if (!detail) return;
+        const opening = detail.classList.contains('d-none');
+        detail.classList.toggle('d-none', !opening);
+        if (chevron) {
+            chevron.classList.toggle('bi-chevron-right', !opening);
+            chevron.classList.toggle('bi-chevron-down', opening);
+        }
+    };
+}
+
+// Build the expanded detail HTML for one Annual Performance year: a P&L
+// breakdown plus a sub-table of the individual realized sales that year.
+function buildAnnualDetail(r, sales) {
+    const totalInvested = r.startValue + r.netInvested;
+    const pnlBreakdown = `P&L = End Value − Start Value − Net Invested
+    = ${formatCurrency(r.endValue)} − ${formatCurrency(r.startValue)} − ${formatCurrency(r.netInvested)}
+    = ${formatCurrency(r.pnl)}
+
+P&L % = P&L ÷ (Start Value + Net Invested) × 100
+    = ${formatCurrency(r.pnl)} ÷ ${formatCurrency(totalInvested)} × 100
+    = ${r.pnlPercent.toFixed(2)}%`;
+
+    let salesHtml;
+    if (!sales.length) {
+        salesHtml = '<div class="text-muted small">No realized sales this year.</div>';
+    } else {
+        const body = sales.map(s => {
+            const gcls = s.gain >= 0 ? 'text-success' : 'text-danger';
+            const termBadge = s.term === 'LT' ? 'bg-info text-dark'
+                : s.term === 'ST' ? 'bg-warning text-dark' : 'bg-secondary';
+            return `<tr>
+                <td><strong>${escapeHtml(displaySymbol(s.symbol))}</strong></td>
+                <td class="text-nowrap">${escapeHtml(s.date)}</td>
+                <td class="text-end">${formatNumber(s.quantity, 4)}</td>
+                <td class="text-end">${formatCurrency(s.proceeds)}</td>
+                <td class="text-end">${formatCurrency(s.cost_basis)}</td>
+                <td class="text-end ${gcls}">${formatCurrency(s.gain)}</td>
+                <td><span class="badge ${termBadge}">${s.term}</span></td>
+            </tr>`;
+        }).join('');
+        const totGain = sales.reduce((a, s) => a + s.gain, 0);
+        salesHtml = `
+        <table class="table table-sm mb-0">
+            <thead><tr>
+                <th>Symbol</th><th>Sell Date</th><th class="text-end">Qty</th>
+                <th class="text-end">Proceeds</th><th class="text-end">Cost Basis</th>
+                <th class="text-end">Gain</th><th>Term</th>
+            </tr></thead>
+            <tbody>${body}</tbody>
+            <tfoot><tr class="fw-semibold border-top">
+                <td colspan="5" class="text-end">Total realized</td>
+                <td class="text-end ${totGain >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(totGain)}</td>
+                <td></td>
+            </tr></tfoot>
+        </table>`;
+    }
+
+    return `
+    <div class="row g-3 py-2">
+        <div class="col-lg-4">
+            <div class="fw-semibold mb-1"><i class="bi bi-calculator me-1"></i>P&L breakdown</div>
+            <div class="small text-muted" style="white-space:pre-line">${pnlBreakdown}</div>
+        </div>
+        <div class="col-lg-8">
+            <div class="fw-semibold mb-1"><i class="bi bi-cash-coin me-1"></i>Realized sales in ${r.year}</div>
+            <div class="table-responsive">${salesHtml}</div>
+        </div>
+    </div>`;
 }
 
 // Load performance data for a specific period

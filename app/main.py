@@ -339,7 +339,12 @@ async def get_performance(
 
         history = portfolio.get_historical_values(start_date=start, end_date=end)
         realized_by_year = portfolio.get_realized_pnl_by_year()
-        return {"performance": history, "realized_by_year": realized_by_year}
+        realized_details_by_year = portfolio.get_realized_details_by_year()
+        return {
+            "performance": history,
+            "realized_by_year": realized_by_year,
+            "realized_details_by_year": realized_details_by_year,
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
     except Exception as e:
