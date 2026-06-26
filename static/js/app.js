@@ -4035,44 +4035,61 @@ async function addTransaction(payload) {
 
     const assetSelect = document.getElementById('assetSelect');
     const assetOther = document.getElementById('assetOther');
+    const brokerSelect = document.getElementById('brokerSelect');
+    const brokerOther = document.getElementById('brokerOther');
 
-    // Build the symbol dropdown: 10 most-recently-traded tickers first, then "Other…".
-    async function populateAssetDropdown() {
-        if (!assetSelect) return;
+    // Distinct values of a transaction field, most-recent first (txns are newest-first).
+    function recentDistinct(txns, key, { upper = false } = {}) {
+        const seen = [];
+        for (const t of (txns || [])) {
+            let v = (t[key] || '').trim();
+            if (upper) v = v.toUpperCase();
+            if (v && !seen.includes(v)) seen.push(v);
+            if (seen.length >= 10) break;
+        }
+        return seen;
+    }
+
+    // (Re)build a select with recent values + an "Other…" entry; hide its text input.
+    function fillDropdown(selectEl, otherEl, values, { placeholder }) {
+        if (!selectEl) return;
+        const opts = placeholder
+            ? [`<option value="" selected disabled>${placeholder}</option>`]
+            : ['<option value="" selected>None</option>'];
+        values.forEach(v => opts.push(`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`));
+        opts.push('<option value="__other__">Other…</option>');
+        selectEl.innerHTML = opts.join('');
+        otherEl.classList.add('d-none');
+        otherEl.value = '';
+    }
+
+    async function populateDropdowns() {
         let txns = allTransactions;
         if (!txns || !txns.length) {
             try { txns = await fetchAllTransactions(); } catch (e) { txns = []; }
         }
-        // Transactions come newest-first, so first-seen order = most recent.
-        const seen = [];
-        for (const t of (txns || [])) {
-            const sym = (t.asset || '').toUpperCase();
-            if (sym && !seen.includes(sym)) seen.push(sym);
-            if (seen.length >= 10) break;
-        }
-        const opts = ['<option value="" selected disabled>Select…</option>'];
-        seen.forEach(sym => { opts.push(`<option value="${sym}">${sym}</option>`); });
-        opts.push('<option value="__other__">Other…</option>');
-        assetSelect.innerHTML = opts.join('');
-        assetOther.classList.add('d-none');
-        assetOther.value = '';
+        fillDropdown(assetSelect, assetOther, recentDistinct(txns, 'asset', { upper: true }), { placeholder: 'Select…' });
+        fillDropdown(brokerSelect, brokerOther, recentDistinct(txns, 'broker'), { placeholder: null });
     }
 
     // Reveal the free-text input only when "Other…" is chosen.
-    if (assetSelect) {
-        assetSelect.addEventListener('change', () => {
-            const isOther = assetSelect.value === '__other__';
-            assetOther.classList.toggle('d-none', !isOther);
-            if (isOther) assetOther.focus();
+    const wireOther = (selectEl, otherEl) => {
+        if (!selectEl) return;
+        selectEl.addEventListener('change', () => {
+            const isOther = selectEl.value === '__other__';
+            otherEl.classList.toggle('d-none', !isOther);
+            if (isOther) otherEl.focus();
         });
-    }
+    };
+    wireOther(assetSelect, assetOther);
+    wireOther(brokerSelect, brokerOther);
 
-    // Default the date to today whenever the modal opens; refresh the symbol list.
+    // Default the date to today whenever the modal opens; refresh the dropdowns.
     modalEl.addEventListener('show.bs.modal', () => {
         errBox.classList.add('d-none');
         const dateInput = form.elements['date'];
         if (!dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);
-        populateAssetDropdown();
+        populateDropdowns();
     });
 
     form.addEventListener('submit', async (e) => {
@@ -4092,6 +4109,16 @@ async function addTransaction(payload) {
                 return;
             }
         }
+        // Broker: same pattern, but optional.
+        let brokerVal = (fd.get('broker') || '').trim();
+        if (brokerVal === '__other__') {
+            brokerVal = (brokerOther.value || '').trim();
+            if (!brokerVal) {
+                errBox.textContent = 'Please enter a broker for "Other".';
+                errBox.classList.remove('d-none');
+                return;
+            }
+        }
         const payload = {
             date: fd.get('date'),
             asset: assetVal,
@@ -4100,7 +4127,7 @@ async function addTransaction(payload) {
             ave_price: num(fd.get('ave_price')),
             amount: num(fd.get('amount')),
             source: str(fd.get('source')),
-            broker: str(fd.get('broker')),
+            broker: str(brokerVal),
             comment: str(fd.get('comment')),
         };
 
