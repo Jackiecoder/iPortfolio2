@@ -4033,11 +4033,46 @@ async function addTransaction(payload) {
     const errBox = document.getElementById('addTxnError');
     const submitBtn = document.getElementById('addTxnSubmit');
 
-    // Default the date to today whenever the modal opens
+    const assetSelect = document.getElementById('assetSelect');
+    const assetOther = document.getElementById('assetOther');
+
+    // Build the symbol dropdown: 10 most-recently-traded tickers first, then "Other…".
+    async function populateAssetDropdown() {
+        if (!assetSelect) return;
+        let txns = allTransactions;
+        if (!txns || !txns.length) {
+            try { txns = await fetchAllTransactions(); } catch (e) { txns = []; }
+        }
+        // Transactions come newest-first, so first-seen order = most recent.
+        const seen = [];
+        for (const t of (txns || [])) {
+            const sym = (t.asset || '').toUpperCase();
+            if (sym && !seen.includes(sym)) seen.push(sym);
+            if (seen.length >= 10) break;
+        }
+        const opts = ['<option value="" selected disabled>Select…</option>'];
+        seen.forEach(sym => { opts.push(`<option value="${sym}">${sym}</option>`); });
+        opts.push('<option value="__other__">Other…</option>');
+        assetSelect.innerHTML = opts.join('');
+        assetOther.classList.add('d-none');
+        assetOther.value = '';
+    }
+
+    // Reveal the free-text input only when "Other…" is chosen.
+    if (assetSelect) {
+        assetSelect.addEventListener('change', () => {
+            const isOther = assetSelect.value === '__other__';
+            assetOther.classList.toggle('d-none', !isOther);
+            if (isOther) assetOther.focus();
+        });
+    }
+
+    // Default the date to today whenever the modal opens; refresh the symbol list.
     modalEl.addEventListener('show.bs.modal', () => {
         errBox.classList.add('d-none');
         const dateInput = form.elements['date'];
         if (!dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);
+        populateAssetDropdown();
     });
 
     form.addEventListener('submit', async (e) => {
@@ -4047,9 +4082,19 @@ async function addTransaction(payload) {
         const fd = new FormData(form);
         const num = (v) => (v === '' || v == null) ? null : Number(v);
         const str = (v) => (v === '' || v == null) ? null : v;
+        // Asset comes from the dropdown unless "Other…" is chosen, then the text input.
+        let assetVal = (fd.get('asset') || '').trim().toUpperCase();
+        if (assetVal === '__OTHER__' || assetVal === '__other__') {
+            assetVal = (assetOther.value || '').trim().toUpperCase();
+            if (!assetVal) {
+                errBox.textContent = 'Please enter a symbol for "Other".';
+                errBox.classList.remove('d-none');
+                return;
+            }
+        }
         const payload = {
             date: fd.get('date'),
-            asset: (fd.get('asset') || '').trim().toUpperCase(),
+            asset: assetVal,
             action: fd.get('action'),
             quantity: num(fd.get('quantity')),
             ave_price: num(fd.get('ave_price')),
