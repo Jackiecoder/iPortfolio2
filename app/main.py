@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
-from . import news_service, repository
+from . import repository
 from .cache_service import cache_service
 from .csv_parser import CSVParseError, parse_csv_content
 from .db import init_schema
@@ -339,7 +339,12 @@ async def get_performance(
 
         history = portfolio.get_historical_values(start_date=start, end_date=end)
         realized_by_year = portfolio.get_realized_pnl_by_year()
-        return {"performance": history, "realized_by_year": realized_by_year}
+        realized_details_by_year = portfolio.get_realized_details_by_year()
+        return {
+            "performance": history,
+            "realized_by_year": realized_by_year,
+            "realized_details_by_year": realized_details_by_year,
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
     except Exception as e:
@@ -372,39 +377,6 @@ async def get_daily_pnl(num_days: int = 42):
     except Exception as e:
         logger.error(f"Error fetching daily P&L: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-def _held_symbols() -> list[str]:
-    """Current holding symbols (no price fetch), for highlighting in news."""
-    if portfolio is None:
-        load_portfolio()
-    try:
-        holdings = portfolio.get_holdings(fetch_prices=False)
-        return sorted({h.symbol for h in holdings})
-    except Exception as e:
-        logger.warning("could not list held symbols: %s", e)
-        return []
-
-
-@app.get("/api/news/intraday-recap")
-async def news_intraday_recap(date: str = Query(..., description="YYYY-MM-DD")):
-    """AI intraday market-narrative recap for a date, plus the user's held
-    tickers so the frontend can highlight relevant names."""
-    try:
-        date_type.fromisoformat(date)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
-    recap = news_service.get_intraday_recaps(date)
-    recap["held_tickers"] = _held_symbols()
-    return recap
-
-
-@app.get("/api/news/stock")
-async def news_stock(ticker: str = Query(..., description="Stock ticker symbol")):
-    """Recent news headlines for a single ticker."""
-    if not ticker.strip():
-        raise HTTPException(status_code=400, detail="ticker is required")
-    return news_service.get_stock_news(ticker)
 
 
 @app.get("/api/dividends")

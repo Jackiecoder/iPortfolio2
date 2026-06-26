@@ -1344,6 +1344,8 @@ function updateHoldingsTable(holdings) {
     renderHoldingsTable(holdingsData);
     // Also update category table
     updateCategoryTable(holdingsData);
+    // Today tab: refresh the Top Movers card (defaults to the latest intraday point)
+    renderTopMoversDefault();
 }
 
 function updateCategoryTable(holdings) {
@@ -2681,6 +2683,27 @@ function updatePnlChart(performance) {
 }
 
 // Plugin to draw vertical lines for market open/close and current P&L label
+// Dashed vertical line at the hovered x-position on the intraday chart.
+const hoverLinePlugin = {
+    id: 'hoverLine',
+    afterDraw: (chart) => {
+        const active = chart.getActiveElements();
+        if (!active || !active.length) return;
+        const x = active[0].element.x;
+        const { top, bottom } = chart.chartArea;
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(107, 114, 128, 0.7)';
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+        ctx.restore();
+    }
+};
+
 const marketHoursPlugin = {
     id: 'marketHours',
     afterDraw: (chart) => {
@@ -2925,6 +2948,21 @@ function updateIntradayChart(intraday, interval = '5m') {
                 intersect: false,
                 mode: 'index'
             },
+            // Hovering the chart drives the "Today's Top Movers" card below:
+            // it shows that time point's daily P&L and movers instead of a popup.
+            onHover: (event, activeElements, chart) => {
+                const ds = chart.data.datasets[0];
+                if (activeElements && activeElements.length > 0) {
+                    const idx = activeElements[0].index;
+                    const ac = ds.assetChangesData ? ds.assetChangesData[idx] : null;
+                    if (ac != null && ds.data[idx] != null) {
+                        renderTopMoversAtTime(chart.data.labels[idx], ds.data[idx],
+                            ds.pnlPercentData ? ds.pnlPercentData[idx] : null, ac);
+                        return;
+                    }
+                }
+                renderTopMoversDefault();
+            },
             plugins: {
                 legend: {
                     display: false
@@ -2933,78 +2971,9 @@ function updateIntradayChart(intraday, interval = '5m') {
                     display: false
                 },
                 tooltip: {
-                    enabled: false,
-                    external: function(context) {
-                        let el = document.getElementById('intraday-tooltip');
-                        if (!el) {
-                            el = document.createElement('div');
-                            el.id = 'intraday-tooltip';
-                            el.style.cssText = 'position:fixed;background:#212529;color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;pointer-events:none;z-index:9999;opacity:0;transition:opacity 0.15s;white-space:nowrap;line-height:1.6;';
-                            document.body.appendChild(el);
-                        }
-
-                        const tooltip = context.tooltip;
-                        if (tooltip.opacity === 0) {
-                            el.style.opacity = '0';
-                            return;
-                        }
-
-                        const dataPoints = tooltip.dataPoints;
-                        if (!dataPoints || !dataPoints[0] || dataPoints[0].raw === null) {
-                            el.style.opacity = '0';
-                            return;
-                        }
-
-                        const dp = dataPoints[0];
-                        const pnl = dp.raw;
-                        const dataIndex = dp.dataIndex;
-                        const dataset = dp.dataset;
-                        const pnlPercent = dataset.pnlPercentData[dataIndex];
-                        if (pnlPercent === null) { el.style.opacity = '0'; return; }
-
-                        const pnlColor = pnl >= 0 ? '#10b981' : '#ef4444';
-                        const sign = pnl >= 0 ? '+' : '';
-
-                        let html = `<div style="color:#9ca3af;margin-bottom:4px">Time: ${dp.label}</div>`;
-                        html += `<div style="color:${pnlColor}">Daily P&L: ${sign}${formatCurrencyAlways(pnl)}</div>`;
-                        if (!anonymousMode) {
-                            const pctSign = pnlPercent >= 0 ? '+' : '';
-                            html += `<div style="color:${pnlColor}">Daily P&L %: ${pctSign}${pnlPercent.toFixed(2)}%</div>`;
-                        }
-
-                        // Top Movers
-                        const assetChanges = dataset.assetChangesData[dataIndex];
-                        if (assetChanges && assetChanges.length > 0) {
-                            const nonZero = assetChanges.filter(a => Math.abs(a.pnl) >= 0.01).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
-                            if (nonZero.length > 0) {
-                                html += `<div style="color:#6b7280;margin-top:6px;border-top:1px solid #374151;padding-top:4px">── Top Movers ──</div>`;
-                                nonZero.forEach(asset => {
-                                    const c = asset.pnl >= 0 ? '#10b981' : '#ef4444';
-                                    const s = asset.pnl >= 0 ? '+' : '';
-                                    if (anonymousMode) {
-                                        html += `<div><span style="color:#d1d5db">${asset.symbol}:</span> <span style="color:${c}">${s}${formatCurrencyAlways(asset.pnl)}</span></div>`;
-                                    } else {
-                                        const ps = asset.pnl_percent >= 0 ? '+' : '';
-                                        html += `<div><span style="color:#d1d5db">${asset.symbol}:</span> <span style="color:${c}">${s}${formatCurrencyAlways(asset.pnl)} (${ps}${asset.pnl_percent.toFixed(2)}%)</span></div>`;
-                                    }
-                                });
-                            }
-                        }
-
-                        el.innerHTML = html;
-                        el.style.opacity = '1';
-
-                        // Position tooltip
-                        const chartRect = context.chart.canvas.getBoundingClientRect();
-                        let x = chartRect.left + tooltip.caretX + 12;
-                        let y = chartRect.top + tooltip.caretY - 12;
-                        const elRect = el.getBoundingClientRect();
-                        if (x + elRect.width > window.innerWidth - 8) x = x - elRect.width - 24;
-                        if (y + elRect.height > window.innerHeight - 8) y = window.innerHeight - elRect.height - 8;
-                        if (y < 8) y = 8;
-                        el.style.left = x + 'px';
-                        el.style.top = y + 'px';
-                    }
+                    // Hover popup removed — daily P&L, P&L %, and top movers now
+                    // live in the persistent "Today's Top Movers" card below.
+                    enabled: false
                 }
             },
             scales: {
@@ -3038,8 +3007,14 @@ function updateIntradayChart(intraday, interval = '5m') {
                 }
             }
         },
-        plugins: [marketHoursPlugin]
+        plugins: [marketHoursPlugin, hoverLinePlugin]
     });
+
+    // Leaving the chart restores the latest intraday point in the Top Movers card.
+    ctx.canvas.onmouseleave = () => renderTopMoversDefault();
+
+    // Show the latest point immediately once the chart (re)builds.
+    renderTopMoversDefault();
 }
 
 function updateAllocationChart(holdings, view = 'assets') {
@@ -3399,24 +3374,15 @@ function updateAnnualTable(performance) {
         });
     });
 
-    // Render table rows (most recent year first)
-    tbody.innerHTML = rows.reverse().map(r => {
-        const totalInvested = r.startValue + r.netInvested;
-        const pnlFormula = `P&L = End Value - Start Value - Net Invested
-= ${formatCurrency(r.endValue)} - ${formatCurrency(r.startValue)} - ${formatCurrency(r.netInvested)}
-= ${formatCurrency(r.pnl)}`;
-        const pnlPercentFormula = `P&L% = P&L ÷ (Start Value + Net Invested) × 100
-= ${formatCurrency(r.pnl)} ÷ ${formatCurrency(totalInvested)} × 100
-= ${r.pnlPercent.toFixed(2)}%`;
+    const realizedDetails = performance.realized_details_by_year || {};
 
+    // Render table rows (most recent year first). Each year row is clickable to
+    // expand a detail row with the P&L breakdown + that year's realized sales.
+    tbody.innerHTML = rows.reverse().map(r => {
         let realizedCell;
         if (r.realized && Math.abs(r.realized.total) > 0.005) {
             const rz = r.realized;
-            const realizedFormula = `Realized = proceeds − cost basis on positions sold in ${r.year}
-ST (held < 1yr): ${formatCurrency(rz.st)}
-LT (held ≥ 1yr): ${formatCurrency(rz.lt)}
-Total: ${formatCurrency(rz.total)}`;
-            realizedCell = `<td class="has-tooltip" data-tooltip="${realizedFormula.replace(/"/g, '&quot;')}">
+            realizedCell = `<td>
                 <div class="${rz.total >= 0 ? 'text-success' : 'text-danger'} fw-semibold">${formatCurrency(rz.total)}</div>
                 <div class="small text-muted">ST ${formatCurrency(rz.st)} · LT ${formatCurrency(rz.lt)}</div>
             </td>`;
@@ -3424,20 +3390,100 @@ Total: ${formatCurrency(rz.total)}`;
             realizedCell = `<td class="text-muted">—</td>`;
         }
 
-        return `
-        <tr>
-            <td><strong>${r.year}</strong></td>
+        const yearRow = `
+        <tr class="annual-year-row" data-year="${r.year}" style="cursor:pointer">
+            <td><i class="bi bi-chevron-right annual-chevron me-1"></i><strong>${r.year}</strong></td>
             <td>${formatCurrency(r.startValue)}</td>
             <td>${formatCurrency(r.endValue)}</td>
             <td>${formatCurrency(r.netInvested)}</td>
-            <td class="${r.pnl >= 0 ? 'text-success' : 'text-danger'} has-tooltip" data-tooltip="${pnlFormula.replace(/"/g, '&quot;')}">${formatCurrency(r.pnl)}</td>
-            <td class="${r.pnlPercent >= 0 ? 'text-success' : 'text-danger'} has-tooltip" data-tooltip="${pnlPercentFormula.replace(/"/g, '&quot;')}">${formatPercent(r.pnlPercent)}</td>
+            <td class="${r.pnl >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(r.pnl)}</td>
+            <td class="${r.pnlPercent >= 0 ? 'text-success' : 'text-danger'}">${formatPercent(r.pnlPercent)}</td>
             ${realizedCell}
-        </tr>
-    `}).join('');
+        </tr>`;
 
-    // Setup tooltips for the new rows
-    setupTooltips();
+        const detailRow = `
+        <tr class="annual-detail-row d-none" data-year-detail="${r.year}">
+            <td colspan="7" class="bg-light">${buildAnnualDetail(r, realizedDetails[r.year] || [])}</td>
+        </tr>`;
+
+        return yearRow + detailRow;
+    }).join('');
+
+    // Toggle a year's detail row on click (idempotent: replaces any prior handler).
+    tbody.onclick = (e) => {
+        const yearRow = e.target.closest('.annual-year-row');
+        if (!yearRow) return;
+        const year = yearRow.dataset.year;
+        const detail = tbody.querySelector(`.annual-detail-row[data-year-detail="${year}"]`);
+        const chevron = yearRow.querySelector('.annual-chevron');
+        if (!detail) return;
+        const opening = detail.classList.contains('d-none');
+        detail.classList.toggle('d-none', !opening);
+        if (chevron) {
+            chevron.classList.toggle('bi-chevron-right', !opening);
+            chevron.classList.toggle('bi-chevron-down', opening);
+        }
+    };
+}
+
+// Build the expanded detail HTML for one Annual Performance year: a P&L
+// breakdown plus a sub-table of the individual realized sales that year.
+function buildAnnualDetail(r, sales) {
+    const totalInvested = r.startValue + r.netInvested;
+    const pnlBreakdown = `P&L = End Value − Start Value − Net Invested
+    = ${formatCurrency(r.endValue)} − ${formatCurrency(r.startValue)} − ${formatCurrency(r.netInvested)}
+    = ${formatCurrency(r.pnl)}
+
+P&L % = P&L ÷ (Start Value + Net Invested) × 100
+    = ${formatCurrency(r.pnl)} ÷ ${formatCurrency(totalInvested)} × 100
+    = ${r.pnlPercent.toFixed(2)}%`;
+
+    let salesHtml;
+    if (!sales.length) {
+        salesHtml = '<div class="text-muted small">No realized sales this year.</div>';
+    } else {
+        const body = sales.map(s => {
+            const gcls = s.gain >= 0 ? 'text-success' : 'text-danger';
+            const termBadge = s.term === 'LT' ? 'bg-info text-dark'
+                : s.term === 'ST' ? 'bg-warning text-dark' : 'bg-secondary';
+            return `<tr>
+                <td><strong>${escapeHtml(displaySymbol(s.symbol))}</strong></td>
+                <td class="text-nowrap">${escapeHtml(s.date)}</td>
+                <td class="text-end">${formatNumber(s.quantity, 4)}</td>
+                <td class="text-end">${formatCurrency(s.proceeds)}</td>
+                <td class="text-end">${formatCurrency(s.cost_basis)}</td>
+                <td class="text-end ${gcls}">${formatCurrency(s.gain)}</td>
+                <td><span class="badge ${termBadge}">${s.term}</span></td>
+            </tr>`;
+        }).join('');
+        const totGain = sales.reduce((a, s) => a + s.gain, 0);
+        salesHtml = `
+        <table class="table table-sm mb-0">
+            <thead><tr>
+                <th>Symbol</th><th>Sell Date</th><th class="text-end">Qty</th>
+                <th class="text-end">Proceeds</th><th class="text-end">Cost Basis</th>
+                <th class="text-end">Gain</th><th>Term</th>
+            </tr></thead>
+            <tbody>${body}</tbody>
+            <tfoot><tr class="fw-semibold border-top">
+                <td colspan="5" class="text-end">Total realized</td>
+                <td class="text-end ${totGain >= 0 ? 'text-success' : 'text-danger'}">${formatCurrency(totGain)}</td>
+                <td></td>
+            </tr></tfoot>
+        </table>`;
+    }
+
+    return `
+    <div class="row g-3 py-2">
+        <div class="col-lg-4">
+            <div class="fw-semibold mb-1"><i class="bi bi-calculator me-1"></i>P&L breakdown</div>
+            <div class="small text-muted" style="white-space:pre-line">${pnlBreakdown}</div>
+        </div>
+        <div class="col-lg-8">
+            <div class="fw-semibold mb-1"><i class="bi bi-cash-coin me-1"></i>Realized sales in ${r.year}</div>
+            <div class="table-responsive">${salesHtml}</div>
+        </div>
+    </div>`;
 }
 
 // Load performance data for a specific period
@@ -3540,20 +3586,6 @@ async function loadIntradayData(date = undefined, useCache = true) {
     } finally {
         if (overlay) overlay.style.display = 'none';
     }
-
-    // If the news panel is open, refresh it for the newly selected day.
-    const newsPanel = document.getElementById('intradayNewsPanel');
-    if (newsPanel && !newsPanel.classList.contains('d-none')) {
-        loadNewsRecap();
-    }
-}
-
-// ---- Intraday news attribution (sellthenews MCP) ----------------------------
-let newsLoadedForDate = null;
-
-function intradaySelectedDate() {
-    const dp = document.getElementById('intradayDatePicker');
-    return (dp && dp.value) || new Date().toISOString().slice(0, 10);
 }
 
 function escapeHtml(s) {
@@ -3701,62 +3733,83 @@ function initTransactionsTab() {
     }
 }
 
-// Turn raw recap text into safe HTML: escape, linkify URLs, highlight held tickers.
-function renderNewsText(text, heldTickers) {
-    let html = escapeHtml(text);
-    // Linkify bare URLs.
-    html = html.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener">link</a>');
-    // Highlight tickers the user holds (longest first to avoid partial overlap).
-    const held = [...(heldTickers || [])].filter(t => t && t !== 'CASH')
-        .sort((a, b) => b.length - a.length);
-    for (const t of held) {
-        const re = new RegExp('\\b' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
-        html = html.replace(re, `<span class="news-ticker" data-ticker="${t}">${t}</span>`);
-    }
-    return html;
+// ---- Today's Top Movers -----------------------------------------------------
+// Per-holding daily P&L: top 10 gainers (left) and top 10 losers (right).
+// Replaces the old news panel under the Intraday P&L chart.
+const TOP_MOVERS_LIMIT = 10;
+
+// Fill the gainers/losers tables from normalized movers: [{symbol, amt, pct}].
+function _fillMoverTables(items) {
+    const gainersBody = document.getElementById('topGainersBody');
+    const losersBody = document.getElementById('topLosersBody');
+    if (!gainersBody || !losersBody) return;
+
+    const row = (it) => {
+        const cls = it.amt >= 0 ? 'text-success' : 'text-danger';
+        const sign = it.amt >= 0 ? '+' : '';
+        return `<tr>
+            <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong></td>
+            <td class="text-end">${it.price != null ? formatPrice(it.symbol, it.price, true) : '--'}</td>
+            <td class="text-end ${cls}">${sign}${formatCurrencyAlways(it.amt)}</td>
+            <td class="text-end ${cls}">${it.pct != null ? formatPercent(it.pct) : '--'}</td>
+        </tr>`;
+    };
+    const empty = '<tr><td colspan="4" class="text-center text-muted py-3">None.</td></tr>';
+
+    const gainers = items.filter(i => i.amt > 0).sort((a, b) => b.amt - a.amt).slice(0, TOP_MOVERS_LIMIT);
+    const losers = items.filter(i => i.amt < 0).sort((a, b) => a.amt - b.amt).slice(0, TOP_MOVERS_LIMIT);
+    gainersBody.innerHTML = gainers.length ? gainers.map(row).join('') : empty;
+    losersBody.innerHTML = losers.length ? losers.map(row).join('') : empty;
 }
 
-async function loadNewsRecap() {
-    const content = document.getElementById('intradayNewsContent');
-    if (!content) return;
-    const date = intradaySelectedDate();
-    newsLoadedForDate = date;
-    content.innerHTML = '<span class="text-muted">Loading news…</span>';
-    try {
-        const resp = await fetch(`/api/news/intraday-recap?date=${date}`);
-        const d = await resp.json();
-        if (!d.available) {
-            content.innerHTML = `<span class="text-muted"><i class="bi bi-info-circle me-1"></i>News unavailable for ${date}${d.reason ? ' (' + escapeHtml(d.reason) + ')' : ''}.</span>`;
-            return;
-        }
-        content.innerHTML =
-            `<div class="news-recap-body">${renderNewsText(d.text, d.held_tickers)}</div>` +
-            `<div id="intradayStockNews" class="mt-3"></div>`;
-    } catch (e) {
-        console.error('news recap fetch failed', e);
-        content.innerHTML = '<span class="text-danger">Failed to load news.</span>';
+// Header: optional time label + total daily P&L ($ and %).
+function _setTopMoversHeader(amt, pct, timeLabel) {
+    const timeEl = document.getElementById('topMoversTime');
+    const totalEl = document.getElementById('topMoversDailyTotal');
+    if (timeEl) timeEl.textContent = timeLabel ? `${timeLabel} · ` : '';
+    if (totalEl) {
+        const sign = amt >= 0 ? '+' : '';
+        const pctText = pct != null ? ` (${sign}${pct.toFixed(2)}%)` : '';
+        totalEl.textContent = `${sign}${formatCurrencyAlways(amt)}${pctText}`;
+        totalEl.className = `fw-semibold ${amt >= 0 ? 'text-success' : 'text-danger'}`;
     }
 }
 
-async function loadStockNews(ticker) {
-    const box = document.getElementById('intradayStockNews');
-    if (!box) return;
-    box.innerHTML = `<div class="text-muted small">Loading ${escapeHtml(ticker)} news…</div>`;
-    try {
-        const resp = await fetch(`/api/news/stock?ticker=${encodeURIComponent(ticker)}`);
-        const d = await resp.json();
-        if (!d.available) {
-            box.innerHTML = `<div class="text-muted small">No news for ${escapeHtml(ticker)}.</div>`;
-            return;
-        }
-        box.innerHTML =
-            `<div class="card card-body bg-light border-0">` +
-            `<div class="fw-semibold mb-1"><i class="bi bi-graph-up me-1"></i>${escapeHtml(ticker)} news</div>` +
-            `<div class="news-recap-body">${renderNewsText(d.text, [ticker])}</div>` +
-            `</div>`;
-    } catch (e) {
-        console.error('stock news fetch failed', e);
-        box.innerHTML = '<div class="text-danger small">Failed to load stock news.</div>';
+// Default view: current (end-of-day / live) per-holding daily moves.
+function renderTopMovers(holdings) {
+    const items = (holdings || [])
+        .filter(h => h.symbol !== 'CASH' && h.daily_change_amount != null && h.daily_change_amount !== 0)
+        .map(h => ({ symbol: h.symbol, amt: h.daily_change_amount, pct: h.daily_change_percent, price: h.current_price }));
+
+    // % is vs the start-of-day value (market value minus today's change).
+    const totalDaily = (holdings || []).reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    const totalMV = (holdings || []).reduce((s, h) => s + (h.market_value || 0), 0);
+    const startVal = totalMV - totalDaily;
+    _setTopMoversHeader(totalDaily, startVal > 0 ? (totalDaily / startVal * 100) : null, '');
+    _fillMoverTables(items);
+}
+
+// Hover view: movers as of a specific intraday time point.
+function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges) {
+    const items = (assetChanges || [])
+        .filter(a => a.symbol !== 'CASH' && a.pnl != null && Math.abs(a.pnl) >= 0.01)
+        .map(a => ({ symbol: a.symbol, amt: a.pnl, pct: a.pnl_percent, price: a.current_price }));
+    _setTopMoversHeader(pnl || 0, pnlPercent != null ? pnlPercent : null, timeLabel);
+    _fillMoverTables(items);
+}
+
+// Default (not hovering): show the latest intraday data point's time + movers.
+// Falls back to the live per-holding snapshot if the chart isn't ready yet.
+function renderTopMoversDefault() {
+    const ds = (typeof intradayChart !== 'undefined' && intradayChart)
+        ? intradayChart.data.datasets[0] : null;
+    if (ds && Number.isInteger(ds.lastDataIndex) && ds.lastDataIndex >= 0
+        && ds.assetChangesData && ds.assetChangesData[ds.lastDataIndex]) {
+        const i = ds.lastDataIndex;
+        renderTopMoversAtTime(intradayChart.data.labels[i], ds.data[i],
+            ds.pnlPercentData ? ds.pnlPercentData[i] : null, ds.assetChangesData[i]);
+    } else {
+        renderTopMovers(holdingsData);
     }
 }
 
@@ -3980,11 +4033,63 @@ async function addTransaction(payload) {
     const errBox = document.getElementById('addTxnError');
     const submitBtn = document.getElementById('addTxnSubmit');
 
-    // Default the date to today whenever the modal opens
+    const assetSelect = document.getElementById('assetSelect');
+    const assetOther = document.getElementById('assetOther');
+    const brokerSelect = document.getElementById('brokerSelect');
+    const brokerOther = document.getElementById('brokerOther');
+
+    // Distinct values of a transaction field, most-recent first (txns are newest-first).
+    function recentDistinct(txns, key, { upper = false } = {}) {
+        const seen = [];
+        for (const t of (txns || [])) {
+            let v = (t[key] || '').trim();
+            if (upper) v = v.toUpperCase();
+            if (v && !seen.includes(v)) seen.push(v);
+            if (seen.length >= 10) break;
+        }
+        return seen;
+    }
+
+    // (Re)build a select with recent values + an "Other…" entry; hide its text input.
+    function fillDropdown(selectEl, otherEl, values, { placeholder }) {
+        if (!selectEl) return;
+        const opts = placeholder
+            ? [`<option value="" selected disabled>${placeholder}</option>`]
+            : ['<option value="" selected>None</option>'];
+        values.forEach(v => opts.push(`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`));
+        opts.push('<option value="__other__">Other…</option>');
+        selectEl.innerHTML = opts.join('');
+        otherEl.classList.add('d-none');
+        otherEl.value = '';
+    }
+
+    async function populateDropdowns() {
+        let txns = allTransactions;
+        if (!txns || !txns.length) {
+            try { txns = await fetchAllTransactions(); } catch (e) { txns = []; }
+        }
+        fillDropdown(assetSelect, assetOther, recentDistinct(txns, 'asset', { upper: true }), { placeholder: 'Select…' });
+        fillDropdown(brokerSelect, brokerOther, recentDistinct(txns, 'broker'), { placeholder: null });
+    }
+
+    // Reveal the free-text input only when "Other…" is chosen.
+    const wireOther = (selectEl, otherEl) => {
+        if (!selectEl) return;
+        selectEl.addEventListener('change', () => {
+            const isOther = selectEl.value === '__other__';
+            otherEl.classList.toggle('d-none', !isOther);
+            if (isOther) otherEl.focus();
+        });
+    };
+    wireOther(assetSelect, assetOther);
+    wireOther(brokerSelect, brokerOther);
+
+    // Default the date to today whenever the modal opens; refresh the dropdowns.
     modalEl.addEventListener('show.bs.modal', () => {
         errBox.classList.add('d-none');
         const dateInput = form.elements['date'];
         if (!dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);
+        populateDropdowns();
     });
 
     form.addEventListener('submit', async (e) => {
@@ -3994,15 +4099,35 @@ async function addTransaction(payload) {
         const fd = new FormData(form);
         const num = (v) => (v === '' || v == null) ? null : Number(v);
         const str = (v) => (v === '' || v == null) ? null : v;
+        // Asset comes from the dropdown unless "Other…" is chosen, then the text input.
+        let assetVal = (fd.get('asset') || '').trim().toUpperCase();
+        if (assetVal === '__OTHER__' || assetVal === '__other__') {
+            assetVal = (assetOther.value || '').trim().toUpperCase();
+            if (!assetVal) {
+                errBox.textContent = 'Please enter a symbol for "Other".';
+                errBox.classList.remove('d-none');
+                return;
+            }
+        }
+        // Broker: same pattern, but optional.
+        let brokerVal = (fd.get('broker') || '').trim();
+        if (brokerVal === '__other__') {
+            brokerVal = (brokerOther.value || '').trim();
+            if (!brokerVal) {
+                errBox.textContent = 'Please enter a broker for "Other".';
+                errBox.classList.remove('d-none');
+                return;
+            }
+        }
         const payload = {
             date: fd.get('date'),
-            asset: (fd.get('asset') || '').trim().toUpperCase(),
+            asset: assetVal,
             action: fd.get('action'),
             quantity: num(fd.get('quantity')),
             ave_price: num(fd.get('ave_price')),
             amount: num(fd.get('amount')),
             source: str(fd.get('source')),
-            broker: str(fd.get('broker')),
+            broker: str(brokerVal),
             comment: str(fd.get('comment')),
         };
 
@@ -4091,30 +4216,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const dateParam = selectedDate === todayVal ? null : selectedDate;
             // Always bypass frontend cache when user explicitly switches dates
             loadIntradayData(dateParam, false);
-        });
-    }
-
-    // Intraday news panel: lazy-load on first expand, reload if date changed.
-    const newsToggle = document.getElementById('intradayNewsToggle');
-    const newsPanel = document.getElementById('intradayNewsPanel');
-    const newsChevron = document.getElementById('intradayNewsChevron');
-    if (newsToggle && newsPanel) {
-        newsToggle.addEventListener('click', () => {
-            const opening = newsPanel.classList.contains('d-none');
-            newsPanel.classList.toggle('d-none', !opening);
-            newsToggle.setAttribute('aria-expanded', String(opening));
-            if (newsChevron) {
-                newsChevron.classList.toggle('bi-chevron-down', !opening);
-                newsChevron.classList.toggle('bi-chevron-up', opening);
-            }
-            if (opening && newsLoadedForDate !== intradaySelectedDate()) {
-                loadNewsRecap();
-            }
-        });
-        // Click a highlighted held ticker to pull its headlines.
-        newsPanel.addEventListener('click', (e) => {
-            const tk = e.target.closest('.news-ticker');
-            if (tk) loadStockNews(tk.dataset.ticker);
         });
     }
 

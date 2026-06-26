@@ -601,6 +601,42 @@ class Portfolio:
             for year, vals in by_year.items()
         }
 
+    def get_realized_details_by_year(self) -> dict[str, list[dict]]:
+        """Individual realized sales grouped by the year they closed.
+
+        Powers the expandable Annual Performance rows. Each entry is one FIFO
+        sale lot: symbol, sell date, quantity, proceeds, cost basis, gain, and
+        the ST/LT gain split. Sales are sorted by date within each year.
+
+        Returns:
+            {year: [{symbol, date, quantity, proceeds, cost_basis, gain,
+                     lt_gain, st_gain, term}, ...]}
+        """
+        by_year: dict[str, list[dict]] = {}
+        for symbol, sales in self._sales.items():
+            for s in sales:
+                year = str(s["date"].year)
+                gain = s["proceeds"] - s["cost_basis"]
+                lt_gain = s.get("lt_proceeds", Decimal("0")) - s.get("lt_cost_basis", Decimal("0"))
+                st_gain = s.get("st_proceeds", Decimal("0")) - s.get("st_cost_basis", Decimal("0"))
+                has_lt = (s.get("lt_cost_basis", Decimal("0")) or s.get("lt_proceeds", Decimal("0")))
+                has_st = (s.get("st_cost_basis", Decimal("0")) or s.get("st_proceeds", Decimal("0")))
+                term = "LT" if has_lt and not has_st else "ST" if has_st and not has_lt else "Mixed"
+                by_year.setdefault(year, []).append({
+                    "symbol": symbol,
+                    "date": s["date"].isoformat(),
+                    "quantity": float(s["quantity"]),
+                    "proceeds": float(s["proceeds"]),
+                    "cost_basis": float(s["cost_basis"]),
+                    "gain": float(gain),
+                    "lt_gain": float(lt_gain),
+                    "st_gain": float(st_gain),
+                    "term": term,
+                })
+        for year in by_year:
+            by_year[year].sort(key=lambda r: r["date"])
+        return by_year
+
     def get_portfolio_summary(self, fetch_prices: bool = True) -> PortfolioSummary:
         """Get complete portfolio summary.
 
