@@ -4084,12 +4084,35 @@ async function addTransaction(payload) {
     wireOther(assetSelect, assetOther);
     wireOther(brokerSelect, brokerOther);
 
+    // Show/hide fields based on the action. CASH is a cash-balance snapshot, so
+    // it only needs an Amount (asset is fixed to "CASH") — hide symbol, broker,
+    // quantity and price to avoid confusion.
+    const actionSelect = form.elements['action'];
+    function applyActionLayout(action) {
+        const isCash = action === 'CASH';
+        const show = (id, visible) => {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('d-none', !visible);
+        };
+        show('fldSymbol', !isCash);
+        show('fldBroker', !isCash);
+        show('fldQuantity', !isCash);
+        show('fldAvgPrice', !isCash);
+        show('fldHelp', !isCash);
+        // A hidden required <select> would block submit, so drop required for CASH.
+        if (assetSelect) assetSelect.required = !isCash;
+    }
+    if (actionSelect) {
+        actionSelect.addEventListener('change', () => applyActionLayout(actionSelect.value));
+    }
+
     // Default the date to today whenever the modal opens; refresh the dropdowns.
     modalEl.addEventListener('show.bs.modal', () => {
         errBox.classList.add('d-none');
         const dateInput = form.elements['date'];
         if (!dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);
         populateDropdowns();
+        applyActionLayout(actionSelect ? actionSelect.value : 'BUY');
     });
 
     form.addEventListener('submit', async (e) => {
@@ -4099,9 +4122,13 @@ async function addTransaction(payload) {
         const fd = new FormData(form);
         const num = (v) => (v === '' || v == null) ? null : Number(v);
         const str = (v) => (v === '' || v == null) ? null : v;
-        // Asset comes from the dropdown unless "Other…" is chosen, then the text input.
+        const action = fd.get('action');
+        // Asset comes from the dropdown unless "Other…" is chosen, then the text
+        // input. CASH is a cash-balance snapshot with a fixed "CASH" asset.
         let assetVal = (fd.get('asset') || '').trim().toUpperCase();
-        if (assetVal === '__OTHER__' || assetVal === '__other__') {
+        if (action === 'CASH') {
+            assetVal = 'CASH';
+        } else if (assetVal === '__OTHER__' || assetVal === '__other__') {
             assetVal = (assetOther.value || '').trim().toUpperCase();
             if (!assetVal) {
                 errBox.textContent = 'Please enter a symbol for "Other".';
@@ -4109,8 +4136,8 @@ async function addTransaction(payload) {
                 return;
             }
         }
-        // Broker: same pattern, but optional.
-        let brokerVal = (fd.get('broker') || '').trim();
+        // Broker: same pattern, but optional (and unused for CASH).
+        let brokerVal = action === 'CASH' ? '' : (fd.get('broker') || '').trim();
         if (brokerVal === '__other__') {
             brokerVal = (brokerOther.value || '').trim();
             if (!brokerVal) {
