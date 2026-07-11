@@ -940,6 +940,9 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
     const groupMV = isGrouped ? getGroupMarketValue(h.symbol, holdings) : (h.market_value || 0);
     const allocPct = totalInvValue > 0 ? (h.market_value || 0) / totalInvValue * 100 : 0;
     const groupAllocPct = totalInvValue > 0 ? groupMV / totalInvValue * 100 : 0;
+    // Invested % = this holding's cost basis as a share of total invested cost.
+    const totalInvestedCost = holdings.reduce((s, x) => s + (x.cost_basis || 0), 0);
+    const investedPct = totalInvestedCost > 0 ? (h.cost_basis || 0) / totalInvestedCost * 100 : 0;
     const targetPct = isCategoryLevelTarget ? null : getTargetPct(h.symbol);
     const hasTarget = targetPct != null && targetPct > 0;
     const isCanonical = !isGrouped || targetKey === h.symbol;
@@ -976,7 +979,7 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
         <td data-col="5" class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
         <td data-col="17" class="${(h.ytd_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl != null ? `${h.ytd_pnl >= 0 ? '+' : ''}${formatCurrencyAlways(h.ytd_pnl)}` : '--'}${buildLtStBreakdownHtml(h.lt_ytd_pnl, h.st_ytd_pnl)}</td>
         <td data-col="18" class="${(h.ytd_pnl_percent || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl_percent != null ? formatPercent(h.ytd_pnl_percent) : '--'}</td>
-        <td data-col="3">${formatCurrency(h.cost_basis)}</td>
+        <td data-col="3">${formatCurrency(h.cost_basis)}<div class="text-muted" style="font-size:0.75em;line-height:1.3;">${investedPct.toFixed(1)}%</div></td>
         <td data-col="6">${formatCurrency(h.market_value)}</td>
         <td data-col="7" ${allocTitle}>${allocPctText}</td>
         <td data-col="8" ${isCategoryLevelTarget ? '' : `class="target-pct-cell" data-symbol="${targetKey}"`}>${targetCellContent}</td>
@@ -1068,7 +1071,7 @@ function buildTotalRowHtml(holdings, totalInvValue) {
             <td data-col="5" class="${totalDailyClass}"><strong>${totalDailySign}${formatCurrencyAlways(totalDaily)}</strong></td>
             <td data-col="17" class="${totalYtdClass}"><strong>${totalYtdSign}${formatCurrencyAlways(totalYtd)}</strong>${buildLtStBreakdownHtml(totalLtYtd, totalStYtd)}</td>
             <td data-col="18" class="${totalYtdClass}"><strong>${formatPercent(totalYtdPct)}</strong></td>
-            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong></td>
+            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong><div class="text-muted" style="font-size:0.75em;line-height:1.3;">100.0%</div></td>
             <td data-col="6"><strong>${formatCurrency(totalMV)}</strong></td>
             <td data-col="7"><strong>100.0%</strong></td>
             <td data-col="8"><strong>${targetSumText}</strong>${targetWarn}</td>
@@ -1082,7 +1085,7 @@ function buildTotalRowHtml(holdings, totalInvValue) {
         </tr>`;
 }
 
-function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, categoryTargetSums) {
+function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, categoryTargetSums, totalInvestedCost) {
     const catColors = { 'Crypto': '#f59e0b', 'Index': '#2563eb', 'Individual Stocks': '#8b5cf6', 'Cash': '#10b981' };
     const color = catColors[catName] || '#6b7280';
     const mv = catHoldings.reduce((s, h) => s + (h.market_value || 0), 0);
@@ -1133,7 +1136,7 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
             <td data-col="5" class="${dailyClass}"><strong>${dailySign}${formatCurrencyAlways(daily)}</strong></td>
             <td data-col="17" class="${ytdClass}"><strong>${ytdSign}${formatCurrencyAlways(ytd)}</strong>${buildLtStBreakdownHtml(ltYtd, stYtd)}</td>
             <td data-col="18" class="${ytdClass}"><strong>${formatPercent(ytdPct)}</strong></td>
-            <td data-col="3"><strong>${formatCurrency(cost)}</strong></td>
+            <td data-col="3"><strong>${formatCurrency(cost)}</strong><div class="text-muted" style="font-size:0.75em;line-height:1.3;">${totalInvestedCost > 0 ? (cost / totalInvestedCost * 100).toFixed(1) : '0.0'}%</div></td>
             <td data-col="6"><strong>${formatCurrency(mv)}</strong></td>
             <td data-col="7"><strong>${allocPct.toFixed(1)}%</strong></td>
             <td data-col="8" ${catName === 'Individual Stocks' ? `class="target-pct-cell" data-symbol="category:Individual Stocks" style="cursor:pointer;"` : ''}><strong>${catTargetText}</strong></td>
@@ -1203,9 +1206,10 @@ function renderHoldingsTable(holdings) {
             return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
         });
 
+        const totalInvestedCost = holdings.reduce((s, h) => s + (h.cost_basis || 0), 0);
         for (const cat of cats) {
             const catHoldings = grouped[cat];
-            rows += buildCategorySubtotalHtml(cat, catHoldings, totalInvValue, categoryTargetSums);
+            rows += buildCategorySubtotalHtml(cat, catHoldings, totalInvValue, categoryTargetSums, totalInvestedCost);
             rows += catHoldings.map(h => buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums)).join('');
         }
     } else {
