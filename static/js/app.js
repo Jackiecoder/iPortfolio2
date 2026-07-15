@@ -3598,6 +3598,13 @@ function escapeHtml(s) {
     ));
 }
 
+// Today's date (YYYY-MM-DD) in the US market timezone — matches the backend's
+// market_today(). Using UTC (toISOString) here caused off-by-one dates near
+// midnight ET between the picker label and the intraday/daily data.
+function marketTodayStr() {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+}
+
 // ============================================================ TRANSACTIONS TAB
 // Full transaction browser with per-row delete, so mistaken records can be removed.
 let allTransactions = [];          // last-fetched full list
@@ -4114,7 +4121,7 @@ async function addTransaction(payload) {
     modalEl.addEventListener('show.bs.modal', () => {
         errBox.classList.add('d-none');
         const dateInput = form.elements['date'];
-        if (!dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);
+        if (!dateInput.value) dateInput.value = marketTodayStr();
         populateDropdowns();
         applyActionLayout(actionSelect ? actionSelect.value : 'BUY');
     });
@@ -4235,14 +4242,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Date picker for intraday chart
     const datePicker = document.getElementById('intradayDatePicker');
     if (datePicker) {
-        // Set max to today and default to today
-        const todayStr = new Date().toISOString().slice(0, 10);
+        // Set max to today and default to today (US market timezone)
+        const todayStr = marketTodayStr();
         datePicker.max = todayStr;
         datePicker.value = todayStr;
 
         datePicker.addEventListener('change', () => {
             const selectedDate = datePicker.value;
-            const todayVal = new Date().toISOString().slice(0, 10);
+            const todayVal = marketTodayStr();
             // null means today (uses the live endpoint without date param)
             const dateParam = selectedDate === todayVal ? null : selectedDate;
             // Always bypass frontend cache when user explicitly switches dates
