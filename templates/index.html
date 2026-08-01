@@ -18,7 +18,7 @@
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=25">
+    <link rel="stylesheet" href="/static/css/style.css?v=26">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -256,11 +256,6 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="income-tab" data-bs-toggle="pill" data-bs-target="#trackerIncome" type="button" role="tab" aria-controls="trackerIncome" aria-selected="false">
-                    <i class="bi bi-cash-coin me-1"></i>Income
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
                 <button class="nav-link" id="transactions-tab" data-bs-toggle="pill" data-bs-target="#trackerTransactions" type="button" role="tab" aria-controls="trackerTransactions" aria-selected="false">
                     <i class="bi bi-list-ul me-1"></i>Transactions
                 </button>
@@ -341,6 +336,7 @@
                 </div>
             </div>
         </div>
+
             </div>
 
             <div class="tab-pane fade" id="trackerPerformance" role="tabpanel" aria-labelledby="performance-tab" tabindex="0">
@@ -424,14 +420,14 @@
             <div class="col-lg-8">
                 <div class="card border-0 shadow-sm h-100">
                     <div class="card-header bg-white border-0">
-                        <div class="d-flex justify-content-between align-items-center">
+                        <div class="performance-chart-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                             <h5 class="mb-0 d-flex align-items-center gap-2">
                                 <button class="card-collapse-btn" type="button" data-collapse-target="portfolioChartBody" aria-expanded="true" title="Collapse / expand">
                                     <i class="bi bi-chevron-up"></i>
                                 </button>
                                 <span><i class="bi bi-graph-up me-2"></i><span id="portfolioChartTitle">Monthly Investment</span></span>
                             </h5>
-                            <div class="d-flex gap-2">
+                            <div class="performance-chart-controls d-flex gap-2 flex-wrap">
                                 <div class="btn-group btn-group-sm" role="group">
                                     <button class="btn btn-primary portfolio-period-btn active" data-period="1Y">1Y</button>
                                     <button class="btn btn-outline-secondary portfolio-period-btn" data-period="3Y">3Y</button>
@@ -516,6 +512,71 @@
                 </div>
             </div>
         </div>
+
+        <section id="performanceIncomeSection" aria-labelledby="performanceIncomeHeading">
+            <h4 id="performanceIncomeHeading" class="h5 mb-3"><i class="bi bi-cash-coin me-2"></i>Income</h4>
+
+            <!-- Realized P&L Table -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-0">
+                    <h5 class="mb-0"><i class="bi bi-check2-circle me-2"></i>Realized P&L</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0" id="soldTable">
+                            <thead class="table-light">
+                                <tr>
+                                    <th class="sortable" data-sort="symbol" data-table="sold">Symbol <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                    <th class="sortable" data-sort="quantity" data-table="sold">Qty Sold <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                    <th class="sortable" data-sort="avg_cost" data-table="sold">Avg Cost <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                    <th class="sortable" data-sort="cost_basis" data-table="sold">Cost Basis <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                    <th class="sortable" data-sort="avg_sell_price" data-table="sold">Avg Sell <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                    <th class="sortable" data-sort="proceeds" data-table="sold">Proceeds <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                    <th class="sortable" data-sort="pnl" data-table="sold">P&L ($) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                    <th class="sortable" data-sort="pnl_percent" data-table="sold">P&L (%) <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                </tr>
+                            </thead>
+                            <tbody id="soldBody">
+                                <tr>
+                                    <td colspan="8" class="text-center text-muted py-4">
+                                        <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                        Loading realized P&L...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dividends Section -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-0">
+                    <h5 class="mb-0"><i class="bi bi-cash-coin me-2"></i>Dividends by Asset</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0" id="dividendsTable">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Total Amount</th>
+                                    <th>Payments</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dividendsBody">
+                                <tr>
+                                    <td colspan="3" class="text-center text-muted py-4">
+                                        <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                        Loading dividends...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
             </div>
 
             <div class="tab-pane fade" id="trackerHoldings" role="tabpanel" aria-labelledby="holdings-tab" tabindex="0">
@@ -607,70 +668,6 @@
             </div>
         </div>
 
-            </div>
-
-            <div class="tab-pane fade" id="trackerIncome" role="tabpanel" aria-labelledby="income-tab" tabindex="0">
-
-        <!-- Realized P&L Table -->
-        <div class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white border-0">
-                <h5 class="mb-0"><i class="bi bi-check2-circle me-2"></i>Realized P&L</h5>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0" id="soldTable">
-                        <thead class="table-light">
-                            <tr>
-                                <th class="sortable" data-sort="symbol" data-table="sold">Symbol <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="quantity" data-table="sold">Qty Sold <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="avg_cost" data-table="sold">Avg Cost <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="cost_basis" data-table="sold">Cost Basis <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="avg_sell_price" data-table="sold">Avg Sell <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="proceeds" data-table="sold">Proceeds <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="pnl" data-table="sold">P&L ($) <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th class="sortable" data-sort="pnl_percent" data-table="sold">P&L (%) <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                            </tr>
-                        </thead>
-                        <tbody id="soldBody">
-                            <tr>
-                                <td colspan="8" class="text-center text-muted py-4">
-                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
-                                    Loading realized P&L...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- Dividends Section -->
-        <div class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white border-0">
-                <h5 class="mb-0"><i class="bi bi-cash-coin me-2"></i>Dividends by Asset</h5>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0" id="dividendsTable">
-                        <thead class="table-light">
-                            <tr>
-                                <th>Symbol</th>
-                                <th>Total Amount</th>
-                                <th>Payments</th>
-                            </tr>
-                        </thead>
-                        <tbody id="dividendsBody">
-                            <tr>
-                                <td colspan="3" class="text-center text-muted py-4">
-                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
-                                    Loading dividends...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
             </div>
 
             <div class="tab-pane fade" id="trackerTransactions" role="tabpanel" aria-labelledby="transactions-tab" tabindex="0">
@@ -958,7 +955,7 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/app.js?v=114"></script>
+    <script src="/static/js/app.js?v=115"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

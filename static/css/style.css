@@ -306,6 +306,15 @@ body {
         max-width: calc(100vw - 150px);
     }
 
+    .performance-chart-header {
+        align-items: flex-start !important;
+    }
+
+    .performance-chart-controls {
+        max-width: 100%;
+        width: 100%;
+    }
+
     .chart-container {
         height: 240px;
     }

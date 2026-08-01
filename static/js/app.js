@@ -4259,7 +4259,13 @@ function resizeTrackerCharts() {
 
 // Initial load and event handlers setup
 document.addEventListener('DOMContentLoaded', () => {
-    const savedTrackerTab = localStorage.getItem('trackerActiveTab');
+    const storedTrackerTab = localStorage.getItem('trackerActiveTab');
+    const savedTrackerTab = storedTrackerTab === '#trackerIncome'
+        ? '#trackerPerformance'
+        : storedTrackerTab;
+    if (storedTrackerTab === '#trackerIncome') {
+        localStorage.setItem('trackerActiveTab', savedTrackerTab);
+    }
     if (savedTrackerTab) {
         const tabButton = document.querySelector(`[data-bs-target="${savedTrackerTab}"]`);
         if (tabButton && window.bootstrap) {
