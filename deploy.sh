@@ -29,19 +29,20 @@ fi
 # Auto-detect the service if not provided.
 if [ -z "$SERVICE" ] || [ -z "$REGION" ]; then
   echo "Detecting Cloud Run services..."
-  mapfile -t LINES < <(gcloud run services list --platform=managed \
-      --format='value(metadata.name,region)' 2>/dev/null)
-  if [ "${#LINES[@]}" -eq 0 ]; then
+  LINES="$(gcloud run services list --platform=managed \
+      --format='value(metadata.name,region)' 2>/dev/null)"
+  LINE_COUNT="$(printf '%s\n' "$LINES" | awk 'NF { count++ } END { print count + 0 }')"
+  if [ "$LINE_COUNT" -eq 0 ]; then
     echo "ERROR: No Cloud Run services found for the active project." >&2
     echo "Check: gcloud config get-value project" >&2
     exit 1
-  elif [ "${#LINES[@]}" -eq 1 ]; then
-    SERVICE="$(echo "${LINES[0]}" | awk '{print $1}')"
-    REGION="$(echo "${LINES[0]}"  | awk '{print $2}')"
+  elif [ "$LINE_COUNT" -eq 1 ]; then
+    SERVICE="$(printf '%s\n' "$LINES" | awk 'NF {print $1; exit}')"
+    REGION="$(printf '%s\n' "$LINES" | awk 'NF {print $2; exit}')"
     echo "Using service '$SERVICE' in region '$REGION'."
   else
     echo "Multiple services found — set SERVICE and REGION at the top of deploy.sh:" >&2
-    printf '  %s\n' "${LINES[@]}" >&2
+    printf '%s\n' "$LINES" | sed 's/^/  /' >&2
     exit 1
   fi
 fi

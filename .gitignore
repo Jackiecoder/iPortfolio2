@@ -34,6 +34,7 @@ screenshots/
 
 # Misc
 *.pid
+.last_good_revision
 SESSION_SUMMARY.md
 slides-content.json
 agent-skills-presentation.html
