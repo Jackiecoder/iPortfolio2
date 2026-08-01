@@ -126,6 +126,7 @@ let portfolioPeriod = '1Y'; // Portfolio chart period (global for both value and
 let currentInterval = '1m';
 // Current intraday date (null = today)
 let currentIntradayDate = null;
+let intradayLoadRequestId = 0;
 
 // Anonymous mode
 let anonymousMode = localStorage.getItem('anonymousMode') === 'true';
@@ -3575,6 +3576,7 @@ async function fetchIntradayAutoInterval(date = null, useCache = true) {
 // Load intraday data for a given date, auto-selecting the finest available interval
 async function loadIntradayData(date = undefined, useCache = true) {
     if (date !== undefined) currentIntradayDate = date;
+    const requestId = ++intradayLoadRequestId;
 
     // Show blocking overlay only when the user explicitly switches date
     const overlay = document.getElementById('intradayLoadingOverlay');
@@ -3582,13 +3584,12 @@ async function loadIntradayData(date = undefined, useCache = true) {
 
     try {
         const { data, interval } = await fetchIntradayAutoInterval(currentIntradayDate, useCache);
+        if (requestId !== intradayLoadRequestId) return;
         currentInterval = interval;
         updateIntradayIntervalBadge(interval);
-        if (data) {
-            updateIntradayChart(data, interval);
-        }
+        updateIntradayChart(data, interval);
     } finally {
-        if (overlay) overlay.style.display = 'none';
+        if (requestId === intradayLoadRequestId && overlay) overlay.style.display = 'none';
     }
 }
 
@@ -3603,6 +3604,47 @@ function escapeHtml(s) {
 // midnight ET between the picker label and the intraday/daily data.
 function marketTodayStr() {
     return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+}
+
+function offsetIsoDate(dateStr, dayOffset) {
+    const parts = dateStr.split('-').map(Number);
+    if (parts.length !== 3 || parts.some(part => !Number.isInteger(part))) return null;
+
+    const shifted = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + dayOffset));
+    return shifted.toISOString().slice(0, 10);
+}
+
+function updateIntradayDateNavigation() {
+    const datePicker = document.getElementById('intradayDatePicker');
+    const previousButton = document.getElementById('intradayPrevDate');
+    const nextButton = document.getElementById('intradayNextDate');
+    if (!datePicker) return;
+
+    const todayStr = marketTodayStr();
+    datePicker.max = todayStr;
+    if (previousButton) previousButton.disabled = !datePicker.value;
+    if (nextButton) nextButton.disabled = !datePicker.value || datePicker.value >= todayStr;
+}
+
+function selectIntradayDate(dateStr) {
+    const datePicker = document.getElementById('intradayDatePicker');
+    if (!datePicker) return;
+
+    const todayStr = marketTodayStr();
+    const selectedDate = !dateStr || dateStr > todayStr ? todayStr : dateStr;
+    datePicker.value = selectedDate;
+    updateIntradayDateNavigation();
+
+    // null means today (uses the live endpoint without a date parameter).
+    loadIntradayData(selectedDate === todayStr ? null : selectedDate, false);
+}
+
+function shiftIntradayDate(dayOffset) {
+    const datePicker = document.getElementById('intradayDatePicker');
+    if (!datePicker?.value) return;
+
+    const shiftedDate = offsetIsoDate(datePicker.value, dayOffset);
+    if (shiftedDate) selectIntradayDate(shiftedDate);
 }
 
 function marketTimeStr() {
@@ -4257,14 +4299,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const todayStr = marketTodayStr();
         datePicker.max = todayStr;
         datePicker.value = todayStr;
+        updateIntradayDateNavigation();
 
         datePicker.addEventListener('change', () => {
-            const selectedDate = datePicker.value;
-            const todayVal = marketTodayStr();
-            // null means today (uses the live endpoint without date param)
-            const dateParam = selectedDate === todayVal ? null : selectedDate;
-            // Always bypass frontend cache when user explicitly switches dates
-            loadIntradayData(dateParam, false);
+            selectIntradayDate(datePicker.value);
+        });
+
+        document.getElementById('intradayPrevDate')?.addEventListener('click', () => {
+            shiftIntradayDate(-1);
+        });
+        document.getElementById('intradayNextDate')?.addEventListener('click', () => {
+            shiftIntradayDate(1);
         });
     }
 
