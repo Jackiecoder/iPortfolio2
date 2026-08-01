@@ -8,7 +8,7 @@
 #   3. Builds from source (uses the Dockerfile) and deploys a new revision.
 #   4. Prints the URL + a one-line rollback command.
 #
-# The database (Cloud SQL) is NOT touched — only the code image is replaced.
+# Application startup applies the idempotent schema.sql migration to Cloud SQL.
 #
 # Usage:  ./deploy.sh
 # If auto-detect picks the wrong service, set SERVICE / REGION below.

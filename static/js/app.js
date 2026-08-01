@@ -3605,6 +3605,14 @@ function marketTodayStr() {
     return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 }
 
+function marketTimeStr() {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map(p => [p.type, p.value]));
+    return `${values.hour}:${values.minute}`;
+}
+
 // ============================================================ TRANSACTIONS TAB
 // Full transaction browser with per-row delete, so mistaken records can be removed.
 let allTransactions = [];          // last-fetched full list
@@ -3680,7 +3688,7 @@ function renderTransactions() {
         const price = t.ave_price != null ? formatCurrency(t.ave_price) : '--';
         const amount = t.amount != null ? formatCurrency(t.amount) : '--';
         return `<tr data-txn-id="${t.id}">
-            <td class="text-nowrap">${escapeHtml(t.date || '--')}</td>
+            <td class="text-nowrap">${escapeHtml(t.date || '--')}<br><span class="text-muted small">${escapeHtml(t.transaction_time || '--')} ET</span></td>
             <td class="fw-semibold">${escapeHtml(t.asset || '--')}</td>
             <td><span class="badge ${badge}">${escapeHtml(t.action || '')}</span></td>
             <td class="text-end">${qty}</td>
@@ -4122,6 +4130,8 @@ async function addTransaction(payload) {
         errBox.classList.add('d-none');
         const dateInput = form.elements['date'];
         if (!dateInput.value) dateInput.value = marketTodayStr();
+        const timeInput = form.elements['transaction_time'];
+        if (timeInput && !timeInput.value) timeInput.value = marketTimeStr();
         populateDropdowns();
         applyActionLayout(actionSelect ? actionSelect.value : 'BUY');
     });
@@ -4159,6 +4169,7 @@ async function addTransaction(payload) {
         }
         const payload = {
             date: fd.get('date'),
+            transaction_time: str(fd.get('transaction_time')),
             asset: assetVal,
             action: fd.get('action'),
             quantity: num(fd.get('quantity')),

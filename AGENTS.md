@@ -33,6 +33,10 @@ date,asset,action,amount,quantity,ave_price,source,comment
 - BUY/SELL require at least two of `amount`, `quantity`, and `ave_price`; the
   backend derives the third.
 - `broker` is also stored in Postgres when available.
+- `transaction_time` is optional on the API and is interpreted in
+  `America/New_York`. When omitted, stocks/ETFs default to 09:30 ET and
+  crypto (`*-USD`) / cash default to 00:00 ET. Postgres stores the resulting
+  timestamp in `executed_at` (`TIMESTAMPTZ`).
 - Bulk historical import still uses `scripts/migrate_csv_to_pg.py`.
 
 ## Cache invalidation

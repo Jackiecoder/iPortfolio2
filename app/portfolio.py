@@ -76,8 +76,8 @@ class Portfolio:
         Args:
             transactions: List of transactions to process
         """
-        # Sort by date
-        sorted_txns = sorted(transactions, key=lambda t: t.date)
+        # Same-day trades must be processed in execution order for FIFO accuracy.
+        sorted_txns = sorted(transactions, key=lambda t: t.effective_executed_at)
 
         for txn in sorted_txns:
             self._process_transaction(txn)
@@ -235,6 +235,122 @@ class Portfolio:
                         lot.quantity -= remaining
                         remaining = Decimal("0")
 
+    def _adjusted_trade_values(self, txn: Transaction) -> tuple[Decimal, Decimal]:
+        """Return split-adjusted quantity and unit price in today's share units."""
+        factor = Decimal("1")
+        if self._adjust_splits and txn.action in (
+            ActionType.BUY, ActionType.SELL, ActionType.GIFT, ActionType.GAS
+        ):
+            factor = split_service.get_adjustment_factor(
+                txn.asset, txn.date, _market_today()
+            )
+        quantity = (txn.quantity or Decimal("0")) * factor
+        price = (txn.ave_price or Decimal("0")) / factor if factor else Decimal("0")
+        return quantity, price
+
+    @staticmethod
+    def _apply_intraday_transaction(
+        txn: Transaction,
+        quantity: Decimal,
+        execution_price: Decimal,
+        market_price: Decimal,
+        quantities: dict[str, Decimal],
+        net_trade_cash: dict[str, Decimal],
+        added_capital: dict[str, Decimal],
+    ) -> None:
+        """Apply one timed position event to the intraday P&L state."""
+        symbol = txn.asset
+        if txn.action == ActionType.BUY:
+            trade_cost = quantity * execution_price
+            quantities[symbol] += quantity
+            net_trade_cash[symbol] -= trade_cost
+            added_capital[symbol] += trade_cost
+        elif txn.action == ActionType.SELL:
+            quantities[symbol] -= quantity
+            net_trade_cash[symbol] += quantity * execution_price
+        elif txn.action == ActionType.GIFT:
+            transfer_value = quantity * market_price
+            quantities[symbol] += quantity
+            net_trade_cash[symbol] -= transfer_value
+            added_capital[symbol] += transfer_value
+        elif txn.action == ActionType.GAS:
+            quantities[symbol] -= quantity
+            net_trade_cash[symbol] += quantity * market_price
+        elif txn.action == ActionType.FIX:
+            delta = quantity - quantities[symbol]
+            quantities[symbol] = quantity
+            net_trade_cash[symbol] -= delta * market_price
+            if delta > 0:
+                added_capital[symbol] += delta * market_price
+
+    def _quantities_before_date(self, target_date: date) -> dict[str, Decimal]:
+        """Replay transactions strictly before a date and return opening quantities."""
+        temp = Portfolio(adjust_splits=self._adjust_splits)
+        for txn in sorted(self._transactions, key=lambda t: t.effective_executed_at):
+            if txn.date >= target_date:
+                break
+            temp._process_transaction(txn)
+        return {
+            symbol: sum(lot.quantity for lot in lots)
+            for symbol, lots in temp._lots.items()
+            if sum(lot.quantity for lot in lots) > 0
+        }
+
+    def _apply_transaction_aware_daily_changes(
+        self,
+        holdings: list[Holding],
+        prices: dict[str, Optional[Decimal]],
+        prev_closes: dict[str, Optional[Decimal]],
+    ) -> None:
+        """Use opening positions and today's trades for each holding's Today P&L."""
+        today = _market_today()
+        opening_quantities = self._quantities_before_date(today)
+        day_transactions = [t for t in self._transactions if t.date == today]
+
+        for holding in holdings:
+            if holding.symbol == "CASH":
+                continue
+            price = prices.get(holding.symbol)
+            prev_close = prev_closes.get(holding.symbol)
+            if price is None or prev_close is None or prev_close <= 0:
+                continue
+
+            opening_qty = opening_quantities.get(holding.symbol, Decimal("0"))
+            net_trade_cash = Decimal("0")
+            added_capital = Decimal("0")
+            external_flow = Decimal("0")
+
+            for txn in day_transactions:
+                if txn.asset != holding.symbol:
+                    continue
+                qty, execution_price = self._adjusted_trade_values(txn)
+                if txn.action == ActionType.BUY:
+                    trade_cost = qty * execution_price
+                    net_trade_cash -= trade_cost
+                    added_capital += trade_cost
+                elif txn.action == ActionType.SELL:
+                    net_trade_cash += qty * execution_price
+                elif txn.action == ActionType.GIFT:
+                    external_flow -= qty * price
+                elif txn.action == ActionType.GAS:
+                    external_flow += qty * price
+                elif txn.action == ActionType.FIX:
+                    # A reconciliation is an external quantity correction, not market P&L.
+                    opening_qty = holding.quantity
+
+            opening_value = opening_qty * prev_close
+            daily_pnl = (
+                holding.quantity * price
+                + net_trade_cash
+                + external_flow
+                - opening_value
+            )
+            daily_basis = opening_value + added_capital
+            holding.daily_change_amount = daily_pnl
+            holding.daily_change_percent = (
+                daily_pnl / daily_basis * 100 if daily_basis > 0 else Decimal("0")
+            )
+
     def get_holdings(self, fetch_prices: bool = True) -> list[Holding]:
         """Get current holdings.
 
@@ -282,6 +398,7 @@ class Portfolio:
                 prev_close = prev_closes.get(holding.symbol)
                 if price is not None:
                     holding.update_with_price(price, prev_close)
+            self._apply_transaction_aware_daily_changes(holdings, prices, prev_closes)
 
         # Calculate holding days and annualized return for each holding
         import math
@@ -1252,21 +1369,30 @@ class Portfolio:
         """
         from datetime import datetime
 
-        # Get current holdings (excluding cash for P&L calculation)
-        holdings = self.get_holdings(fetch_prices=False)
-        investment_holdings = [h for h in holdings if h.symbol != "CASH"]
-
-        logger.info(f"Intraday: Found {len(investment_holdings)} investment holdings")
-
-        if not investment_holdings:
+        today = _market_today()
+        opening_quantities = self._quantities_before_date(today)
+        position_actions = {
+            ActionType.BUY, ActionType.SELL, ActionType.GIFT,
+            ActionType.GAS, ActionType.FIX,
+        }
+        day_transactions = sorted(
+            (
+                txn for txn in self._transactions
+                if txn.date == today and txn.action in position_actions
+            ),
+            key=lambda txn: txn.effective_executed_at,
+        )
+        symbols = sorted(
+            set(opening_quantities) | {txn.asset for txn in day_transactions}
+        )
+        if not symbols:
             return []
 
-        # Get symbols and their quantities
-        symbols = [h.symbol for h in investment_holdings]
-        quantities = {h.symbol: h.quantity for h in investment_holdings}
-        cost_basis = sum(h.cost_basis for h in investment_holdings)
-
-        logger.info(f"Intraday: Symbols={symbols}, Cost basis={cost_basis}")
+        quantities = defaultdict(Decimal, opening_quantities)
+        logger.info(
+            "Intraday: Symbols=%s, transactions today=%s",
+            symbols, len(day_transactions),
+        )
 
         # Get previous close prices for pre-market baseline
         prev_close_prices = price_service.get_previous_close_batch(symbols)
@@ -1276,7 +1402,7 @@ class Portfolio:
         baseline_value = Decimal("0")
         for symbol in symbols:
             if symbol in prev_close_prices and prev_close_prices[symbol] is not None:
-                baseline_value += quantities[symbol] * prev_close_prices[symbol]
+                baseline_value += opening_quantities.get(symbol, Decimal("0")) * prev_close_prices[symbol]
 
         logger.info(f"Intraday: Baseline value (prev close): {baseline_value}")
 
@@ -1295,7 +1421,7 @@ class Portfolio:
         current_time = now.strftime("%H:%M")
 
         # Add market hours markers if we have baseline (for drawing vertical lines)
-        if baseline_value > 0:
+        if symbols:
             all_times.add("00:00")
             all_times.add("09:30")  # Market open
             all_times.add("16:00")  # Market close
@@ -1333,10 +1459,30 @@ class Portfolio:
         current_realtime_prices = price_service.get_prices_batch(symbols)
         logger.info(f"Intraday: Real-time prices: {current_realtime_prices}")
 
+        events = []
+        for txn in day_transactions:
+            qty, execution_price = self._adjusted_trade_values(txn)
+            events.append((
+                txn.effective_executed_at.strftime("%H:%M"),
+                txn,
+                qty,
+                execution_price,
+            ))
+            all_times.add(txn.effective_executed_at.strftime("%H:%M"))
+        sorted_times = sorted(all_times)
+
         # Calculate portfolio value at each time point
         results = []
         # Track last known price for each symbol (initialize with previous close)
         last_prices = {symbol: prev_close_prices.get(symbol) for symbol in symbols}
+        opening_values = {
+            symbol: opening_quantities.get(symbol, Decimal("0"))
+            * (prev_close_prices.get(symbol) or Decimal("0"))
+            for symbol in symbols
+        }
+        net_trade_cash = defaultdict(Decimal)
+        added_capital = defaultdict(Decimal)
+        event_index = 0
 
         # Use baseline_value (previous close) as the zero point for daily P&L
         zero_point_value = baseline_value
@@ -1381,26 +1527,52 @@ class Portfolio:
                     total_value += quantities[symbol] * price_at_time
                     has_data = True
 
-            if has_data and total_value > 0:
-                # Daily P&L: change from midnight (previous close)
-                daily_pnl = total_value - zero_point_value
-                daily_pnl_percent = (daily_pnl / zero_point_value * 100) if zero_point_value > 0 else Decimal("0")
+            while event_index < len(events) and events[event_index][0] <= time_str:
+                _, txn, qty, execution_price = events[event_index]
+                symbol = txn.asset
+                market_price = last_prices.get(symbol) or execution_price
+                self._apply_intraday_transaction(
+                    txn, qty, execution_price, market_price,
+                    quantities, net_trade_cash, added_capital,
+                )
+                event_index += 1
+
+            # Revalue after applying transactions at this timestamp.
+            total_value = sum(
+                quantities[symbol] * last_prices[symbol]
+                for symbol in symbols if last_prices.get(symbol) is not None
+            )
+
+            if has_data:
+                daily_basis = zero_point_value + sum(added_capital.values())
+                daily_pnl = total_value + sum(net_trade_cash.values()) - zero_point_value
+                daily_pnl_percent = (
+                    daily_pnl / daily_basis * 100
+                    if daily_basis > 0 else Decimal("0")
+                )
 
                 # Calculate per-asset P&L changes using previous close (same as holdings table)
                 asset_changes = []
                 for symbol in symbols:
                     current_price = last_prices.get(symbol)
-                    prev_price = prev_close_prices.get(symbol)  # Use same prev_close as holdings
-                    qty = quantities[symbol]
+                    prev_price = prev_close_prices.get(symbol)
 
-                    if current_price is not None and prev_price is not None and prev_price > 0:
-                        asset_pnl = (current_price - prev_price) * qty
-                        asset_pnl_percent = ((current_price - prev_price) / prev_price) * 100
+                    if current_price is not None:
+                        asset_pnl = (
+                            quantities[symbol] * current_price
+                            + net_trade_cash[symbol]
+                            - opening_values[symbol]
+                        )
+                        asset_basis = opening_values[symbol] + added_capital[symbol]
+                        asset_pnl_percent = (
+                            asset_pnl / asset_basis * 100
+                            if asset_basis > 0 else Decimal("0")
+                        )
                         asset_changes.append({
                             "symbol": symbol,
                             "pnl": float(asset_pnl),
                             "pnl_percent": float(asset_pnl_percent),
-                            "prev_price": float(prev_price),
+                            "prev_price": float(prev_price) if prev_price is not None else None,
                             "current_price": float(current_price),
                         })
 
@@ -1410,7 +1582,7 @@ class Portfolio:
                 results.append({
                     "time": time_str,
                     "value": float(total_value),
-                    "baseline_value": float(zero_point_value),
+                    "baseline_value": float(daily_basis),
                     "daily_pnl": float(daily_pnl),
                     "daily_pnl_percent": float(daily_pnl_percent),
                     "asset_changes": asset_changes[:10],  # Top 10 movers
@@ -1433,20 +1605,24 @@ class Portfolio:
         if days_ago < 0 or days_ago > 59:
             return []
 
-        # Replay transactions to get holdings as of target_date
-        sorted_txns = sorted(self._transactions, key=lambda t: t.date)
-        temp_portfolio = Portfolio(adjust_splits=self._adjust_splits)
-        for txn in sorted_txns:
-            if txn.date <= target_date:
-                temp_portfolio._process_transaction(txn)
-
-        holdings = temp_portfolio.get_holdings(fetch_prices=False)
-        investment_holdings = [h for h in holdings if h.symbol != "CASH"]
-        if not investment_holdings:
+        opening_quantities = self._quantities_before_date(target_date)
+        position_actions = {
+            ActionType.BUY, ActionType.SELL, ActionType.GIFT,
+            ActionType.GAS, ActionType.FIX,
+        }
+        day_transactions = sorted(
+            (
+                txn for txn in self._transactions
+                if txn.date == target_date and txn.action in position_actions
+            ),
+            key=lambda txn: txn.effective_executed_at,
+        )
+        symbols = sorted(
+            set(opening_quantities) | {txn.asset for txn in day_transactions}
+        )
+        if not symbols:
             return []
-
-        symbols = [h.symbol for h in investment_holdings]
-        quantities = {h.symbol: h.quantity for h in investment_holdings}
+        quantities = defaultdict(Decimal, opening_quantities)
 
         # Baseline: close of last trading day before target_date
         prev_close_prices: dict[str, Optional[Decimal]] = {}
@@ -1462,11 +1638,9 @@ class Portfolio:
                 prev_close_prices[symbol] = hist[keys[-1]]
 
         baseline_value = sum(
-            quantities[s] * prev_close_prices[s]
+            opening_quantities.get(s, Decimal("0")) * prev_close_prices[s]
             for s in symbols if prev_close_prices.get(s) is not None
         )
-        if not baseline_value:
-            return []
 
         # Fetch intraday data with enough days to cover target_date
         fetch_days = days_ago + 1  # +1 to include target_date itself in range(fetch_days)
@@ -1482,6 +1656,9 @@ class Portfolio:
         for prices in intraday_prices.values():
             for p in prices:
                 all_times.add(p["time"])
+        all_times.update(
+            txn.effective_executed_at.strftime("%H:%M") for txn in day_transactions
+        )
 
         if not all_times:
             return []
@@ -1490,6 +1667,23 @@ class Portfolio:
         results = []
         last_prices = {s: prev_close_prices.get(s) for s in symbols}
         zero_point_value = baseline_value
+        opening_values = {
+            symbol: opening_quantities.get(symbol, Decimal("0"))
+            * (prev_close_prices.get(symbol) or Decimal("0"))
+            for symbol in symbols
+        }
+        events = []
+        for txn in day_transactions:
+            qty, execution_price = self._adjusted_trade_values(txn)
+            events.append((
+                txn.effective_executed_at.strftime("%H:%M"),
+                txn,
+                qty,
+                execution_price,
+            ))
+        net_trade_cash = defaultdict(Decimal)
+        added_capital = defaultdict(Decimal)
+        event_index = 0
 
         for time_str in sorted_times:
             total_value = Decimal("0")
@@ -1508,23 +1702,49 @@ class Portfolio:
                     total_value += quantities[symbol] * price_at_time
                     has_data = True
 
-            if has_data and total_value > 0:
-                daily_pnl = total_value - zero_point_value
-                daily_pnl_percent = (daily_pnl / zero_point_value * 100) if zero_point_value > 0 else Decimal("0")
+            while event_index < len(events) and events[event_index][0] <= time_str:
+                _, txn, qty, execution_price = events[event_index]
+                symbol = txn.asset
+                market_price = last_prices.get(symbol) or execution_price
+                self._apply_intraday_transaction(
+                    txn, qty, execution_price, market_price,
+                    quantities, net_trade_cash, added_capital,
+                )
+                event_index += 1
+
+            total_value = sum(
+                quantities[symbol] * last_prices[symbol]
+                for symbol in symbols if last_prices.get(symbol) is not None
+            )
+
+            if has_data:
+                daily_basis = zero_point_value + sum(added_capital.values())
+                daily_pnl = total_value + sum(net_trade_cash.values()) - zero_point_value
+                daily_pnl_percent = (
+                    daily_pnl / daily_basis * 100
+                    if daily_basis > 0 else Decimal("0")
+                )
 
                 asset_changes = []
                 for symbol in symbols:
                     current_price = last_prices.get(symbol)
                     prev_price = prev_close_prices.get(symbol)
-                    qty = quantities[symbol]
-                    if current_price is not None and prev_price is not None and prev_price > 0:
-                        asset_pnl = (current_price - prev_price) * qty
-                        asset_pnl_pct = ((current_price - prev_price) / prev_price) * 100
+                    if current_price is not None:
+                        asset_pnl = (
+                            quantities[symbol] * current_price
+                            + net_trade_cash[symbol]
+                            - opening_values[symbol]
+                        )
+                        asset_basis = opening_values[symbol] + added_capital[symbol]
+                        asset_pnl_pct = (
+                            asset_pnl / asset_basis * 100
+                            if asset_basis > 0 else Decimal("0")
+                        )
                         asset_changes.append({
                             "symbol": symbol,
                             "pnl": float(asset_pnl),
                             "pnl_percent": float(asset_pnl_pct),
-                            "prev_price": float(prev_price),
+                            "prev_price": float(prev_price) if prev_price is not None else None,
                             "current_price": float(current_price),
                         })
                 asset_changes.sort(key=lambda x: abs(x["pnl"]), reverse=True)
@@ -1532,7 +1752,7 @@ class Portfolio:
                 results.append({
                     "time": time_str,
                     "value": float(total_value),
-                    "baseline_value": float(zero_point_value),
+                    "baseline_value": float(daily_basis),
                     "daily_pnl": float(daily_pnl),
                     "daily_pnl_percent": float(daily_pnl_percent),
                     "asset_changes": asset_changes[:10],

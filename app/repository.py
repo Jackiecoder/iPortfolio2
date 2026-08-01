@@ -8,16 +8,17 @@ returns the same ``Transaction`` objects the CSV loader used to produce, so
 from typing import Optional
 
 from .db import get_pool
-from .models import ActionType, Transaction
+from .models import ActionType, MARKET_TZ, Transaction
 
 
 def get_all_transactions() -> list[Transaction]:
     """Load every transaction from the DB as Transaction objects, sorted by date."""
     with get_pool().connection() as conn:
         rows = conn.execute(
-            """SELECT date, asset, action, amount, quantity, ave_price, source, comment
+            """SELECT date, asset, action, amount, quantity, ave_price, source, comment,
+                      executed_at
                FROM transactions
-               ORDER BY date, id"""
+               ORDER BY executed_at, id"""
         ).fetchall()
 
     transactions: list[Transaction] = []
@@ -32,6 +33,7 @@ def get_all_transactions() -> list[Transaction]:
                 ave_price=r[5],
                 source=r[6],
                 comment=r[7],
+                executed_at=r[8],
             )
         )
     return transactions
@@ -48,9 +50,9 @@ def get_all_transactions_with_meta() -> list[dict]:
     with get_pool().connection() as conn:
         rows = conn.execute(
             """SELECT id, date, asset, action, amount, quantity, ave_price,
-                      source, comment, broker, created_at
+                      source, comment, broker, created_at, executed_at
                FROM transactions
-               ORDER BY date DESC, id DESC"""
+               ORDER BY executed_at DESC, id DESC"""
         ).fetchall()
 
     def _num(v):
@@ -69,6 +71,10 @@ def get_all_transactions_with_meta() -> list[dict]:
             "comment": r[8],
             "broker": r[9],
             "created_at": r[10].isoformat() if r[10] is not None else None,
+            "executed_at": r[11].isoformat() if r[11] is not None else None,
+            "transaction_time": (
+                r[11].astimezone(MARKET_TZ).strftime("%H:%M") if r[11] is not None else None
+            ),
         }
         for r in rows
     ]
@@ -87,8 +93,9 @@ def insert_transaction(txn: Transaction, broker: Optional[str] = None) -> int:
     with get_pool().connection() as conn:
         row = conn.execute(
             """INSERT INTO transactions
-                   (date, asset, action, amount, quantity, ave_price, source, comment, broker)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   (date, asset, action, amount, quantity, ave_price, source, comment, broker,
+                    executed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id""",
             (
                 txn.date,
@@ -100,6 +107,7 @@ def insert_transaction(txn: Transaction, broker: Optional[str] = None) -> int:
                 txn.source,
                 txn.comment,
                 broker,
+                txn.effective_executed_at,
             ),
         ).fetchone()
         conn.commit()
@@ -113,7 +121,7 @@ def insert_transactions(transactions: list[Transaction], broker: Optional[str] =
     params = [
         (
             t.date, t.asset, t.action.value, t.amount, t.quantity,
-            t.ave_price, t.source, t.comment, broker,
+            t.ave_price, t.source, t.comment, broker, t.effective_executed_at,
         )
         for t in transactions
     ]
@@ -121,8 +129,9 @@ def insert_transactions(transactions: list[Transaction], broker: Optional[str] =
         with conn.cursor() as cur:
             cur.executemany(
                 """INSERT INTO transactions
-                       (date, asset, action, amount, quantity, ave_price, source, comment, broker)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                       (date, asset, action, amount, quantity, ave_price, source, comment, broker,
+                        executed_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 params,
             )
         conn.commit()

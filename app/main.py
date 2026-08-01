@@ -4,7 +4,7 @@ import logging
 import mimetypes
 import os
 from datetime import date as date_type
-from datetime import datetime, timedelta
+from datetime import datetime, time as time_type, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -21,7 +21,7 @@ from . import repository
 from .cache_service import cache_service
 from .csv_parser import CSVParseError, parse_csv_content
 from .db import init_schema
-from .models import ActionType, Transaction
+from .models import ActionType, Transaction, default_transaction_time
 from .portfolio import Portfolio
 from .price_service import price_service
 from .simulator import run_simulation
@@ -445,6 +445,7 @@ class TransactionCreate(BaseModel):
     source: Optional[str] = None
     comment: Optional[str] = None
     broker: Optional[str] = None
+    transaction_time: Optional[time_type] = None
 
 
 @app.post("/api/transactions")
@@ -452,6 +453,9 @@ async def create_transaction(txn_in: TransactionCreate):
     """Add a single transaction to the database."""
     try:
         # Reuse Transaction's validation + missing-value derivation.
+        execution_time = txn_in.transaction_time or default_transaction_time(
+            txn_in.asset, txn_in.action
+        )
         txn = Transaction(
             date=txn_in.date,
             asset=txn_in.asset,
@@ -461,6 +465,9 @@ async def create_transaction(txn_in: TransactionCreate):
             ave_price=txn_in.ave_price,
             source=txn_in.source,
             comment=txn_in.comment,
+            executed_at=datetime.combine(
+                txn_in.date, execution_time, tzinfo=MARKET_TZ
+            ),
         )
     except ValidationError as e:
         msgs = "; ".join(err.get("msg", "invalid") for err in e.errors())
@@ -471,7 +478,10 @@ async def create_transaction(txn_in: TransactionCreate):
         _refresh_after_write()
         return {
             "id": new_id,
-            "message": f"Added {txn.action.value} {txn.asset} on {txn.date.isoformat()}",
+            "message": (
+                f"Added {txn.action.value} {txn.asset} on "
+                f"{txn.effective_executed_at.strftime('%Y-%m-%d %H:%M')} ET"
+            ),
         }
     except Exception as e:
         logger.error(f"Error adding transaction: {e}")
@@ -573,7 +583,7 @@ async def get_transactions(
                 if t.asset == symbol.upper()
                 and (action_filter is None or t.action.value in action_filter)
             ],
-            key=lambda t: t.date,
+            key=lambda t: t.effective_executed_at,
             reverse=True,
         )[:limit]
         result = {
@@ -581,6 +591,8 @@ async def get_transactions(
             "transactions": [
                 {
                     "date": t.date.isoformat(),
+                    "executed_at": t.effective_executed_at.isoformat(),
+                    "transaction_time": t.effective_executed_at.strftime("%H:%M"),
                     "action": t.action.value,
                     "quantity": float(t.quantity) if t.quantity is not None else None,
                     "ave_price": float(t.ave_price) if t.ave_price is not None else None,
