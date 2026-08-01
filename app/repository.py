@@ -1,11 +1,12 @@
-"""Data access for transactions and targets (Postgres-backed).
+"""Data access for portfolio records (Postgres-backed).
 
 This is the seam that replaces reading CSV files: ``get_all_transactions``
 returns the same ``Transaction`` objects the CSV loader used to produce, so
 ``Portfolio`` and all calculation logic are unchanged.
 """
 
-from typing import Optional
+import json
+from typing import Any, Optional
 
 from .db import get_pool
 from .models import ActionType, MARKET_TZ, Transaction
@@ -157,3 +158,78 @@ def set_target(symbol: str, target_pct: Optional[float]) -> None:
                 (symbol, target_pct),
             )
         conn.commit()
+
+
+def _analysis_report_row(row: tuple, include_data: bool) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "id": row[0],
+        "period": row[1],
+        "period_label": row[2],
+        "start_date": row[3].isoformat(),
+        "end_date": row[4].isoformat(),
+        "title": row[5],
+        "verdict": row[6],
+        "score": row[7],
+        "created_at": row[8].isoformat(),
+    }
+    if include_data:
+        payload = row[9]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        result["report_data"] = payload
+    else:
+        result["summary"] = row[9]
+    return result
+
+
+def create_analysis_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Persist and return one complete analysis report snapshot."""
+    verdict = report["verdict"]
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            """INSERT INTO analysis_reports
+                   (period, period_label, start_date, end_date, title, verdict, score, report_data)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+               RETURNING id, period, period_label, start_date, end_date, title,
+                         verdict, score, created_at, report_data""",
+            (
+                report["period"],
+                report["period_label"],
+                report["start_date"],
+                report["end_date"],
+                report["title"],
+                verdict["label"],
+                verdict["score"],
+                json.dumps(report),
+            ),
+        ).fetchone()
+        conn.commit()
+    return _analysis_report_row(row, include_data=True)
+
+
+def list_analysis_reports(limit: int = 50) -> list[dict[str, Any]]:
+    """Return newest analysis report metadata for the archive list."""
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            """SELECT id, period, period_label, start_date, end_date, title,
+                      verdict, score, created_at,
+                      report_data->'verdict'->>'summary' AS summary
+               FROM analysis_reports
+               ORDER BY created_at DESC, id DESC
+               LIMIT %s""",
+            (limit,),
+        ).fetchall()
+    return [_analysis_report_row(row, include_data=False) for row in rows]
+
+
+def get_analysis_report(report_id: int) -> Optional[dict[str, Any]]:
+    """Return one archived report, including its immutable JSON payload."""
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            """SELECT id, period, period_label, start_date, end_date, title,
+                      verdict, score, created_at, report_data
+               FROM analysis_reports
+               WHERE id = %s""",
+            (report_id,),
+        ).fetchone()
+    return _analysis_report_row(row, include_data=True) if row else None

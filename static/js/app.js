@@ -4710,6 +4710,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Simulator event listeners
     // -----------------------------------------------------------------------
     initSimulator();
+    initAnalysis();
 });
 
 
@@ -4794,22 +4795,309 @@ function initSimulator() {
 }
 
 function switchPage(page) {
-    const trackerPage   = document.getElementById('trackerPage');
-    const simulatorPage = document.getElementById('simulatorPage');
-    const trackerBtn    = document.getElementById('pageTrackerBtn');
-    const simulatorBtn  = document.getElementById('pageSimulatorBtn');
+    const pageElements = {
+        tracker: document.getElementById('trackerPage'),
+        simulator: document.getElementById('simulatorPage'),
+        analysis: document.getElementById('analysisPage'),
+    };
+    const pageButtons = {
+        tracker: document.getElementById('pageTrackerBtn'),
+        simulator: document.getElementById('pageSimulatorBtn'),
+        analysis: document.getElementById('pageAnalysisBtn'),
+    };
 
-    if (page === 'tracker') {
-        trackerPage.style.display   = '';
-        simulatorPage.style.display = 'none';
-        trackerBtn.className    = 'btn btn-light btn-sm px-3';
-        simulatorBtn.className  = 'btn btn-outline-light btn-sm px-3';
-    } else {
-        trackerPage.style.display   = 'none';
-        simulatorPage.style.display = '';
-        trackerBtn.className    = 'btn btn-outline-light btn-sm px-3';
-        simulatorBtn.className  = 'btn btn-light btn-sm px-3';
+    Object.entries(pageElements).forEach(([name, element]) => {
+        element.style.display = name === page ? '' : 'none';
+        pageButtons[name].className = name === page
+            ? 'btn btn-light btn-sm px-3'
+            : 'btn btn-outline-light btn-sm px-3';
+    });
+
+    if (page === 'analysis' && !analysisReportsLoaded) {
+        loadAnalysisHistory(true);
     }
+}
+
+// ============================================================================
+//  SAVED INVESTMENT ANALYSIS
+// ============================================================================
+
+let analysisPeriod = '30d';
+let analysisReportsLoaded = false;
+let selectedAnalysisReportId = null;
+
+function initAnalysis() {
+    document.getElementById('pageAnalysisBtn').addEventListener('click', () => switchPage('analysis'));
+
+    document.querySelectorAll('.analysis-period-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            analysisPeriod = btn.dataset.period;
+            document.querySelectorAll('.analysis-period-btn').forEach(option => {
+                const active = option.dataset.period === analysisPeriod;
+                option.classList.toggle('btn-primary', active);
+                option.classList.toggle('active', active);
+                option.classList.toggle('btn-outline-secondary', !active);
+            });
+        });
+    });
+
+    document.getElementById('generateAnalysisBtn').addEventListener('click', createAnalysisReport);
+}
+
+function analysisDate(value, includeTime = false) {
+    if (!value) return '--';
+    const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value)
+        ? new Date(`${value}T12:00:00`)
+        : new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString('en-US', includeTime
+        ? { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }
+        : { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function analysisTone(value, invert = false) {
+    if (value === null || value === undefined) return '';
+    const positive = invert ? value <= 0 : value >= 0;
+    return positive ? 'text-success' : 'text-danger';
+}
+
+async function analysisApi(url, options = {}) {
+    const response = await fetch(url, options);
+    if (!response.ok) {
+        let message = `Request failed (${response.status})`;
+        try {
+            const body = await response.json();
+            if (body.detail) message = body.detail;
+        } catch (_) {
+            // Keep the HTTP status fallback for non-JSON failures.
+        }
+        throw new Error(message);
+    }
+    return response.json();
+}
+
+async function loadAnalysisHistory(selectLatest = false) {
+    const historyList = document.getElementById('analysisHistoryList');
+    historyList.innerHTML = `
+        <div class="text-muted small py-3 text-center">
+            <span class="spinner-border spinner-border-sm me-1" role="status"></span>Loading...
+        </div>`;
+    try {
+        const data = await analysisApi('/api/analysis/reports?limit=100');
+        const reports = data.reports || [];
+        analysisReportsLoaded = true;
+        renderAnalysisHistory(reports);
+        if (selectLatest && reports.length) {
+            await loadAnalysisReport(reports[0].id);
+        }
+    } catch (error) {
+        historyList.innerHTML = `<div class="text-danger small py-3">${escapeHtml(error.message)}</div>`;
+    }
+}
+
+function renderAnalysisHistory(reports) {
+    document.getElementById('analysisHistoryCount').textContent = reports.length;
+    const historyList = document.getElementById('analysisHistoryList');
+    if (!reports.length) {
+        historyList.innerHTML = '<div class="text-muted small py-3 text-center">No saved reports</div>';
+        return;
+    }
+    historyList.innerHTML = reports.map(report => {
+        const score = report.score === null || report.score === undefined ? '--' : `${report.score}/100`;
+        const active = report.id === selectedAnalysisReportId ? ' active' : '';
+        return `
+            <button type="button" class="analysis-history-item${active}" data-report-id="${report.id}">
+                <div class="d-flex justify-content-between gap-2">
+                    <span class="analysis-history-title">${escapeHtml(report.period_label)}</span>
+                    <span class="badge text-bg-light">${escapeHtml(report.verdict)}</span>
+                </div>
+                <div class="analysis-history-meta">
+                    <span>${escapeHtml(analysisDate(report.created_at, true))}</span>
+                    <span>${escapeHtml(score)}</span>
+                </div>
+            </button>`;
+    }).join('');
+    historyList.querySelectorAll('.analysis-history-item').forEach(button => {
+        button.addEventListener('click', () => loadAnalysisReport(Number(button.dataset.reportId)));
+    });
+}
+
+async function loadAnalysisReport(reportId) {
+    const empty = document.getElementById('analysisReportEmpty');
+    const loading = document.getElementById('analysisReportLoading');
+    const reportElement = document.getElementById('analysisReport');
+    empty.classList.add('d-none');
+    reportElement.classList.add('d-none');
+    loading.classList.remove('d-none');
+    try {
+        const data = await analysisApi(`/api/analysis/reports/${reportId}`);
+        selectedAnalysisReportId = reportId;
+        renderAnalysisReport(data.report);
+        document.querySelectorAll('.analysis-history-item').forEach(button => {
+            button.classList.toggle('active', Number(button.dataset.reportId) === reportId);
+        });
+    } catch (error) {
+        empty.classList.remove('d-none');
+        empty.innerHTML = `
+            <i class="bi bi-exclamation-circle text-danger"></i>
+            <h5>Report unavailable</h5><p class="mb-0">${escapeHtml(error.message)}</p>`;
+    } finally {
+        loading.classList.add('d-none');
+    }
+}
+
+async function createAnalysisReport() {
+    const button = document.getElementById('generateAnalysisBtn');
+    const label = button.querySelector('span');
+    const errorElement = document.getElementById('analysisGenerateError');
+    button.disabled = true;
+    label.textContent = 'Generating...';
+    button.querySelector('i').className = 'spinner-border spinner-border-sm me-1';
+    errorElement.classList.add('d-none');
+    try {
+        const data = await analysisApi('/api/analysis/reports', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ period: analysisPeriod }),
+        });
+        selectedAnalysisReportId = data.report.id;
+        renderAnalysisReport(data.report);
+        await loadAnalysisHistory(false);
+        showToast('Analysis report generated and saved', 'success');
+    } catch (error) {
+        errorElement.textContent = error.message;
+        errorElement.classList.remove('d-none');
+    } finally {
+        button.disabled = false;
+        label.textContent = 'Generate Report';
+        button.querySelector('i').className = 'bi bi-stars me-1';
+    }
+}
+
+function renderAnalysisReport(savedReport) {
+    const report = savedReport.report_data || savedReport;
+    const verdict = report.verdict || {};
+    const portfolio = report.portfolio || {};
+    const allocation = report.allocation || {};
+    const activity = report.activity || {};
+    const benchmarks = (report.market && report.market.benchmarks) || [];
+    const contributors = report.contributors || { positive: [], negative: [] };
+    const score = verdict.score;
+    const scoreTone = score === null || score === undefined
+        ? ''
+        : (score >= 65 ? 'positive' : (score >= 50 ? 'warning' : 'negative'));
+
+    const metrics = [
+        ['Period P&L', formatCurrency(portfolio.pnl), analysisTone(portfolio.pnl)],
+        ['Portfolio Return', formatPercent(portfolio.return_pct), analysisTone(portfolio.return_pct)],
+        ['vs SPY', formatPercent(report.relative && report.relative.spy_excess_pct), analysisTone(report.relative && report.relative.spy_excess_pct)],
+        ['Max Drawdown', portfolio.max_drawdown_pct == null ? '--' : `-${formatNumber(portfolio.max_drawdown_pct)}%`, 'text-danger'],
+        ['Ann. Volatility', portfolio.annualized_volatility_pct == null ? '--' : `${formatNumber(portfolio.annualized_volatility_pct)}%`, ''],
+        ['Win Rate', portfolio.win_rate_pct == null ? '--' : `${formatNumber(portfolio.win_rate_pct)}%`, ''],
+        ['Largest Holding', allocation.top_holding_symbol || '--', ''],
+        ['Top Weight', allocation.top_holding_pct == null ? '--' : `${formatNumber(allocation.top_holding_pct)}%`, allocation.top_holding_pct > 40 ? 'text-danger' : ''],
+    ];
+
+    const benchmarkRows = benchmarks.map(benchmark => `
+        <tr>
+            <td><strong>${escapeHtml(benchmark.symbol)}</strong><span class="text-muted small ms-2">${escapeHtml(benchmark.name)}</span></td>
+            <td class="text-end ${analysisTone(benchmark.return_pct)}">${benchmark.return_pct == null ? '--' : formatPercent(benchmark.return_pct)}</td>
+            <td class="text-end">${benchmark.annualized_volatility_pct == null ? '--' : `${formatNumber(benchmark.annualized_volatility_pct)}%`}</td>
+            <td class="text-end text-danger">${benchmark.max_drawdown_pct == null ? '--' : `-${formatNumber(benchmark.max_drawdown_pct)}%`}</td>
+        </tr>`).join('');
+
+    const contributionList = (items, emptyLabel) => items.length
+        ? items.map(item => `
+            <div class="d-flex justify-content-between py-1 border-bottom">
+                <strong>${escapeHtml(displaySymbol(item.symbol))}</strong>
+                <span class="${analysisTone(item.pnl)}">${formatCurrency(item.pnl)}</span>
+            </div>`).join('')
+        : `<div class="text-muted small py-2">${emptyLabel}</div>`;
+
+    document.getElementById('analysisReportEmpty').classList.add('d-none');
+    const reportElement = document.getElementById('analysisReport');
+    reportElement.innerHTML = `
+        <header class="analysis-report-header">
+            <div>
+                <div class="text-muted small mb-1">${escapeHtml(report.period_label)} · ${escapeHtml(analysisDate(report.start_date))} – ${escapeHtml(analysisDate(report.end_date))}</div>
+                <h3 class="mb-1">${escapeHtml(report.title)}</h3>
+                <div class="d-flex align-items-center gap-2 mb-2">
+                    <span class="badge ${scoreTone === 'positive' ? 'text-bg-success' : (scoreTone === 'negative' ? 'text-bg-danger' : 'text-bg-warning')}">${escapeHtml(verdict.label || '--')}</span>
+                    <span class="text-muted small">${escapeHtml(report.market && report.market.regime || 'Market data unavailable')}</span>
+                </div>
+                <p class="mb-0 text-muted">${escapeHtml(verdict.summary || '')}</p>
+                <div class="text-muted small mt-2">Saved ${escapeHtml(analysisDate(savedReport.created_at || report.generated_at, true))}</div>
+            </div>
+            <div class="analysis-score ${scoreTone}">
+                <span class="analysis-score-value">${score == null ? '--' : score}</span>
+                <span class="analysis-score-label">Score / 100</span>
+            </div>
+        </header>
+
+        <div class="analysis-metrics">
+            ${metrics.map(([label, value, className]) => `
+                <div class="analysis-metric">
+                    <div class="analysis-metric-label">${escapeHtml(label)}</div>
+                    <div class="analysis-metric-value ${className}">${value}</div>
+                </div>`).join('')}
+        </div>
+
+        <section class="analysis-section">
+            <h5><i class="bi bi-lightbulb me-2"></i>Key Findings</h5>
+            <div class="analysis-observations">
+                ${(report.observations || []).map(item => `
+                    <div class="analysis-observation ${escapeHtml(item.tone)}">
+                        <div class="analysis-observation-title">${escapeHtml(item.title)}</div>
+                        <div class="analysis-observation-body">${escapeHtml(item.body)}</div>
+                    </div>`).join('') || '<div class="text-muted small">No findings available for this period.</div>'}
+            </div>
+        </section>
+
+        <section class="analysis-section">
+            <h5><i class="bi bi-globe-americas me-2"></i>Market Comparison</h5>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light"><tr><th>Benchmark</th><th class="text-end">Return</th><th class="text-end">Volatility</th><th class="text-end">Max Drawdown</th></tr></thead>
+                    <tbody>${benchmarkRows || '<tr><td colspan="4" class="text-muted text-center py-3">No benchmark data</td></tr>'}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="analysis-section">
+            <h5><i class="bi bi-bar-chart-steps me-2"></i>Return Contributors</h5>
+            <div class="row g-4">
+                <div class="col-md-6">
+                    <div class="small text-success fw-semibold mb-1">Positive</div>
+                    ${contributionList(contributors.positive || [], 'No positive contributors')}
+                </div>
+                <div class="col-md-6">
+                    <div class="small text-danger fw-semibold mb-1">Negative</div>
+                    ${contributionList(contributors.negative || [], 'No negative contributors')}
+                </div>
+            </div>
+        </section>
+
+        <section class="analysis-section">
+            <h5><i class="bi bi-arrow-left-right me-2"></i>Period Activity</h5>
+            <div class="analysis-activity-grid">
+                ${[
+                    ['Transactions', activity.transaction_count ?? 0],
+                    ['Buys', formatCurrency(activity.buy_amount)],
+                    ['Sells', formatCurrency(activity.sell_amount)],
+                    ['Dividends', formatCurrency(activity.dividends)],
+                    ['Fees', formatCurrency(activity.fees)],
+                ].map(([label, value]) => `
+                    <div class="analysis-activity-item"><div class="label">${label}</div><div class="value">${value}</div></div>`).join('')}
+            </div>
+        </section>
+
+        <section class="analysis-section">
+            <h5><i class="bi bi-info-circle me-2"></i>Methodology</h5>
+            <ul class="analysis-methodology">
+                ${(report.methodology || []).map(item => `<li class="mb-1">${escapeHtml(item)}</li>`).join('')}
+            </ul>
+        </section>`;
+    reportElement.classList.remove('d-none');
 }
 
 // ---- Allocation row helpers ------------------------------------------------

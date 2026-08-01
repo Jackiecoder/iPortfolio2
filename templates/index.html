@@ -18,7 +18,7 @@
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=26">
+    <link rel="stylesheet" href="/static/css/style.css?v=27">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -38,6 +38,9 @@
                 </button>
                 <button id="pageSimulatorBtn" class="btn btn-outline-light btn-sm px-3">
                     <i class="bi bi-play-circle me-1"></i>Simulator
+                </button>
+                <button id="pageAnalysisBtn" class="btn btn-outline-light btn-sm px-3">
+                    <i class="bi bi-clipboard-data me-1"></i>Analysis
                 </button>
             </div>
             <div class="d-flex gap-2 align-items-center">
@@ -925,6 +928,57 @@
         </div><!-- /row -->
     </div><!-- /#simulatorPage -->
 
+    <!-- ============================================================ ANALYSIS PAGE -->
+    <div id="analysisPage" style="display:none">
+        <div class="analysis-toolbar mb-4">
+            <div>
+                <h4 class="mb-1"><i class="bi bi-clipboard-data me-2"></i>Investment Analysis</h4>
+                <div class="text-muted small">Quantitative decision review against broad-market benchmarks</div>
+            </div>
+            <div class="analysis-actions">
+                <div id="analysisPeriodButtons" class="btn-group btn-group-sm" role="group" aria-label="Analysis period">
+                    <button class="btn btn-outline-secondary analysis-period-btn" data-period="1d">1 Day</button>
+                    <button class="btn btn-primary analysis-period-btn active" data-period="30d">30 Days</button>
+                    <button class="btn btn-outline-secondary analysis-period-btn" data-period="6m">6 Months</button>
+                    <button class="btn btn-outline-secondary analysis-period-btn" data-period="1y">1 Year</button>
+                </div>
+                <button id="generateAnalysisBtn" class="btn btn-success btn-sm">
+                    <i class="bi bi-stars me-1"></i><span>Generate Report</span>
+                </button>
+            </div>
+        </div>
+        <div id="analysisGenerateError" class="alert alert-danger py-2 small d-none"></div>
+
+        <div class="row g-4 analysis-layout">
+            <aside class="col-lg-3 analysis-history-column">
+                <section class="analysis-history-panel" aria-labelledby="analysisHistoryHeading">
+                    <div class="d-flex align-items-center justify-content-between mb-3">
+                        <h6 id="analysisHistoryHeading" class="mb-0">
+                            <i class="bi bi-clock-history me-1"></i>Saved Reports
+                        </h6>
+                        <span id="analysisHistoryCount" class="badge text-bg-light">0</span>
+                    </div>
+                    <div id="analysisHistoryList" class="analysis-history-list">
+                        <div class="text-muted small py-3 text-center">No saved reports</div>
+                    </div>
+                </section>
+            </aside>
+
+            <div class="col-lg-9 analysis-report-column">
+                <div id="analysisReportLoading" class="analysis-empty-state d-none" aria-live="polite">
+                    <div class="spinner-border spinner-border-sm text-primary mb-3" role="status"></div>
+                    <div>Loading report...</div>
+                </div>
+                <div id="analysisReportEmpty" class="analysis-empty-state">
+                    <i class="bi bi-file-earmark-bar-graph"></i>
+                    <h5>No analysis report yet</h5>
+                    <p class="mb-0">Choose a review period to create the first saved snapshot.</p>
+                </div>
+                <article id="analysisReport" class="d-none" aria-live="polite"></article>
+            </div>
+        </div>
+    </div><!-- /#analysisPage -->
+
     </main>
 
     <footer class="bg-light py-3 mt-4">
@@ -955,7 +1009,7 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/app.js?v=115"></script>
+    <script src="/static/js/app.js?v=116"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

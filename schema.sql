@@ -70,3 +70,22 @@ CREATE TABLE IF NOT EXISTS intraday_prices (
     PRIMARY KEY (symbol, date, time, interval)
 );
 CREATE INDEX IF NOT EXISTS idx_intraday_prices_lookup ON intraday_prices (symbol, date, interval);
+
+-- Immutable analysis snapshots. The JSON payload contains the complete report
+-- so historical reports do not change when transactions or prices change.
+CREATE TABLE IF NOT EXISTS analysis_reports (
+    id           BIGSERIAL PRIMARY KEY,
+    period       TEXT        NOT NULL,
+    period_label TEXT        NOT NULL,
+    start_date   DATE        NOT NULL,
+    end_date     DATE        NOT NULL,
+    title        TEXT        NOT NULL,
+    verdict      TEXT        NOT NULL,
+    score        INTEGER,
+    report_data  JSONB       NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_reports_created_at
+    ON analysis_reports (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analysis_reports_period
+    ON analysis_reports (period, created_at DESC);

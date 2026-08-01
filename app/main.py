@@ -9,7 +9,7 @@ from datetime import date as date_type
 from datetime import datetime, time as time_type, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 from . import repository
+from .analysis_service import generate_analysis_report
 from .cache_service import cache_service
 from .csv_parser import CSVParseError, parse_csv_content
 from .db import init_schema
@@ -909,6 +910,10 @@ class SimulatorRequest(BaseModel):
     dca_amount: float = 0.0
 
 
+class AnalysisReportRequest(BaseModel):
+    period: Literal["1d", "30d", "6m", "1y"]
+
+
 @app.post("/api/simulator/run")
 async def simulator_run(req: SimulatorRequest):
     """Run a portfolio back-test simulation (supports DCA)."""
@@ -934,3 +939,50 @@ async def simulator_run(req: SimulatorRequest):
     except Exception as e:
         logger.error(f"Simulator error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Saved portfolio analysis
+# ---------------------------------------------------------------------------
+
+def _generate_and_save_analysis(period: str) -> dict:
+    active_portfolio = portfolio
+    if active_portfolio is None:
+        raise RuntimeError("Portfolio is not loaded")
+    report = generate_analysis_report(
+        active_portfolio,
+        repository.get_all_transactions(),
+        period,
+    )
+    return repository.create_analysis_report(report)
+
+
+@app.post("/api/analysis/reports")
+async def create_analysis_report(req: AnalysisReportRequest):
+    """Generate and persist an immutable analysis report snapshot."""
+    if portfolio is None:
+        load_portfolio()
+    try:
+        report = await asyncio.to_thread(_generate_and_save_analysis, req.period)
+        return {"report": report}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Analysis report generation failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/analysis/reports")
+async def list_analysis_reports(limit: int = Query(50, ge=1, le=100)):
+    """List saved reports, newest first."""
+    reports = await asyncio.to_thread(repository.list_analysis_reports, limit)
+    return {"reports": reports}
+
+
+@app.get("/api/analysis/reports/{report_id}")
+async def get_analysis_report(report_id: int):
+    """Load one previously generated report snapshot."""
+    report = await asyncio.to_thread(repository.get_analysis_report, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Analysis report not found")
+    return {"report": report}

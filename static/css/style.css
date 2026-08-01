@@ -190,7 +190,7 @@ body {
         margin: 0 !important;
         width: 100%;
         display: grid !important;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 0.45rem !important;
     }
 
@@ -625,7 +625,7 @@ body {
     color: #6b7280;
     font-size: 0.8rem;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
 }
 
 .weekly-pnl-summary .pnl-amount {
@@ -919,7 +919,7 @@ body {
     color: #6b7280;
     font-size: 0.75rem;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
 }
 
 .monthly-pnl-summary-breakdown {
@@ -983,7 +983,7 @@ body {
     color: #6c757d;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
+    letter-spacing: 0;
     border-bottom: 1px solid #dee2e6;
     padding: 0.3rem 0.5rem;
 }
@@ -1004,7 +1004,7 @@ body {
     border-radius: 0.25rem;
     font-size: 0.7rem;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
 }
 
 .txn-buy  { background-color: #d1e7dd; color: #0a3622; }
@@ -1130,10 +1130,228 @@ body {
    ============================================================ */
 
 /* Page toggle buttons in navbar */
-#pageTrackerBtn, #pageSimulatorBtn {
+#pageTrackerBtn, #pageSimulatorBtn, #pageAnalysisBtn {
     font-size: 0.85rem;
     font-weight: 500;
     transition: all 0.15s ease;
+}
+
+/* ============================================================
+   Saved Investment Analysis
+   ============================================================ */
+
+.analysis-toolbar {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.analysis-actions {
+    align-items: center;
+    display: flex;
+    gap: 0.75rem;
+}
+
+.analysis-history-panel {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 1rem;
+    position: sticky;
+    top: 76px;
+}
+
+.analysis-history-list {
+    display: grid;
+    gap: 0.5rem;
+    max-height: calc(100vh - 180px);
+    overflow-y: auto;
+}
+
+.analysis-history-item {
+    background: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    color: #212529;
+    display: block;
+    padding: 0.65rem 0.75rem;
+    text-align: left;
+    width: 100%;
+}
+
+.analysis-history-item:hover,
+.analysis-history-item.active {
+    background: #eef5ff;
+    border-color: #86b7fe;
+}
+
+.analysis-history-item.active {
+    box-shadow: inset 3px 0 #0d6efd;
+}
+
+.analysis-history-title {
+    font-size: 0.83rem;
+    font-weight: 600;
+}
+
+.analysis-history-meta {
+    color: #6c757d;
+    display: flex;
+    font-size: 0.72rem;
+    justify-content: space-between;
+    margin-top: 0.3rem;
+}
+
+.analysis-empty-state {
+    background: #fff;
+    border: 1px dashed #cbd5e1;
+    border-radius: 6px;
+    color: #64748b;
+    padding: 5rem 1rem;
+    text-align: center;
+}
+
+.analysis-empty-state > i {
+    display: block;
+    font-size: 2.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.analysis-report-header {
+    align-items: flex-start;
+    border-bottom: 1px solid #dee2e6;
+    display: flex;
+    justify-content: space-between;
+    gap: 1.25rem;
+    padding-bottom: 1rem;
+}
+
+.analysis-score {
+    align-items: center;
+    border: 3px solid #6c757d;
+    border-radius: 50%;
+    display: flex;
+    flex: 0 0 86px;
+    flex-direction: column;
+    height: 86px;
+    justify-content: center;
+    width: 86px;
+}
+
+.analysis-score.positive { border-color: #198754; }
+.analysis-score.warning { border-color: #f59e0b; color: #9a6700 !important; }
+.analysis-score.negative { border-color: #dc3545; }
+.analysis-score-value { font-size: 1.55rem; font-weight: 700; line-height: 1; }
+.analysis-score-label { color: #6c757d; font-size: 0.65rem; margin-top: 0.25rem; text-transform: uppercase; }
+
+.analysis-metrics {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin: 1.25rem 0;
+}
+
+.analysis-metric {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    min-width: 0;
+    padding: 0.85rem;
+}
+
+.analysis-metric-label {
+    color: #6c757d;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+}
+
+.analysis-metric-value {
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 1.25;
+    margin-top: 0.25rem;
+    overflow-wrap: anywhere;
+}
+
+.analysis-section {
+    border-top: 1px solid #dee2e6;
+    padding: 1.25rem 0;
+}
+
+.analysis-section h5 {
+    font-size: 1rem;
+    margin-bottom: 0.85rem;
+}
+
+.analysis-observations {
+    display: grid;
+    gap: 0.65rem;
+}
+
+.analysis-observation {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-left: 4px solid #6c757d;
+    border-radius: 4px;
+    padding: 0.75rem 0.9rem;
+}
+
+.analysis-observation.positive { border-left-color: #198754; }
+.analysis-observation.warning { border-left-color: #f59e0b; }
+.analysis-observation.neutral { border-left-color: #0d6efd; }
+
+.analysis-observation-title { font-size: 0.85rem; font-weight: 600; }
+.analysis-observation-body { color: #6c757d; font-size: 0.8rem; margin-top: 0.15rem; }
+
+.analysis-activity-grid {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.analysis-activity-item {
+    border-left: 2px solid #cbd5e1;
+    min-width: 0;
+    padding-left: 0.7rem;
+}
+
+.analysis-activity-item .label { color: #6c757d; font-size: 0.72rem; }
+.analysis-activity-item .value { font-size: 0.95rem; font-weight: 600; overflow-wrap: anywhere; }
+
+.analysis-methodology {
+    color: #6c757d;
+    font-size: 0.78rem;
+    margin: 0;
+    padding-left: 1.1rem;
+}
+
+@media (max-width: 991.98px) {
+    .analysis-history-column { order: 2; }
+    .analysis-report-column { order: 1; }
+    .analysis-history-panel { position: static; }
+    .analysis-history-list { max-height: 340px; }
+    .analysis-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .analysis-activity-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 576px) {
+    .analysis-toolbar,
+    .analysis-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .analysis-period-btn { padding-left: 0.4rem; padding-right: 0.4rem; }
+    #generateAnalysisBtn { min-height: 40px; }
+    .analysis-report-header { align-items: center; }
+    .analysis-report-header h3 { font-size: 1.25rem; }
+    .analysis-score { flex-basis: 72px; height: 72px; width: 72px; }
+    .analysis-score-value { font-size: 1.25rem; }
+    .analysis-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .analysis-metric { padding: 0.7rem; }
+    .analysis-metric-value { font-size: 1.05rem; }
+    .analysis-activity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* Sticky config card */
@@ -1201,7 +1419,7 @@ body {
 .sim-metric-card .metric-label {
     font-size: 0.75rem;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
     color: #6c757d;
 }
 
