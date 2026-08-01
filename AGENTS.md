@@ -44,3 +44,6 @@ date,asset,action,amount,quantity,ave_price,source,comment
 The FastAPI app caches `/api/holdings` and `/api/summary` for 30 s. After direct
 database maintenance, call `POST /api/reload` so the in-memory portfolio matches
 Postgres. Normal web/API transaction creation already reloads the portfolio.
+`/api/reload` preserves raw market-data caches unless called with
+`clear_price_cache=true`. Current intraday responses use stale-while-revalidate;
+transaction writes clear computed API results but retain reusable price bars.

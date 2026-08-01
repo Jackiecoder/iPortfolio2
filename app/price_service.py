@@ -3,6 +3,7 @@
 import logging
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -51,13 +52,14 @@ def _yf_call_with_retry(fn, *args, **kwargs):
 class PriceService:
     """Service for fetching current and historical prices."""
 
-    def __init__(self, cache_ttl_seconds: int = 300):
+    def __init__(self, cache_ttl_seconds: int = 300, live_cache_ttl_seconds: int = 60):
         """Initialize the price service.
 
         Args:
             cache_ttl_seconds: How long to cache prices (default 5 minutes)
         """
         self.cache_ttl = timedelta(seconds=cache_ttl_seconds)
+        self.live_cache_ttl = timedelta(seconds=live_cache_ttl_seconds)
         self._price_cache: dict[str, tuple[Decimal, datetime]] = {}
         self._history_cache: dict[str, tuple[dict, datetime]] = {}
         self._prev_close_cache: dict[str, tuple[dict, datetime]] = {}
@@ -76,7 +78,7 @@ class PriceService:
         # Check cache first
         if symbol in self._price_cache:
             price, cached_at = self._price_cache[symbol]
-            if datetime.now() - cached_at < self.cache_ttl:
+            if datetime.now() - cached_at < self.live_cache_ttl:
                 return price
 
         try:
@@ -120,7 +122,7 @@ class PriceService:
         for symbol in symbols:
             if symbol in self._price_cache:
                 price, cached_at = self._price_cache[symbol]
-                if datetime.now() - cached_at < self.cache_ttl:
+                if datetime.now() - cached_at < self.live_cache_ttl:
                     results[symbol] = price
                     continue
             uncached_symbols.append(symbol)
@@ -667,24 +669,25 @@ class PriceService:
         """
         from datetime import date, timedelta
 
-        intraday_key = f"{symbol}_{interval}_{days}"
+        today = _market_today()
+        intraday_key = f"{symbol}_{today.isoformat()}_{interval}_{days}"
         if intraday_key in self._intraday_cache:
             data, cached_at = self._intraday_cache[intraday_key]
-            if datetime.now() - cached_at < self.cache_ttl:
+            ttl = self.live_cache_ttl if days == 1 else self.cache_ttl
+            if datetime.now() - cached_at < ttl:
                 return data
 
-        today = _market_today()
         today_str = today.isoformat()
         is_crypto = symbol.endswith('-USD')
 
         if days == 1:
-            # Today only — always live
+            # Today only: fetch once per live TTL, then incrementally persist bars.
             prices = self._fetch_intraday_from_yfinance(symbol, interval, 1, today, is_crypto)
-            # If the live fetch returned a *past* date (e.g. weekend), persist it
             if prices:
                 date_str = prices[0]["date"]
-                if date_str < today_str:
-                    self._save_intraday_if_valid(symbol, date_str, interval, prices)
+                self._save_intraday_if_valid(
+                    symbol, date_str, interval, prices, overwrite=True
+                )
             self._intraday_cache[intraday_key] = (prices, datetime.now())
             return prices
 
@@ -857,12 +860,43 @@ class PriceService:
 
         logger.info(f"Fetching intraday data for symbols: {symbols}, days: {days}")
 
-        # Use individual fetching for more reliable results
-        for symbol in symbols:
-            results[symbol] = self.get_intraday_prices(symbol, interval, days)
-            logger.info(f"Got {len(results[symbol])} intraday prices for {symbol}")
+        # Bound concurrency to reduce total latency without overwhelming yfinance.
+        worker_count = min(6, len(symbols))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(self.get_intraday_prices, symbol, interval, days): symbol
+                for symbol in symbols
+            }
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    results[symbol] = future.result()
+                except Exception as exc:
+                    logger.error("Intraday fetch failed for %s: %s", symbol, exc)
+                    results[symbol] = []
+                logger.info("Got %s intraday prices for %s", len(results[symbol]), symbol)
 
         return results
+
+    def prime_intraday_cache_from_db(
+        self, symbols: list[str], interval: str = "1m"
+    ) -> int:
+        """Warm live memory caches from today's shared Postgres bars."""
+        today_str = _market_today().isoformat()
+        warmed = 0
+        now = datetime.now()
+        for symbol in symbols:
+            rows = cache_service.get_intraday_prices(symbol, today_str, interval)
+            if not rows:
+                continue
+            self._intraday_cache[
+                f"{symbol}_{today_str}_{interval}_1"
+            ] = (rows, now)
+            self._price_cache[symbol] = (rows[-1]["price"], now)
+            warmed += 1
+        if warmed:
+            logger.info("Warmed intraday cache for %s symbols from Postgres", warmed)
+        return warmed
 
     def clear_cache(self) -> None:
         """Clear all cached data."""
