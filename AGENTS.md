@@ -33,6 +33,10 @@ date,asset,action,amount,quantity,ave_price,source,comment
 - BUY/SELL require at least two of `amount`, `quantity`, and `ave_price`; the
   backend derives the third.
 - `broker` is also stored in Postgres when available.
+- `transaction_time` is optional on the API and is interpreted in
+  `America/New_York`. When omitted, stocks/ETFs default to 09:30 ET and
+  crypto (`*-USD`) / cash default to 00:00 ET. Postgres stores the resulting
+  timestamp in `executed_at` (`TIMESTAMPTZ`).
 - Bulk historical import still uses `scripts/migrate_csv_to_pg.py`.
 
 ## Cache invalidation
@@ -40,3 +44,6 @@ date,asset,action,amount,quantity,ave_price,source,comment
 The FastAPI app caches `/api/holdings` and `/api/summary` for 30 s. After direct
 database maintenance, call `POST /api/reload` so the in-memory portfolio matches
 Postgres. Normal web/API transaction creation already reloads the portfolio.
+`/api/reload` preserves raw market-data caches unless called with
+`clear_price_cache=true`. Current intraday responses use stale-while-revalidate;
+transaction writes clear computed API results but retain reusable price bars.

@@ -1,11 +1,15 @@
 """Data models for the portfolio tracker."""
 
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, field_validator, model_validator
+
+
+MARKET_TZ = ZoneInfo("America/New_York")
 
 
 class ActionType(str, Enum):
@@ -20,6 +24,13 @@ class ActionType(str, Enum):
     FIX = "FIX"    # Fix/reconcile quantity to known value
 
 
+def default_transaction_time(asset: str, action: ActionType) -> time:
+    """Return the deterministic ET time used when a transaction has no time."""
+    if asset.upper().strip().endswith("-USD") or action == ActionType.CASH:
+        return time(0, 0)
+    return time(9, 30)
+
+
 class Transaction(BaseModel):
     """Represents a single portfolio transaction."""
     date: date
@@ -30,6 +41,7 @@ class Transaction(BaseModel):
     ave_price: Optional[Decimal] = None
     source: Optional[str] = None
     comment: Optional[str] = None
+    executed_at: Optional[datetime] = None
 
     @field_validator("asset")
     @classmethod
@@ -85,7 +97,21 @@ class Transaction(BaseModel):
             if quantity is None:
                 raise ValueError("FIX action requires quantity (the correct total quantity)")
 
+        if self.executed_at is not None:
+            if self.executed_at.tzinfo is None:
+                self.executed_at = self.executed_at.replace(tzinfo=MARKET_TZ)
+            if self.executed_at.astimezone(MARKET_TZ).date() != self.date:
+                raise ValueError("executed_at must fall on the transaction date in US Eastern Time")
+
         return self
+
+    @property
+    def effective_executed_at(self) -> datetime:
+        """Return the ET execution timestamp, applying the asset default if absent."""
+        if self.executed_at is not None:
+            return self.executed_at.astimezone(MARKET_TZ)
+        default_time = default_transaction_time(self.asset, self.action)
+        return datetime.combine(self.date, default_time, tzinfo=MARKET_TZ)
 
 
 class Holding(BaseModel):

@@ -1,16 +1,18 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 import mimetypes
 import os
+import threading
 from datetime import date as date_type
-from datetime import datetime, timedelta
+from datetime import datetime, time as time_type, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,7 +23,7 @@ from . import repository
 from .cache_service import cache_service
 from .csv_parser import CSVParseError, parse_csv_content
 from .db import init_schema
-from .models import ActionType, Transaction
+from .models import ActionType, Transaction, default_transaction_time
 from .portfolio import Portfolio
 from .price_service import price_service
 from .simulator import run_simulation
@@ -104,22 +106,27 @@ async def service_worker():
 
 # Global portfolio instance (reloaded from CSV files)
 portfolio: Optional[Portfolio] = None
+_portfolio_generation = 0
 
 # API-level response cache
 _api_cache: dict[str, tuple[dict, datetime]] = {}
+_api_cache_lock = threading.Lock()
+_api_refreshing: set[str] = set()
 _API_TTL = {
     "holdings": timedelta(seconds=30),
     "summary": timedelta(seconds=30),
     "daily-pnl": timedelta(seconds=60),
-    "intraday": timedelta(seconds=30),
-    "intraday-hist": timedelta(hours=12),
+    "intraday": timedelta(seconds=60),
+    "intraday-hist": timedelta(days=30),
     "intraday-multiday": timedelta(seconds=60),
 }
 
 
 def _get_api_cache(key: str) -> Optional[dict]:
-    if key in _api_cache:
-        data, cached_at = _api_cache[key]
+    with _api_cache_lock:
+        entry = _api_cache.get(key)
+    if entry:
+        data, cached_at = entry
         ttl_key = key.split("_")[0]
         ttl = _API_TTL.get(ttl_key, timedelta(seconds=30))
         if datetime.now() - cached_at < ttl:
@@ -128,12 +135,76 @@ def _get_api_cache(key: str) -> Optional[dict]:
 
 
 def _set_api_cache(key: str, data: dict) -> None:
-    _api_cache[key] = (data, datetime.now())
+    with _api_cache_lock:
+        _api_cache[key] = (data, datetime.now())
+
+
+def _get_stale_api_cache(key: str, max_age: timedelta) -> Optional[dict]:
+    """Return an expired cache entry when it is still useful as a fast fallback."""
+    with _api_cache_lock:
+        entry = _api_cache.get(key)
+    if not entry:
+        return None
+    data, cached_at = entry
+    return data if datetime.now() - cached_at < max_age else None
+
+
+def _clear_api_cache() -> None:
+    with _api_cache_lock:
+        _api_cache.clear()
+
+
+def _refresh_intraday_cache(
+    cache_key: str, target_date: date_type, interval: str, generation: int
+) -> None:
+    """Refresh one intraday response after a stale response has been sent."""
+    try:
+        active_portfolio = portfolio
+        if active_portfolio is None:
+            return
+        if target_date == market_today():
+            data = active_portfolio.get_intraday_values(interval=interval)
+        else:
+            data = active_portfolio.get_intraday_values_for_date(
+                target_date, interval=interval
+            )
+        if generation == _portfolio_generation:
+            _set_api_cache(
+                cache_key, {
+                    "intraday": data,
+                    "date": target_date.isoformat(),
+                    "cache_status": "fresh",
+                }
+            )
+    except Exception:
+        logger.exception("Background intraday refresh failed for %s", cache_key)
+    finally:
+        with _api_cache_lock:
+            _api_refreshing.discard(cache_key)
+
+
+def _queue_intraday_refresh(
+    background_tasks: BackgroundTasks,
+    cache_key: str,
+    target_date: date_type,
+    interval: str,
+) -> None:
+    with _api_cache_lock:
+        if cache_key in _api_refreshing:
+            return
+        _api_refreshing.add(cache_key)
+    background_tasks.add_task(
+        _refresh_intraday_cache,
+        cache_key,
+        target_date,
+        interval,
+        _portfolio_generation,
+    )
 
 
 def load_portfolio() -> Portfolio:
     """Load portfolio from all transactions stored in Postgres."""
-    global portfolio
+    global portfolio, _portfolio_generation
     portfolio = Portfolio()
 
     transactions = repository.get_all_transactions()
@@ -142,6 +213,8 @@ def load_portfolio() -> Portfolio:
         logger.info(f"Loaded {len(transactions)} transactions from database")
     else:
         logger.info("No transactions found in database")
+
+    _portfolio_generation += 1
 
     return portfolio
 
@@ -152,7 +225,13 @@ async def startup_event():
     if not API_TOKEN:
         logger.warning("API_TOKEN not set — authentication is DISABLED (dev mode).")
     init_schema()
-    load_portfolio()
+    loaded = load_portfolio()
+    symbols = [
+        holding.symbol
+        for holding in loaded.get_holdings(fetch_prices=False)
+        if holding.symbol != "CASH"
+    ]
+    price_service.prime_intraday_cache_from_db(symbols, interval="1m")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -431,7 +510,7 @@ async def get_sold_assets():
 def _refresh_after_write() -> None:
     """Reload the portfolio and drop the API response cache after a DB write."""
     load_portfolio()
-    _api_cache.clear()
+    _clear_api_cache()
 
 
 class TransactionCreate(BaseModel):
@@ -445,6 +524,7 @@ class TransactionCreate(BaseModel):
     source: Optional[str] = None
     comment: Optional[str] = None
     broker: Optional[str] = None
+    transaction_time: Optional[time_type] = None
 
 
 @app.post("/api/transactions")
@@ -452,6 +532,9 @@ async def create_transaction(txn_in: TransactionCreate):
     """Add a single transaction to the database."""
     try:
         # Reuse Transaction's validation + missing-value derivation.
+        execution_time = txn_in.transaction_time or default_transaction_time(
+            txn_in.asset, txn_in.action
+        )
         txn = Transaction(
             date=txn_in.date,
             asset=txn_in.asset,
@@ -461,6 +544,9 @@ async def create_transaction(txn_in: TransactionCreate):
             ave_price=txn_in.ave_price,
             source=txn_in.source,
             comment=txn_in.comment,
+            executed_at=datetime.combine(
+                txn_in.date, execution_time, tzinfo=MARKET_TZ
+            ),
         )
     except ValidationError as e:
         msgs = "; ".join(err.get("msg", "invalid") for err in e.errors())
@@ -471,7 +557,10 @@ async def create_transaction(txn_in: TransactionCreate):
         _refresh_after_write()
         return {
             "id": new_id,
-            "message": f"Added {txn.action.value} {txn.asset} on {txn.date.isoformat()}",
+            "message": (
+                f"Added {txn.action.value} {txn.asset} on "
+                f"{txn.effective_executed_at.strftime('%Y-%m-%d %H:%M')} ET"
+            ),
         }
     except Exception as e:
         logger.error(f"Error adding transaction: {e}")
@@ -511,12 +600,16 @@ async def upload_csv(file: UploadFile = File(...)):
 
 
 @app.post("/api/reload")
-async def reload_portfolio(clear_history_cache: bool = Query(False, description="Also clear historical data cache")):
-    """Reload portfolio from CSV files."""
+async def reload_portfolio(
+    clear_history_cache: bool = Query(False, description="Also clear historical data cache"),
+    clear_price_cache: bool = Query(False, description="Force a fresh market-data fetch"),
+):
+    """Reload portfolio transactions while preserving market caches by default."""
     try:
         load_portfolio()
-        price_service.clear_cache()
-        _api_cache.clear()
+        if clear_price_cache:
+            price_service.clear_cache()
+        _clear_api_cache()
         if clear_history_cache:
             cache_service.clear_cache()
         return {"message": "Portfolio reloaded successfully"}
@@ -573,7 +666,7 @@ async def get_transactions(
                 if t.asset == symbol.upper()
                 and (action_filter is None or t.action.value in action_filter)
             ],
-            key=lambda t: t.date,
+            key=lambda t: t.effective_executed_at,
             reverse=True,
         )[:limit]
         result = {
@@ -581,6 +674,8 @@ async def get_transactions(
             "transactions": [
                 {
                     "date": t.date.isoformat(),
+                    "executed_at": t.effective_executed_at.isoformat(),
+                    "transaction_time": t.effective_executed_at.strftime("%H:%M"),
                     "action": t.action.value,
                     "quantity": float(t.quantity) if t.quantity is not None else None,
                     "ave_price": float(t.ave_price) if t.ave_price is not None else None,
@@ -615,6 +710,7 @@ async def list_files():
 
 @app.get("/api/intraday")
 async def get_intraday(
+    background_tasks: BackgroundTasks,
     interval: str = Query("5m", description="Data interval (1m, 5m, 15m, 30m, 60m)"),
     date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (defaults to today)"),
 ):
@@ -642,17 +738,33 @@ async def get_intraday(
     if target_date < today:
         cache_key = f"intraday-hist_{target_date.isoformat()}_{interval}"
     else:
-        cache_key = f"intraday_{interval}"
+        cache_key = f"intraday_{target_date.isoformat()}_{interval}"
     cached = _get_api_cache(cache_key)
     if cached is not None:
         return cached
 
+    if target_date == today:
+        stale = _get_stale_api_cache(cache_key, timedelta(minutes=15))
+        if stale is not None:
+            _queue_intraday_refresh(
+                background_tasks, cache_key, target_date, interval
+            )
+            return {**stale, "cache_status": "stale-refreshing"}
+
     try:
         if target_date == today:
-            intraday_data = portfolio.get_intraday_values(interval=interval)
+            intraday_data = await asyncio.to_thread(
+                portfolio.get_intraday_values, interval
+            )
         else:
-            intraday_data = portfolio.get_intraday_values_for_date(target_date, interval=interval)
-        result = {"intraday": intraday_data, "date": target_date.isoformat()}
+            intraday_data = await asyncio.to_thread(
+                portfolio.get_intraday_values_for_date, target_date, interval
+            )
+        result = {
+            "intraday": intraday_data,
+            "date": target_date.isoformat(),
+            "cache_status": "fresh",
+        }
         _set_api_cache(cache_key, result)
         return result
     except Exception as e:
@@ -749,6 +861,7 @@ async def clear_cache():
     try:
         cache_service.clear_cache()
         price_service.clear_cache()
+        _clear_api_cache()
         return {"message": "Cache cleared successfully"}
     except Exception as e:
         logger.error(f"Error clearing cache: {e}")

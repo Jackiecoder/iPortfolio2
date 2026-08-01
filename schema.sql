@@ -18,8 +18,19 @@ CREATE TABLE IF NOT EXISTS transactions (
     broker      TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ;
+UPDATE transactions
+SET executed_at = (
+    CASE
+        WHEN asset LIKE '%-USD' OR action = 'CASH' THEN date + TIME '00:00'
+        ELSE date + TIME '09:30'
+    END
+) AT TIME ZONE 'America/New_York'
+WHERE executed_at IS NULL;
+ALTER TABLE transactions ALTER COLUMN executed_at SET NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_transactions_asset ON transactions (asset);
 CREATE INDEX IF NOT EXISTS idx_transactions_date  ON transactions (date);
+CREATE INDEX IF NOT EXISTS idx_transactions_executed_at ON transactions (executed_at);
 
 -- Target allocation percentages (replaces data/targets.json).
 CREATE TABLE IF NOT EXISTS targets (

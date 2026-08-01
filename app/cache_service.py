@@ -237,12 +237,25 @@ class CacheService:
     def save_intraday_prices(
         self, symbol: str, date_str: str, interval: str, prices: list[dict]
     ) -> int:
-        """Persist intraday bars for a completed trading day. Returns rows saved."""
+        """Persist only new or changed intraday bars and return rows written."""
         if not prices:
             return 0
         d = date.fromisoformat(date_str)
-        rows = [(symbol, d, p["time"], interval, p["price"]) for p in prices]
+        latest_by_time = {p["time"]: p["price"] for p in prices}
         with get_pool().connection() as conn:
+            existing_rows = conn.execute(
+                """SELECT time, price FROM intraday_prices
+                   WHERE symbol = %s AND date = %s AND interval = %s""",
+                (symbol, d, interval),
+            ).fetchall()
+            existing = {row[0]: row[1] for row in existing_rows}
+            rows = [
+                (symbol, d, bar_time, interval, price)
+                for bar_time, price in latest_by_time.items()
+                if existing.get(bar_time) != price
+            ]
+            if not rows:
+                return 0
             with conn.cursor() as cur:
                 cur.executemany(
                     """INSERT INTO intraday_prices (symbol, date, time, interval, price)
@@ -252,7 +265,10 @@ class CacheService:
                     rows,
                 )
             conn.commit()
-        logger.info(f"Saved {len(rows)} intraday bars for {symbol} {date_str} [{interval}]")
+        logger.info(
+            "Saved %s new/changed intraday bars for %s %s [%s]",
+            len(rows), symbol, date_str, interval,
+        )
         return len(rows)
 
     def get_intraday_cached_dates(self, symbol: str, interval: str) -> list[str]:
