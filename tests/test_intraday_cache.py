@@ -129,6 +129,54 @@ class PriceCacheTests(unittest.TestCase):
 
         self.assertEqual(set(result), {"AAPL", "MSFT", "BTC-USD"})
 
+    def test_incomplete_cached_crypto_day_is_refetched_and_saved(self):
+        service = PriceService()
+        today = datetime(2026, 8, 3).date()
+        incomplete = [
+            {"time": "00:00", "date": "2026-08-02", "price": Decimal("100")},
+            {"time": "19:59", "date": "2026-08-02", "price": Decimal("101")},
+        ]
+        completed = [
+            {"time": "00:00", "date": "2026-08-02", "price": Decimal("100")},
+            {"time": "23:59", "date": "2026-08-02", "price": Decimal("102")},
+        ]
+
+        with (
+            patch("app.price_service._market_today", return_value=today),
+            patch.object(cache_service, "get_intraday_prices", return_value=incomplete),
+            patch.object(
+                service, "_fetch_intraday_from_yfinance", return_value=completed
+            ) as fetch,
+            patch.object(service, "_save_intraday_if_valid") as save,
+        ):
+            result = service.get_intraday_prices("BTC-USD", "1m", 2)
+
+        self.assertEqual(result, completed)
+        fetch.assert_called_once_with("BTC-USD", "1m", 2, today, True)
+        save.assert_called_once_with(
+            "BTC-USD", "2026-08-02", "1m", completed, overwrite=True
+        )
+
+    def test_complete_cached_crypto_day_does_not_expand_yfinance_range(self):
+        service = PriceService()
+        today = datetime(2026, 8, 3).date()
+        completed = [
+            {"time": "00:00", "date": "2026-08-02", "price": Decimal("100")},
+            {"time": "23:59", "date": "2026-08-02", "price": Decimal("102")},
+        ]
+
+        with (
+            patch("app.price_service._market_today", return_value=today),
+            patch.object(cache_service, "get_intraday_prices", return_value=completed),
+            patch.object(
+                service, "_fetch_intraday_from_yfinance", return_value=[]
+            ) as fetch,
+        ):
+            result = service.get_intraday_prices("BTC-USD", "1m", 2)
+
+        self.assertEqual(result, completed)
+        fetch.assert_called_once_with("BTC-USD", "1m", 1, today, True)
+
     def test_prime_cache_uses_shared_postgres_bars(self):
         service = PriceService()
         rows = [

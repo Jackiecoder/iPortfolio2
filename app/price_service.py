@@ -645,6 +645,25 @@ class PriceService:
         days_ago = (_market_today() - date.fromisoformat(date_str)).days
         return days_ago < self._yf_window_days(interval)
 
+    @staticmethod
+    def _cached_crypto_day_is_complete(prices: list[dict], interval: str) -> bool:
+        """Return whether cached 24-hour data reaches the day's final bar."""
+        if not prices or not interval.endswith("m"):
+            return False
+
+        try:
+            interval_minutes = int(interval[:-1])
+            latest_minutes = max(
+                int(price["time"].split(":", 1)[0]) * 60
+                + int(price["time"].split(":", 1)[1])
+                for price in prices
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        final_bar_minutes = (24 * 60) - interval_minutes
+        return latest_minutes >= final_bar_minutes
+
     def get_intraday_prices(
         self,
         symbol: str,
@@ -702,13 +721,22 @@ class PriceService:
                 # Today — always fetch live (never cached)
                 needs_yf_dates.append(check_date)
             elif self._is_within_yf_window(check_str, interval):
-                # Completed day within window: prefer DB if we already have it,
-                # otherwise fall back to yfinance (and save the result)
+                # A live crypto day may have been persisted before midnight. Do not
+                # treat that partial snapshot as a complete historical day.
                 cached = cache_service.get_intraday_prices(symbol, check_str, interval)
-                if cached:
+                cache_is_complete = cached and (
+                    not is_crypto
+                    or self._cached_crypto_day_is_complete(cached, interval)
+                )
+                if cache_is_complete:
                     db_only_prices.extend(cached)
                     logger.info(f"Intraday DB hit (within window): {symbol} {check_str} [{interval}]")
                 else:
+                    if cached:
+                        logger.info(
+                            "Incomplete intraday DB cache: %s %s [%s], refreshing from yfinance",
+                            symbol, check_str, interval,
+                        )
                     needs_yf_dates.append(check_date)
             else:
                 # Beyond yfinance window — DB only
