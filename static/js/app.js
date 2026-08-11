@@ -4098,6 +4098,23 @@ async function addTransaction(payload) {
     const assetOther = document.getElementById('assetOther');
     const brokerSelect = document.getElementById('brokerSelect');
     const brokerOther = document.getElementById('brokerOther');
+    const recordModeBtn = document.getElementById('txnRecordModeBtn');
+    const previewModeBtn = document.getElementById('txnPreviewModeBtn');
+    const previewPanel = document.getElementById('tradePreviewPanel');
+    const previewEmpty = document.getElementById('tradePreviewEmpty');
+    const previewResults = document.getElementById('tradePreviewResults');
+    const previewBody = document.getElementById('tradePreviewBody');
+    const previewContinueBtn = document.getElementById('tradePreviewContinueBtn');
+    const cancelBtn = document.getElementById('addTxnCancelBtn');
+    const modalTitle = document.getElementById('addTxnModalLabel');
+    const tradeInputs = {
+        quantity: form.elements['quantity'],
+        price: form.elements['ave_price'],
+        amount: form.elements['amount'],
+    };
+    let transactionMode = 'record';
+    let manualFieldOrder = [];
+    let derivedField = null;
 
     // Distinct values of a transaction field, most-recent first (txns are newest-first).
     function recentDistinct(txns, key, { upper = false } = {}) {
@@ -4129,8 +4146,19 @@ async function addTransaction(payload) {
         if (!txns || !txns.length) {
             try { txns = await fetchAllTransactions(); } catch (e) { txns = []; }
         }
-        fillDropdown(assetSelect, assetOther, recentDistinct(txns, 'asset', { upper: true }), { placeholder: 'Select…' });
+        const heldSymbols = (holdingsData || [])
+            .map(holding => (holding.symbol || '').trim().toUpperCase())
+            .filter(symbol => symbol && symbol !== 'CASH');
+        const recentSymbols = recentDistinct(txns, 'asset', { upper: true })
+            .filter(symbol => symbol !== 'CASH');
+        fillDropdown(
+            assetSelect,
+            assetOther,
+            [...new Set([...heldSymbols, ...recentSymbols])],
+            { placeholder: 'Select…' },
+        );
         fillDropdown(brokerSelect, brokerOther, recentDistinct(txns, 'broker'), { placeholder: null });
+        renderTradePreview();
     }
 
     // Reveal the free-text input only when "Other…" is chosen.
@@ -4140,26 +4168,285 @@ async function addTransaction(payload) {
             const isOther = selectEl.value === '__other__';
             otherEl.classList.toggle('d-none', !isOther);
             if (isOther) otherEl.focus();
+            if (selectEl === assetSelect) renderTradePreview();
         });
     };
     wireOther(assetSelect, assetOther);
     wireOther(brokerSelect, brokerOther);
+
+    function showField(id, visible) {
+        const element = document.getElementById(id);
+        if (element) element.classList.toggle('d-none', !visible);
+    }
+
+    function selectedTradeSymbol() {
+        if (!assetSelect) return '';
+        if (assetSelect.value === '__other__') {
+            return (assetOther.value || '').trim().toUpperCase();
+        }
+        return (assetSelect.value || '').trim().toUpperCase();
+    }
+
+    function positiveInputValue(name) {
+        const value = Number(tradeInputs[name].value);
+        return Number.isFinite(value) && value > 0 ? value : null;
+    }
+
+    function tradeInputValues() {
+        return {
+            quantity: positiveInputValue('quantity'),
+            price: positiveInputValue('price'),
+            amount: positiveInputValue('amount'),
+        };
+    }
+
+    function formatDerivedInput(name, value) {
+        const decimals = name === 'amount' ? 2 : (name === 'price' ? 6 : 8);
+        return Number(value.toFixed(decimals)).toString();
+    }
+
+    function markDerivedField(name) {
+        Object.entries(tradeInputs).forEach(([fieldName, input]) => {
+            const isDerived = fieldName === name;
+            input.classList.toggle('trade-calculated', isDerived);
+            const badge = form.querySelector(`[data-derived-for="${fieldName}"]`);
+            if (badge) badge.classList.toggle('d-none', !isDerived);
+        });
+    }
+
+    function clearDerivedField({ clearValue = false } = {}) {
+        if (clearValue && derivedField && tradeInputs[derivedField]) {
+            tradeInputs[derivedField].value = '';
+        }
+        derivedField = null;
+        markDerivedField(null);
+    }
+
+    function deriveTradeValue(changedField) {
+        if (changedField === derivedField) derivedField = null;
+        manualFieldOrder = manualFieldOrder.filter(name => name !== changedField);
+        if (positiveInputValue(changedField) != null) manualFieldOrder.push(changedField);
+        manualFieldOrder = manualFieldOrder.filter(
+            name => name !== derivedField && positiveInputValue(name) != null,
+        );
+
+        if (manualFieldOrder.length < 2) {
+            clearDerivedField({ clearValue: true });
+            renderTradePreview();
+            return;
+        }
+
+        const sourceFields = manualFieldOrder.slice(-2);
+        const targetField = TradePreview.FIELD_NAMES.find(name => !sourceFields.includes(name));
+        const completed = TradePreview.completeTrade(tradeInputValues(), targetField);
+        if (!completed) {
+            clearDerivedField({ clearValue: true });
+            renderTradePreview();
+            return;
+        }
+
+        derivedField = targetField;
+        tradeInputs[targetField].value = formatDerivedInput(targetField, completed[targetField]);
+        manualFieldOrder = sourceFields;
+        markDerivedField(targetField);
+        renderTradePreview();
+    }
+
+    function currentCompletedTrade() {
+        const values = tradeInputValues();
+        if (TradePreview.FIELD_NAMES.every(name => values[name] != null)) return values;
+        if (!derivedField) return null;
+        return TradePreview.completeTrade(values, derivedField);
+    }
+
+    function formatTradeQuantity(value) {
+        if (value == null) return '--';
+        return new Intl.NumberFormat('en-US', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 4,
+        }).format(value);
+    }
+
+    function signedNumber(value) {
+        if (value == null) return '--';
+        const prefix = value > 0 ? '+' : '';
+        return `${prefix}${formatTradeQuantity(value)}`;
+    }
+
+    function signedCurrency(value) {
+        if (value == null) return '--';
+        if (anonymousMode) return '***';
+        const prefix = value > 0 ? '+' : '';
+        return `${prefix}${formatCurrencyAlways(value)}`;
+    }
+
+    function signedPrice(symbol, value) {
+        if (value == null) return '--';
+        if (anonymousMode) return '***';
+        const prefix = value > 0 ? '+' : '';
+        return `${prefix}${formatPrice(symbol, value, true)}`;
+    }
+
+    function metricTone(value) {
+        if (value == null || value === 0) return '';
+        return value > 0 ? 'text-success' : 'text-danger';
+    }
+
+    function renderTradePreview() {
+        if (transactionMode !== 'preview') return;
+
+        const symbol = selectedTradeSymbol();
+        const trade = currentCompletedTrade();
+        const status = document.getElementById('tradePreviewStatus');
+        const symbolElement = document.getElementById('tradePreviewSymbol');
+        const priceElement = document.getElementById('tradePreviewCurrentPrice');
+        symbolElement.textContent = symbol ? `${displaySymbol(symbol)} position impact` : 'Position impact';
+
+        if (!symbol || !trade) {
+            priceElement.textContent = '';
+            status.textContent = 'Enter any two trade values';
+            previewEmpty.classList.remove('d-none');
+            previewResults.classList.add('d-none');
+            previewContinueBtn.disabled = true;
+            return;
+        }
+
+        const holding = (holdingsData || []).find(item => item.symbol === symbol) || {
+            symbol,
+            quantity: 0,
+            cost_basis: 0,
+            current_price: null,
+            market_value: null,
+        };
+        const impact = TradePreview.calculatePositionImpact(holding, trade);
+        priceElement.textContent = impact.currentPrice == null
+            ? 'Current price unavailable'
+            : `Current ${formatPrice(symbol, impact.currentPrice, true)}`;
+        status.textContent = `${formatTradeQuantity(trade.quantity)} shares at ${formatPrice(symbol, trade.price, true)} · ${formatCurrencyAlways(trade.amount)}`;
+
+        const rows = [
+            {
+                label: 'Shares',
+                before: formatTradeQuantity(impact.before.quantity),
+                after: formatTradeQuantity(impact.after.quantity),
+                change: signedNumber(impact.change.quantity),
+            },
+            {
+                label: 'Total invested',
+                before: formatCurrency(impact.before.costBasis),
+                after: formatCurrency(impact.after.costBasis),
+                change: signedCurrency(impact.change.costBasis),
+            },
+            {
+                label: 'Average cost',
+                before: formatPrice(symbol, impact.before.avgCost),
+                after: formatPrice(symbol, impact.after.avgCost),
+                change: signedPrice(symbol, impact.change.avgCost),
+            },
+            {
+                label: 'Market value',
+                before: formatCurrency(impact.before.marketValue),
+                after: formatCurrency(impact.after.marketValue),
+                change: signedCurrency(impact.change.marketValue),
+            },
+            {
+                label: 'Unrealized P&L',
+                before: formatCurrency(impact.before.unrealizedPnl),
+                after: formatCurrency(impact.after.unrealizedPnl),
+                change: signedCurrency(impact.change.unrealizedPnl),
+                beforeTone: metricTone(impact.before.unrealizedPnl),
+                afterTone: metricTone(impact.after.unrealizedPnl),
+                changeTone: metricTone(impact.change.unrealizedPnl),
+            },
+            {
+                label: 'Unrealized return',
+                before: formatPercent(impact.before.pnlPercent),
+                after: formatPercent(impact.after.pnlPercent),
+                change: impact.change.pnlPercent == null
+                    ? '--'
+                    : `${impact.change.pnlPercent > 0 ? '+' : ''}${formatNumber(impact.change.pnlPercent)} pp`,
+                beforeTone: metricTone(impact.before.pnlPercent),
+                afterTone: metricTone(impact.after.pnlPercent),
+                changeTone: metricTone(impact.change.pnlPercent),
+            },
+        ];
+
+        previewBody.innerHTML = rows.map(row => `
+            <tr>
+                <td>${row.label}</td>
+                <td class="text-end ${row.beforeTone || ''}">${row.before}</td>
+                <td class="text-end ${row.afterTone || ''}"><strong>${row.after}</strong></td>
+                <td class="text-end ${row.changeTone || ''}">${row.change}</td>
+            </tr>
+        `).join('');
+        previewEmpty.classList.add('d-none');
+        previewResults.classList.remove('d-none');
+        previewContinueBtn.disabled = false;
+    }
+
+    function setTransactionMode(mode) {
+        transactionMode = mode === 'preview' ? 'preview' : 'record';
+        const isPreview = transactionMode === 'preview';
+
+        recordModeBtn.classList.toggle('btn-primary', !isPreview);
+        recordModeBtn.classList.toggle('active', !isPreview);
+        recordModeBtn.classList.toggle('btn-outline-secondary', isPreview);
+        recordModeBtn.setAttribute('aria-pressed', String(!isPreview));
+        previewModeBtn.classList.toggle('btn-primary', isPreview);
+        previewModeBtn.classList.toggle('active', isPreview);
+        previewModeBtn.classList.toggle('btn-outline-secondary', !isPreview);
+        previewModeBtn.setAttribute('aria-pressed', String(isPreview));
+
+        ['fldDate', 'fldTime', 'fldAction', 'fldBroker', 'fldSource', 'fldComment']
+            .forEach(id => showField(id, !isPreview));
+        showField('tradePreviewNotice', isPreview);
+        previewPanel.classList.toggle('d-none', !isPreview);
+        submitBtn.classList.toggle('d-none', isPreview);
+        previewContinueBtn.classList.toggle('d-none', !isPreview);
+        cancelBtn.textContent = isPreview ? 'Close' : 'Cancel';
+        modalTitle.innerHTML = isPreview
+            ? '<i class="bi bi-calculator me-1"></i>Trade Preview'
+            : '<i class="bi bi-plus-lg me-1"></i>Add Transaction';
+
+        const symbolField = document.getElementById('fldSymbol');
+        symbolField.classList.toggle('col-6', !isPreview);
+        symbolField.classList.toggle('col-12', isPreview);
+        document.getElementById('txnQuantityLabel').textContent = isPreview ? 'Shares' : 'Quantity';
+        document.getElementById('txnPriceLabel').textContent = isPreview ? 'Buy Price' : 'Avg Price';
+        document.getElementById('txnAmountLabel').textContent = isPreview ? 'Trade Cost' : 'Amount';
+        document.querySelector('#fldHelp .form-text').textContent = isPreview
+            ? 'Enter any two of Shares, Buy Price, and Trade Cost. The third is calculated automatically.'
+            : 'BUY/SELL: fill any 2 of Quantity / Avg Price / Amount (the third is derived). DIV / FEE / CASH need Amount. GIFT / GAS / FIX need Quantity.';
+
+        if (isPreview) {
+            actionSelect.value = 'BUY';
+            showField('fldSymbol', true);
+            showField('fldQuantity', true);
+            showField('fldAvgPrice', true);
+            showField('fldAmount', true);
+            showField('fldHelp', true);
+            assetSelect.required = true;
+            manualFieldOrder = TradePreview.FIELD_NAMES.filter(name => positiveInputValue(name) != null);
+            if (manualFieldOrder.length === 2) deriveTradeValue(manualFieldOrder[1]);
+            else renderTradePreview();
+        } else {
+            clearDerivedField();
+            applyActionLayout(actionSelect ? actionSelect.value : 'BUY');
+        }
+    }
 
     // Show/hide fields based on the action. CASH is a cash-balance snapshot, so
     // it only needs an Amount (asset is fixed to "CASH") — hide symbol, broker,
     // quantity and price to avoid confusion.
     const actionSelect = form.elements['action'];
     function applyActionLayout(action) {
+        if (transactionMode === 'preview') return;
         const isCash = action === 'CASH';
-        const show = (id, visible) => {
-            const el = document.getElementById(id);
-            if (el) el.classList.toggle('d-none', !visible);
-        };
-        show('fldSymbol', !isCash);
-        show('fldBroker', !isCash);
-        show('fldQuantity', !isCash);
-        show('fldAvgPrice', !isCash);
-        show('fldHelp', !isCash);
+        showField('fldSymbol', !isCash);
+        showField('fldBroker', !isCash);
+        showField('fldQuantity', !isCash);
+        showField('fldAvgPrice', !isCash);
+        showField('fldHelp', !isCash);
         // A hidden required <select> would block submit, so drop required for CASH.
         if (assetSelect) assetSelect.required = !isCash;
     }
@@ -4167,9 +4454,24 @@ async function addTransaction(payload) {
         actionSelect.addEventListener('change', () => applyActionLayout(actionSelect.value));
     }
 
+    recordModeBtn.addEventListener('click', () => setTransactionMode('record'));
+    previewModeBtn.addEventListener('click', () => setTransactionMode('preview'));
+    Object.entries(tradeInputs).forEach(([name, input]) => {
+        input.addEventListener('input', () => {
+            if (transactionMode === 'preview') deriveTradeValue(name);
+        });
+    });
+    assetOther.addEventListener('input', renderTradePreview);
+    previewContinueBtn.addEventListener('click', () => {
+        if (!currentCompletedTrade() || !selectedTradeSymbol()) return;
+        actionSelect.value = 'BUY';
+        setTransactionMode('record');
+    });
+
     // Default the date to today whenever the modal opens; refresh the dropdowns.
     modalEl.addEventListener('show.bs.modal', () => {
         errBox.classList.add('d-none');
+        setTransactionMode('record');
         const dateInput = form.elements['date'];
         if (!dateInput.value) dateInput.value = marketTodayStr();
         const timeInput = form.elements['transaction_time'];
@@ -4181,6 +4483,10 @@ async function addTransaction(payload) {
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         errBox.classList.add('d-none');
+        if (transactionMode === 'preview') {
+            renderTradePreview();
+            return;
+        }
 
         const fd = new FormData(form);
         const num = (v) => (v === '' || v == null) ? null : Number(v);
