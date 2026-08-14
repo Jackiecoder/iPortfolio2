@@ -2016,6 +2016,25 @@ h1, h2, h3, h4, h5, h6,
     min-height: 134px;
     overflow: hidden;
     position: relative;
+    cursor: pointer;
+    transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.portfolio-brief:hover,
+.portfolio-brief:focus-visible {
+    border-color: rgba(99, 228, 180, 0.42);
+    box-shadow: 0 22px 56px rgba(11, 19, 36, 0.2), 0 0 0 1px rgba(99, 228, 180, 0.12);
+    outline: none;
+    transform: translateY(-1px);
+}
+
+.portfolio-brief:focus-visible {
+    box-shadow: 0 22px 56px rgba(11, 19, 36, 0.2), 0 0 0 3px rgba(99, 228, 180, 0.38);
+}
+
+.portfolio-brief.is-refreshing {
+    cursor: progress;
+    transform: none;
 }
 
 .portfolio-brief::after {
@@ -2109,6 +2128,47 @@ h1, h2, h3, h4, h5, h6,
     stroke: var(--ink-950);
     stroke-width: 2;
     vector-effect: non-scaling-stroke;
+}
+
+.brief-refresh-cue {
+    align-items: center;
+    background: rgba(11, 19, 36, 0.72);
+    border: 1px solid rgba(99, 228, 180, 0.22);
+    border-radius: 999px;
+    bottom: 1rem;
+    color: #b9c5d7;
+    display: inline-flex;
+    font-family: var(--data-font);
+    font-size: 0.58rem;
+    font-weight: 600;
+    gap: 0.38rem;
+    letter-spacing: 0.08em;
+    padding: 0.4rem 0.62rem;
+    position: absolute;
+    right: 1.25rem;
+    text-transform: uppercase;
+    transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+    z-index: 3;
+}
+
+.portfolio-brief:hover .brief-refresh-cue,
+.portfolio-brief:focus-visible .brief-refresh-cue {
+    background: rgba(79, 224, 170, 0.14);
+    border-color: rgba(99, 228, 180, 0.5);
+    color: #d8fff0;
+}
+
+.portfolio-brief.is-refreshing .brief-refresh-cue i {
+    animation: spin 1s linear infinite;
+}
+
+.portfolio-brief.is-refreshing .brief-refresh-cue span {
+    font-size: 0;
+}
+
+.portfolio-brief.is-refreshing .brief-refresh-cue span::after {
+    content: "Refreshing";
+    font-size: 0.58rem;
 }
 
 @keyframes live-pulse {
@@ -2765,6 +2825,7 @@ h1, h2, h3, h4, h5, h6,
     .asset-trajectory { inset: auto 0 0 34%; min-height: 130px; position: absolute; width: 66%; }
     .asset-trajectory::before { display: none; }
     .portfolio-brief::after { inset: 0 30% 0 auto; width: 22%; }
+    .brief-refresh-cue { bottom: 0.85rem; right: 0.85rem; }
 
     .summary-command-bar {
         align-items: flex-start !important;
@@ -2840,6 +2901,7 @@ h1, h2, h3, h4, h5, h6,
     .portfolio-brief { min-height: 152px; }
     .portfolio-brief p { font-size: 0.76rem; max-width: 14rem; }
     .asset-trajectory { left: 42%; width: 58%; }
+    .brief-refresh-cue span { display: none; }
 
     .tracker-tabs .nav-link i { display: none; }
     .tracker-tabs .nav-link { padding-inline: 0.62rem; }

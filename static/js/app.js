@@ -4029,12 +4029,31 @@ async function refreshData() {
 }
 
 // Event handlers
-document.getElementById('refreshBtn').addEventListener('click', async () => {
+let manualRefreshInProgress = false;
+
+function setManualRefreshState(isRefreshing) {
     const btn = document.getElementById('refreshBtn');
-    btn.disabled = true;
-    btn.setAttribute('aria-label', 'Refreshing data');
-    btn.setAttribute('title', 'Refreshing data');
-    btn.innerHTML = '<i class="bi bi-arrow-clockwise spin" aria-hidden="true"></i><span class="refresh-label">Refreshing</span>';
+    const card = document.getElementById('portfolioRefreshCard');
+
+    btn.disabled = isRefreshing;
+    btn.setAttribute('aria-label', isRefreshing ? 'Refreshing data' : 'Refresh portfolio data');
+    btn.setAttribute('title', isRefreshing ? 'Refreshing data' : 'Pull fresh market data and refresh the portfolio');
+    btn.innerHTML = isRefreshing
+        ? '<i class="bi bi-arrow-clockwise spin" aria-hidden="true"></i><span class="refresh-label">Refreshing</span>'
+        : '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>';
+
+    card.classList.toggle('is-refreshing', isRefreshing);
+    card.setAttribute('aria-busy', isRefreshing ? 'true' : 'false');
+    card.setAttribute('aria-disabled', isRefreshing ? 'true' : 'false');
+    card.setAttribute('aria-label', isRefreshing ? 'Refreshing portfolio market data' : 'Refresh portfolio market data');
+    card.setAttribute('title', isRefreshing ? 'Refreshing portfolio market data' : 'Click to pull fresh market data and refresh the portfolio');
+}
+
+async function runManualRefresh() {
+    if (manualRefreshInProgress) return;
+
+    manualRefreshInProgress = true;
+    setManualRefreshState(true);
 
     try {
         await reloadPortfolio();
@@ -4050,10 +4069,19 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
     } catch (error) {
         showToast('Error refreshing data', 'error');
     } finally {
-        btn.disabled = false;
-        btn.setAttribute('aria-label', 'Refresh portfolio data');
-        btn.setAttribute('title', 'Pull fresh market data and refresh the portfolio');
-        btn.innerHTML = '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>';
+        manualRefreshInProgress = false;
+        setManualRefreshState(false);
+    }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', runManualRefresh);
+
+const portfolioRefreshCard = document.getElementById('portfolioRefreshCard');
+portfolioRefreshCard.addEventListener('click', runManualRefresh);
+portfolioRefreshCard.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        runManualRefresh();
     }
 });
 
