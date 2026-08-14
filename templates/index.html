@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Portfolio Tracker</title>
+    <title>iPortfolio · Personal Capital Desk</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <!-- PWA: installable as an app -->
     <link rel="manifest" href="/static/manifest.webmanifest">
-    <meta name="theme-color" content="#10b981">
+    <meta name="theme-color" content="#0b1324">
     <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -17,8 +17,12 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Editorial display + highly legible data typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=28">
+    <link rel="stylesheet" href="/static/css/style.css?v=36">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -26,13 +30,22 @@
 </head>
 <body>
     <!-- Navbar -->
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-top shadow-sm">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-top app-navbar">
         <div class="container-fluid">
-            <a class="navbar-brand" href="#">
-                <i class="bi bi-graph-up-arrow me-2"></i>Portfolio Tracker
+            <a class="navbar-brand" href="#" aria-label="iPortfolio home">
+                <span class="brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 36 36" role="img">
+                        <path d="M6 25.5 12.5 19l5 3.5L29.5 10" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"/>
+                        <circle cx="6" cy="25.5" r="2.5"/><circle cx="17.5" cy="22.5" r="2.5"/><circle cx="29.5" cy="10" r="2.5"/>
+                    </svg>
+                </span>
+                <span class="brand-copy">
+                    <span class="brand-name">Live portfolio</span>
+                    <span class="brand-tagline">iPortfolio · Personal capital desk</span>
+                </span>
             </a>
             <!-- Page toggle -->
-            <div class="d-flex gap-1 mx-auto">
+            <div class="d-flex gap-1 mx-auto page-switcher" aria-label="Primary navigation">
                 <button id="pageTrackerBtn" class="btn btn-light btn-sm px-3">
                     <i class="bi bi-briefcase me-1"></i>Tracker
                 </button>
@@ -43,7 +56,7 @@
                     <i class="bi bi-clipboard-data me-1"></i>Analysis
                 </button>
             </div>
-            <div class="d-flex gap-2 align-items-center">
+            <div class="d-flex gap-2 align-items-center nav-actions">
                 <button id="installAppBtn" class="btn btn-light btn-sm d-none" title="Install Portfolio Tracker as an app">
                     <i class="bi bi-download me-1"></i><span class="nav-label">Install App</span>
                 </button>
@@ -64,16 +77,13 @@
                 <span id="refreshCountdown" class="badge bg-light text-dark d-none">
                     <i class="bi bi-arrow-repeat spin me-1"></i><span id="countdownValue"></span>
                 </span>
-                <button id="refreshBtn" class="btn btn-light btn-sm">
-                    <i class="bi bi-arrow-clockwise me-1"></i><span class="nav-label">Refresh</span>
-                </button>
-                <button id="addTxnBtn" class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTxnModal">
+                <button id="addTxnBtn" class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTxnModal" aria-label="Add transaction" title="Add transaction">
                     <i class="bi bi-plus-lg me-1"></i><span class="nav-label">Add Transaction</span>
                 </button>
-                <label class="btn btn-outline-light btn-sm mb-0">
-                    <i class="bi bi-upload me-1"></i><span class="nav-label">Upload CSV</span>
-                    <input type="file" id="fileInput" accept=".csv" hidden>
-                </label>
+                <button id="refreshBtn" class="btn btn-sm nav-refresh-btn" type="button" aria-label="Refresh portfolio data" title="Pull fresh market data and refresh the portfolio">
+                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                    <span class="refresh-label">Refresh</span>
+                </button>
             </div>
         </div>
     </nav>
@@ -201,6 +211,10 @@
               <div id="addTxnError" class="alert alert-danger mt-3 mb-0 d-none"></div>
             </div>
             <div class="modal-footer">
+              <label class="btn btn-outline-secondary mb-0 import-csv-btn">
+                <i class="bi bi-upload me-1"></i>Import CSV
+                <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
+              </label>
               <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="addTxnCancelBtn">Cancel</button>
               <button type="button" class="btn btn-primary d-none" id="tradePreviewContinueBtn" disabled>
                 Continue to Record <i class="bi bi-arrow-right ms-1"></i>
@@ -212,12 +226,37 @@
       </div>
     </div>
 
-    <main class="container-fluid py-4">
+    <main class="container-fluid py-4 app-shell">
 
     <!-- ============================================================ TRACKER PAGE -->
     <div id="trackerPage">
+        <header class="portfolio-brief mb-3">
+            <div class="portfolio-brief-copy">
+                <div class="brief-eyebrow"><span></span> Market-aware holdings</div>
+                <h1>Capital, in motion.</h1>
+                <p>Track today’s signal without losing sight of the long game.</p>
+            </div>
+            <div class="asset-trajectory" aria-hidden="true">
+                <svg viewBox="0 0 620 112" preserveAspectRatio="none">
+                    <defs>
+                        <linearGradient id="trajectoryStroke" x1="0" x2="1">
+                            <stop offset="0" stop-color="#6f8cff" stop-opacity=".18"/>
+                            <stop offset=".55" stop-color="#6f8cff"/>
+                            <stop offset="1" stop-color="#42d59b"/>
+                        </linearGradient>
+                        <linearGradient id="trajectoryFill" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0" stop-color="#4f73ef" stop-opacity=".2"/>
+                            <stop offset="1" stop-color="#4f73ef" stop-opacity="0"/>
+                        </linearGradient>
+                    </defs>
+                    <path class="trajectory-area" d="M0 92 C70 92 75 70 130 76 S210 91 256 59 S333 70 374 46 S445 55 487 29 S557 34 620 10 L620 112 L0 112Z"/>
+                    <path class="trajectory-line" d="M0 92 C70 92 75 70 130 76 S210 91 256 59 S333 70 374 46 S445 55 487 29 S557 34 620 10"/>
+                    <circle cx="620" cy="10" r="5"/>
+                </svg>
+            </div>
+        </header>
         <!-- Portfolio Summary toggle + condensed strip -->
-        <div class="d-flex align-items-center gap-2 mb-2">
+        <div class="d-flex align-items-center gap-2 mb-2 summary-command-bar">
             <button class="btn btn-sm btn-outline-secondary" type="button" id="summaryToggleBtn" aria-expanded="false" aria-controls="summaryCardsCollapse">
                 <i class="bi bi-chevron-down me-1" id="summaryToggleIcon"></i><span id="summaryToggleLabel">Show summary</span>
             </button>
@@ -981,18 +1020,31 @@
         <div class="analysis-toolbar mb-4">
             <div>
                 <h4 class="mb-1"><i class="bi bi-clipboard-data me-2"></i>Investment Analysis</h4>
-                <div class="text-muted small">Quantitative decision review against broad-market benchmarks</div>
+                <div class="text-muted small">GPT-assisted review grounded in your calculated portfolio results</div>
             </div>
             <div class="analysis-actions">
-                <div id="analysisPeriodButtons" class="btn-group btn-group-sm" role="group" aria-label="Analysis period">
-                    <button class="btn btn-outline-secondary analysis-period-btn" data-period="1d">1 Day</button>
-                    <button class="btn btn-primary analysis-period-btn active" data-period="30d">30 Days</button>
-                    <button class="btn btn-outline-secondary analysis-period-btn" data-period="6m">6 Months</button>
-                    <button class="btn btn-outline-secondary analysis-period-btn" data-period="1y">1 Year</button>
+                <div class="analysis-date-range">
+                    <label for="analysisStartDate">
+                        <span>From</span>
+                        <input type="date" id="analysisStartDate" class="form-control form-control-sm">
+                    </label>
+                    <span class="analysis-date-arrow"><i class="bi bi-arrow-right"></i></span>
+                    <label for="analysisEndDate">
+                        <span>To</span>
+                        <input type="date" id="analysisEndDate" class="form-control form-control-sm">
+                    </label>
                 </div>
-                <button id="generateAnalysisBtn" class="btn btn-success btn-sm">
-                    <i class="bi bi-stars me-1"></i><span>Generate Report</span>
-                </button>
+                <div class="analysis-generate-row">
+                    <div id="analysisPeriodButtons" class="btn-group btn-group-sm" role="group" aria-label="Quick date range">
+                        <button class="btn btn-outline-secondary analysis-period-btn" data-period="1d">1D</button>
+                        <button class="btn btn-primary analysis-period-btn active" data-period="30d">30D</button>
+                        <button class="btn btn-outline-secondary analysis-period-btn" data-period="6m">6M</button>
+                        <button class="btn btn-outline-secondary analysis-period-btn" data-period="1y">1Y</button>
+                    </div>
+                    <button id="generateAnalysisBtn" class="btn btn-success btn-sm">
+                        <i class="bi bi-stars me-1"></i><span>Generate Report</span>
+                    </button>
+                </div>
             </div>
         </div>
         <div id="analysisGenerateError" class="alert alert-danger py-2 small d-none"></div>
@@ -1020,7 +1072,7 @@
                 <div id="analysisReportEmpty" class="analysis-empty-state">
                     <i class="bi bi-file-earmark-bar-graph"></i>
                     <h5>No analysis report yet</h5>
-                    <p class="mb-0">Choose a review period to create the first saved snapshot.</p>
+                    <p class="mb-0">Choose a date range to create the first GPT report.</p>
                 </div>
                 <article id="analysisReport" class="d-none" aria-live="polite"></article>
             </div>
@@ -1029,9 +1081,9 @@
 
     </main>
 
-    <footer class="bg-light py-3 mt-4">
+    <footer class="app-footer py-3 mt-4">
         <div class="container-fluid text-center text-muted">
-            <small>Portfolio Tracker &copy; 2024</small>
+            <small><span class="footer-mark"></span> iPortfolio · Built for the long view</small>
         </div>
     </footer>
 
@@ -1058,7 +1110,7 @@
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/js/trade-preview.js?v=1"></script>
-    <script src="/static/js/app.js?v=117"></script>
+    <script src="/static/js/app.js?v=121"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

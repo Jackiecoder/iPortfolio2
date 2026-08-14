@@ -1097,8 +1097,12 @@ class Portfolio:
 
         return all_results
 
-    def get_daily_pnl_history(self, num_days: int = 15) -> list[dict]:
-        """Daily P&L for the last num_days days.
+    def get_daily_pnl_history(
+        self,
+        num_days: int = 15,
+        end_date: Optional[date] = None,
+    ) -> list[dict]:
+        """Daily P&L for ``num_days`` ending on ``end_date`` (or today).
 
         Uses EST midnight as the day boundary for crypto so the numbers
         align with the intraday P&L chart baseline.
@@ -1106,7 +1110,7 @@ class Portfolio:
         if not self._transactions:
             return []
 
-        today = _market_today()
+        today = end_date or _market_today()
         start_date = today - timedelta(days=num_days)
 
         symbols = list({

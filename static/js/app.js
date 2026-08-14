@@ -748,7 +748,7 @@ async function uploadFile(file) {
 
 async function reloadPortfolio() {
     try {
-        const response = await fetch('/api/reload', { method: 'POST' });
+        const response = await fetch('/api/reload?clear_price_cache=true&precompute=true', { method: 'POST' });
         if (!response.ok) throw new Error('Failed to reload');
         // Clear cache after reload
         apiCache.clear();
@@ -4032,7 +4032,9 @@ async function refreshData() {
 document.getElementById('refreshBtn').addEventListener('click', async () => {
     const btn = document.getElementById('refreshBtn');
     btn.disabled = true;
-    btn.innerHTML = '<i class="bi bi-arrow-clockwise spin me-1"></i>Refreshing...';
+    btn.setAttribute('aria-label', 'Refreshing data');
+    btn.setAttribute('title', 'Refreshing data');
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise spin" aria-hidden="true"></i><span class="refresh-label">Refreshing</span>';
 
     try {
         await reloadPortfolio();
@@ -4049,7 +4051,9 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
         showToast('Error refreshing data', 'error');
     } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Refresh';
+        btn.setAttribute('aria-label', 'Refresh portfolio data');
+        btn.setAttribute('title', 'Pull fresh market data and refresh the portfolio');
+        btn.innerHTML = '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>';
     }
 });
 
@@ -5128,26 +5132,49 @@ function switchPage(page) {
 //  SAVED INVESTMENT ANALYSIS
 // ============================================================================
 
-let analysisPeriod = '30d';
 let analysisReportsLoaded = false;
 let selectedAnalysisReportId = null;
 
 function initAnalysis() {
     document.getElementById('pageAnalysisBtn').addEventListener('click', () => switchPage('analysis'));
 
+    const today = marketTodayStr();
+    const startInput = document.getElementById('analysisStartDate');
+    const endInput = document.getElementById('analysisEndDate');
+    startInput.max = today;
+    endInput.max = today;
+    setAnalysisRangePreset('30d');
+
     document.querySelectorAll('.analysis-period-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            analysisPeriod = btn.dataset.period;
-            document.querySelectorAll('.analysis-period-btn').forEach(option => {
-                const active = option.dataset.period === analysisPeriod;
-                option.classList.toggle('btn-primary', active);
-                option.classList.toggle('active', active);
-                option.classList.toggle('btn-outline-secondary', !active);
-            });
+            setAnalysisRangePreset(btn.dataset.period);
         });
     });
 
+    [startInput, endInput].forEach(input => {
+        input.addEventListener('change', () => updateAnalysisPresetButtons(null));
+    });
+
     document.getElementById('generateAnalysisBtn').addEventListener('click', createAnalysisReport);
+}
+
+function updateAnalysisPresetButtons(activePeriod) {
+    document.querySelectorAll('.analysis-period-btn').forEach(option => {
+        const active = option.dataset.period === activePeriod;
+        option.classList.toggle('btn-primary', active);
+        option.classList.toggle('active', active);
+        option.classList.toggle('btn-outline-secondary', !active);
+    });
+}
+
+function setAnalysisRangePreset(period) {
+    const daysByPeriod = { '1d': 1, '30d': 30, '6m': 183, '1y': 365 };
+    const days = daysByPeriod[period];
+    if (!days) return;
+    const endDate = marketTodayStr();
+    document.getElementById('analysisEndDate').value = endDate;
+    document.getElementById('analysisStartDate').value = offsetIsoDate(endDate, -(days - 1));
+    updateAnalysisPresetButtons(period);
 }
 
 function analysisDate(value, includeTime = false) {
@@ -5217,6 +5244,7 @@ function renderAnalysisHistory(reports) {
                     <span class="analysis-history-title">${escapeHtml(report.period_label)}</span>
                     <span class="badge text-bg-light">${escapeHtml(report.verdict)}</span>
                 </div>
+                <div class="text-muted small mt-1">${escapeHtml(analysisDate(report.start_date))} – ${escapeHtml(analysisDate(report.end_date))}</div>
                 <div class="analysis-history-meta">
                     <span>${escapeHtml(analysisDate(report.created_at, true))}</span>
                     <span>${escapeHtml(score)}</span>
@@ -5260,11 +5288,29 @@ async function createAnalysisReport() {
     label.textContent = 'Generating...';
     button.querySelector('i').className = 'spinner-border spinner-border-sm me-1';
     errorElement.classList.add('d-none');
+    const startDate = document.getElementById('analysisStartDate').value;
+    const endDate = document.getElementById('analysisEndDate').value;
+    if (!startDate || !endDate) {
+        errorElement.textContent = 'Choose both a start date and an end date.';
+        errorElement.classList.remove('d-none');
+        button.disabled = false;
+        label.textContent = 'Generate Report';
+        button.querySelector('i').className = 'bi bi-stars me-1';
+        return;
+    }
+    if (startDate > endDate) {
+        errorElement.textContent = 'Start date must be on or before end date.';
+        errorElement.classList.remove('d-none');
+        button.disabled = false;
+        label.textContent = 'Generate Report';
+        button.querySelector('i').className = 'bi bi-stars me-1';
+        return;
+    }
     try {
         const data = await analysisApi('/api/analysis/reports', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ period: analysisPeriod }),
+            body: JSON.stringify({ start_date: startDate, end_date: endDate }),
         });
         selectedAnalysisReportId = data.report.id;
         renderAnalysisReport(data.report);
@@ -5286,6 +5332,7 @@ function renderAnalysisReport(savedReport) {
     const portfolio = report.portfolio || {};
     const allocation = report.allocation || {};
     const activity = report.activity || {};
+    const aiAnalysis = report.ai_analysis || null;
     const benchmarks = (report.market && report.market.benchmarks) || [];
     const contributors = report.contributors || { positive: [], negative: [] };
     const score = verdict.score;
@@ -5320,6 +5367,30 @@ function renderAnalysisReport(savedReport) {
             </div>`).join('')
         : `<div class="text-muted small py-2">${emptyLabel}</div>`;
 
+    const aiReviewSection = aiAnalysis ? `
+        <section class="analysis-section">
+            <h5><i class="bi bi-stars me-2"></i>GPT Investment Review</h5>
+            <div class="analysis-ai-grid">
+                <div class="analysis-ai-block">
+                    <h6>Decision Quality</h6>
+                    <p>${escapeHtml(aiAnalysis.decision_quality || '--')}</p>
+                </div>
+                <div class="analysis-ai-block">
+                    <h6>Market Context</h6>
+                    <p>${escapeHtml(aiAnalysis.market_context || '--')}</p>
+                </div>
+                <div class="analysis-ai-block">
+                    <h6>Risk Assessment</h6>
+                    <p>${escapeHtml(aiAnalysis.risk_assessment || '--')}</p>
+                </div>
+            </div>
+            ${(aiAnalysis.considerations || []).length ? `
+                <h6 class="mt-4 mb-2">Considerations</h6>
+                <ul class="analysis-considerations">
+                    ${aiAnalysis.considerations.map(item => `<li class="mb-2">${escapeHtml(item)}</li>`).join('')}
+                </ul>` : ''}
+        </section>` : '';
+
     document.getElementById('analysisReportEmpty').classList.add('d-none');
     const reportElement = document.getElementById('analysisReport');
     reportElement.innerHTML = `
@@ -5330,6 +5401,7 @@ function renderAnalysisReport(savedReport) {
                 <div class="d-flex align-items-center gap-2 mb-2">
                     <span class="badge ${scoreTone === 'positive' ? 'text-bg-success' : (scoreTone === 'negative' ? 'text-bg-danger' : 'text-bg-warning')}">${escapeHtml(verdict.label || '--')}</span>
                     <span class="text-muted small">${escapeHtml(report.market && report.market.regime || 'Market data unavailable')}</span>
+                    ${aiAnalysis ? `<span class="badge text-bg-dark"><i class="bi bi-stars me-1"></i>${escapeHtml(aiAnalysis.model || 'GPT')}</span>` : ''}
                 </div>
                 <p class="mb-0 text-muted">${escapeHtml(verdict.summary || '')}</p>
                 <div class="text-muted small mt-2">Saved ${escapeHtml(analysisDate(savedReport.created_at || report.generated_at, true))}</div>
@@ -5347,6 +5419,8 @@ function renderAnalysisReport(savedReport) {
                     <div class="analysis-metric-value ${className}">${value}</div>
                 </div>`).join('')}
         </div>
+
+        ${aiReviewSection}
 
         <section class="analysis-section">
             <h5><i class="bi bi-lightbulb me-2"></i>Key Findings</h5>

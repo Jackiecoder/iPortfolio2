@@ -2,7 +2,7 @@
 // Goal: make the app installable + launchable offline, WITHOUT ever caching
 // API responses (live prices / authenticated data must always hit the network).
 
-const CACHE = 'portfolio-shell-v1';
+const CACHE = 'portfolio-shell-v2';
 
 // App shell: enough to render the page chrome offline. The page then fetches
 // live data over the network (and shows its own loading/empty state offline).

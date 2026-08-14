@@ -34,6 +34,19 @@ A Python-based portfolio tracking application that reads transaction data from C
 
 3. Upload a CSV file or place CSV files in the `data/` directory
 
+## Live snapshot refresh
+
+The server pulls fresh yfinance quotes and precomputes the dashboard response
+cache every 60 seconds by default. Override the cadence with
+`MARKET_REFRESH_INTERVAL_SECONDS` (minimum 15 seconds). The startup snapshot is
+built before the app becomes ready, and manual refreshes wait for a complete new
+snapshot before returning.
+
+On Cloud Run, the included `deploy.sh` keeps one instance alive and disables CPU
+throttling so the in-process refresh loop continues while there are no requests.
+This uses always-on Cloud Run resources and therefore has a higher baseline cost
+than scaling the service to zero.
+
 ## CSV Format
 
 Your transaction CSV files should have the following columns:

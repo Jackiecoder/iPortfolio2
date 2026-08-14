@@ -1,23 +1,26 @@
-"""Deterministic portfolio analysis reports.
+"""Portfolio metrics and on-demand GPT investment analysis.
 
-Reports are generated from the portfolio's transaction-aware daily P&L and
-saved as snapshots.  They intentionally avoid an external LLM so an archived
-report remains reproducible and does not require another API credential.
+The numeric evidence is calculated locally from transaction-aware daily P&L.
+GPT receives that compact evidence only when the user generates a report, and
+the combined result is saved as an immutable snapshot.
 """
 
 from __future__ import annotations
 
 import math
+import json
+import os
 import statistics
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo
 
 from .models import ActionType, Transaction
 from .portfolio import Portfolio
 from .price_service import price_service
+from pydantic import BaseModel, Field
 
 
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -28,6 +31,42 @@ PERIODS = {
     "6m": {"label": "6 Months", "days": 183, "title": "6-Month Investment Analysis"},
     "1y": {"label": "1 Year", "days": 365, "title": "1-Year Investment Analysis"},
 }
+DEFAULT_OPENAI_MODEL = "gpt-5.6"
+
+
+class AnalysisConfigurationError(RuntimeError):
+    """Raised when GPT analysis is not configured on the server."""
+
+
+class AnalysisGenerationError(RuntimeError):
+    """Raised when the configured model cannot generate a report."""
+
+
+class GPTFinding(BaseModel):
+    tone: Literal["positive", "warning", "neutral"]
+    title: str
+    body: str
+
+
+class GPTInvestmentAnalysis(BaseModel):
+    verdict_label: Literal["Strong", "Sound", "Mixed", "Cautious", "Weak", "Insufficient Data"]
+    score: Optional[int] = Field(default=None, ge=0, le=100)
+    executive_summary: str
+    decision_quality: str
+    market_context: str
+    risk_assessment: str
+    key_findings: list[GPTFinding]
+    considerations: list[str]
+
+
+GPT_ANALYST_INSTRUCTIONS = """You are a rigorous portfolio review analyst.
+Analyze only the supplied calculated evidence. Never invent prices, trades,
+news, investor goals, tax facts, or market events. Distinguish a good outcome
+from a good decision process: benchmark-relative return, drawdown, volatility,
+concentration, activity, and contribution all matter. Explain limitations when
+the window or data is thin. Use clear English. Keep each section concise.
+Considerations must be conditional review points, not absolute buy/sell orders.
+This is an educational retrospective, not personalized financial advice."""
 
 
 def _as_float(value: Decimal | float | int | None) -> float:
@@ -234,22 +273,40 @@ def _observations(
 def generate_analysis_report(
     portfolio: Portfolio,
     transactions: list[Transaction],
-    period: str,
+    period: str | None = None,
     *,
     as_of: date | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> dict[str, Any]:
-    """Generate a serializable analysis snapshot for one supported period."""
-    if period not in PERIODS:
-        raise ValueError(f"Unsupported analysis period: {period}")
+    """Calculate a serializable evidence snapshot for a date range."""
+    market_date = as_of or datetime.now(MARKET_TZ).date()
+    if start_date is None and end_date is None:
+        if period not in PERIODS:
+            raise ValueError(f"Unsupported analysis period: {period}")
+        config = PERIODS[period]
+        end_date = market_date
+        start_date = end_date - timedelta(days=config["days"] - 1)
+        period_key = period
+        period_label = config["label"]
+        title = config["title"]
+    elif start_date is None or end_date is None:
+        raise ValueError("Both start_date and end_date are required")
+    else:
+        if start_date > end_date:
+            raise ValueError("start_date must be on or before end_date")
+        if end_date > market_date:
+            raise ValueError("end_date cannot be in the future")
+        day_count = (end_date - start_date).days + 1
+        period_key = "custom"
+        period_label = f"{day_count} Day" if day_count == 1 else f"{day_count} Days"
+        title = "GPT Investment Analysis"
 
-    config = PERIODS[period]
-    end_date = as_of or datetime.now(MARKET_TZ).date()
-    start_date = end_date - timedelta(days=config["days"])
-
-    history = portfolio.get_daily_pnl_history(num_days=config["days"])
+    day_count = (end_date - start_date).days + 1
+    history = portfolio.get_daily_pnl_history(num_days=day_count, end_date=end_date)
     history = [
         row for row in history
-        if start_date < date.fromisoformat(row["date"]) <= end_date
+        if start_date <= date.fromisoformat(row["date"]) <= end_date
     ]
     weekday_returns = [
         _as_float(row.get("daily_pnl_percent"))
@@ -301,7 +358,7 @@ def generate_analysis_report(
     top_holding_pct = _as_float(top_holding["weight_pct"]) if top_holding else 0.0
     concentration_hhi = sum((_as_float(item["weight_pct"]) / 100) ** 2 for item in weighted_holdings)
 
-    period_transactions = [txn for txn in transactions if start_date < txn.date <= end_date]
+    period_transactions = [txn for txn in transactions if start_date <= txn.date <= end_date]
     activity = {
         "transaction_count": len(period_transactions),
         "buy_amount": _round(sum(_as_float(txn.amount) for txn in period_transactions if txn.action == ActionType.BUY)),
@@ -349,10 +406,10 @@ def generate_analysis_report(
 
     generated_at = datetime.now(MARKET_TZ).isoformat()
     return {
-        "report_version": 1,
-        "period": period,
-        "period_label": config["label"],
-        "title": config["title"],
+        "report_version": 2,
+        "period": period_key,
+        "period_label": period_label,
+        "title": title,
         "generated_at": generated_at,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
@@ -398,7 +455,87 @@ def generate_analysis_report(
         "methodology": [
             "Portfolio return compounds transaction-aware daily P&L percentages.",
             "SPY and QQQ use adjusted market closing-price history over the same window.",
-            "The 0-100 score combines return, benchmark excess return, drawdown, volatility, win rate, and current concentration.",
+            "The local quantitative baseline combines return, benchmark excess return, drawdown, volatility, win rate, and current concentration.",
             "This is a quantitative review of recorded results, not investment advice or a prediction of future returns.",
         ],
     }
+
+
+def add_gpt_analysis(
+    report: dict[str, Any],
+    *,
+    client: Any | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Generate structured GPT commentary and merge it into the evidence snapshot."""
+    selected_model = model or os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    if client is None:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise AnalysisConfigurationError(
+                "GPT analysis is not configured. Set OPENAI_API_KEY on the server."
+            )
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise AnalysisConfigurationError("The OpenAI SDK is not installed.") from exc
+        client = OpenAI(api_key=api_key, timeout=120.0, max_retries=2)
+
+    evidence = {
+        "analysis_window": {
+            "start_date": report["start_date"],
+            "end_date": report["end_date"],
+            "calendar_days": (date.fromisoformat(report["end_date"]) - date.fromisoformat(report["start_date"])).days + 1,
+        },
+        "portfolio": report["portfolio"],
+        "market": report["market"],
+        "relative": report["relative"],
+        "current_allocation_snapshot": report["allocation"],
+        "period_activity": report["activity"],
+        "contributors": report["contributors"],
+        "local_quantitative_assessment": report["verdict"],
+    }
+    try:
+        response = client.responses.parse(
+            model=selected_model,
+            input=[
+                {"role": "system", "content": GPT_ANALYST_INSTRUCTIONS},
+                {
+                    "role": "user",
+                    "content": "Review whether the recorded investment decisions were sensible during this interval. Evidence:\n"
+                    + json.dumps(evidence, separators=(",", ":")),
+                },
+            ],
+            text_format=GPTInvestmentAnalysis,
+            max_output_tokens=3000,
+            store=False,
+        )
+    except Exception as exc:
+        raise AnalysisGenerationError("GPT analysis request failed.") from exc
+
+    parsed = response.output_parsed
+    if parsed is None:
+        raise AnalysisGenerationError("GPT did not return a structured analysis.")
+
+    analysis = parsed.model_dump()
+    report["quantitative_assessment"] = dict(report["verdict"])
+    report["verdict"] = {
+        "label": analysis["verdict_label"],
+        "score": analysis["score"],
+        "summary": analysis["executive_summary"],
+    }
+    report["observations"] = analysis["key_findings"]
+    report["ai_analysis"] = {
+        "provider": "OpenAI",
+        "model": getattr(response, "model", selected_model),
+        "response_id": getattr(response, "id", None),
+        "executive_summary": analysis["executive_summary"],
+        "decision_quality": analysis["decision_quality"],
+        "market_context": analysis["market_context"],
+        "risk_assessment": analysis["risk_assessment"],
+        "considerations": analysis["considerations"],
+    }
+    report["methodology"].append(
+        "The displayed verdict and score are generated by GPT from locally calculated evidence; GPT does not calculate source prices or transaction P&L."
+    )
+    return report

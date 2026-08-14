@@ -92,8 +92,91 @@ class ApiCacheTests(unittest.TestCase):
             asyncio.run(main.reload_portfolio(False, True))
             clear_prices.assert_called_once()
 
+    def test_market_refresh_precomputes_default_dashboard_responses(self):
+        class FakePortfolio:
+            def get_daily_pnl_history(self, num_days):
+                return [{"date": f"day-{i}", "daily_pnl": i} for i in range(num_days)]
+
+            def get_intraday_values(self, interval):
+                return [{"time": "10:00", "interval": interval}]
+
+        fake = FakePortfolio()
+        summary = {
+            "holdings": [{"symbol": "AAPL"}],
+            "total_dividends": 12.0,
+            "dividend_summaries": [],
+        }
+        performance = {
+            "performance": [
+                {"date": "2025-08-14", "value": 90},
+                {"date": "2026-08-14", "value": 100},
+            ],
+            "realized_by_year": {},
+            "realized_details_by_year": {},
+        }
+        original_portfolio = main.portfolio
+        original_generation = main._portfolio_generation
+        try:
+            main.portfolio = fake
+            main._portfolio_generation = 21
+            with (
+                patch.object(main.price_service, "clear_live_cache") as clear_live,
+                patch.object(main, "_build_summary_response", return_value=summary),
+                patch.object(main, "_build_sold_response", return_value={"sold_assets": []}),
+                patch.object(main, "_build_performance_response", return_value=performance),
+                patch.object(main, "market_today", return_value=datetime(2026, 8, 14).date()),
+            ):
+                result = main._refresh_market_snapshot(force_prices=True)
+
+            self.assertEqual(result["status"], "fresh")
+            clear_live.assert_called_once()
+            self.assertIsNotNone(main._get_api_cache("summary"))
+            self.assertIsNotNone(main._get_api_cache("holdings"))
+            self.assertIsNotNone(main._get_api_cache("performance_all_all"))
+            self.assertEqual(
+                len(main._get_api_cache("daily-pnl_42")["daily_pnl"]), 42
+            )
+            self.assertEqual(
+                main._get_api_cache("intraday_2026-08-14_1m")["cache_status"],
+                "fresh",
+            )
+        finally:
+            main.portfolio = original_portfolio
+            main._portfolio_generation = original_generation
+
 
 class PriceCacheTests(unittest.TestCase):
+    def test_clear_live_cache_preserves_historical_data(self):
+        service = PriceService()
+        now = datetime.now()
+        service._price_cache["AAPL"] = (Decimal("100"), now)
+        service._intraday_cache["AAPL_today_1m_1"] = ([], now)
+        service._history_cache["AAPL_history"] = ({}, now)
+        service._prev_close_cache["AAPL_previous"] = ({}, now)
+
+        service.clear_live_cache()
+
+        self.assertEqual(service._price_cache["AAPL"][0], Decimal("100"))
+        self.assertEqual(service._price_cache["AAPL"][1], datetime.min)
+        self.assertEqual(service._intraday_cache["AAPL_today_1m_1"][1], datetime.min)
+        self.assertIn("AAPL_history", service._history_cache)
+        self.assertIn("AAPL_previous", service._prev_close_cache)
+
+    def test_intraday_refresh_uses_stale_bars_when_yfinance_fails(self):
+        service = PriceService()
+        today = datetime(2026, 8, 14).date()
+        stale = [{"date": today.isoformat(), "time": "10:00", "price": Decimal("100")}]
+        cache_key = f"AAPL_{today.isoformat()}_1m_1"
+        service._intraday_cache[cache_key] = (stale, datetime.min)
+
+        with (
+            patch("app.price_service._market_today", return_value=today),
+            patch.object(service, "_fetch_intraday_from_yfinance", return_value=[]),
+        ):
+            result = service.get_intraday_prices("AAPL", "1m", 1)
+
+        self.assertEqual(result, stale)
+
     def test_today_intraday_fetch_uses_persistent_incremental_save_path(self):
         service = PriceService()
         bars = [

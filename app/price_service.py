@@ -75,9 +75,11 @@ class PriceService:
         Returns:
             Current price as Decimal, or None if not available
         """
+        stale_price = None
         # Check cache first
         if symbol in self._price_cache:
             price, cached_at = self._price_cache[symbol]
+            stale_price = price
             if datetime.now() - cached_at < self.live_cache_ttl:
                 return price
 
@@ -100,11 +102,11 @@ class PriceService:
                 return decimal_price
 
             logger.warning(f"No price data available for {symbol}")
-            return None
+            return stale_price
 
         except Exception as e:
             logger.error(f"Error fetching price for {symbol}: {e}")
-            return None
+            return stale_price
 
     def get_prices_batch(self, symbols: list[str]) -> dict[str, Optional[Decimal]]:
         """Get current prices for multiple symbols.
@@ -690,8 +692,10 @@ class PriceService:
 
         today = _market_today()
         intraday_key = f"{symbol}_{today.isoformat()}_{interval}_{days}"
+        stale_prices: list[dict] = []
         if intraday_key in self._intraday_cache:
             data, cached_at = self._intraday_cache[intraday_key]
+            stale_prices = data
             ttl = self.live_cache_ttl if days == 1 else self.cache_ttl
             if datetime.now() - cached_at < ttl:
                 return data
@@ -707,8 +711,16 @@ class PriceService:
                 self._save_intraday_if_valid(
                     symbol, date_str, interval, prices, overwrite=True
                 )
-            self._intraday_cache[intraday_key] = (prices, datetime.now())
-            return prices
+            if prices:
+                self._intraday_cache[intraday_key] = (prices, datetime.now())
+                return prices
+            if stale_prices:
+                logger.warning(
+                    "Using stale intraday fallback for %s [%s]", symbol, interval
+                )
+                return stale_prices
+            self._intraday_cache[intraday_key] = ([], datetime.now())
+            return []
 
         # days > 1: mix of live + DB
         db_only_prices: list[dict] = []   # served from DB (window or beyond)
@@ -933,6 +945,23 @@ class PriceService:
         self._prev_close_cache.clear()
         self._crypto_midnight_cache.clear()
         self._intraday_cache.clear()
+
+    def clear_live_cache(self) -> None:
+        """Expire only live quotes and intraday bars.
+
+        The minute refresh loop uses this narrow invalidation so it pulls a new
+        market snapshot without discarding reusable historical/previous-close
+        data that is expensive and unnecessary to download every minute.
+        """
+        expired_at = datetime.min
+        self._price_cache = {
+            key: (value, expired_at)
+            for key, (value, _cached_at) in self._price_cache.items()
+        }
+        self._intraday_cache = {
+            key: (value, expired_at)
+            for key, (value, _cached_at) in self._intraday_cache.items()
+        }
 
 
 # Global price service instance

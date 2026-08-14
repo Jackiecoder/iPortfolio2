@@ -10,3 +10,4 @@ aiofiles==23.2.1
 playwright
 psycopg[binary]==3.2.13
 psycopg-pool==3.2.8
+openai>=2.0.0,<3.0.0

@@ -9,7 +9,7 @@ from datetime import date as date_type
 from datetime import datetime, time as time_type, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
@@ -20,7 +20,12 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 from . import repository
-from .analysis_service import generate_analysis_report
+from .analysis_service import (
+    AnalysisConfigurationError,
+    AnalysisGenerationError,
+    add_gpt_analysis,
+    generate_analysis_report,
+)
 from .cache_service import cache_service
 from .csv_parser import CSVParseError, parse_csv_content
 from .db import init_schema
@@ -113,13 +118,31 @@ _portfolio_generation = 0
 _api_cache: dict[str, tuple[dict, datetime]] = {}
 _api_cache_lock = threading.Lock()
 _api_refreshing: set[str] = set()
+_market_refresh_lock = threading.Lock()
+_market_refresh_task: Optional[asyncio.Task] = None
+
+
+def _configured_refresh_interval() -> int:
+    try:
+        return max(15, int(os.environ.get("MARKET_REFRESH_INTERVAL_SECONDS", "60")))
+    except ValueError:
+        logger.warning("Invalid MARKET_REFRESH_INTERVAL_SECONDS; using 60 seconds")
+        return 60
+
+
+MARKET_REFRESH_INTERVAL_SECONDS = _configured_refresh_interval()
 _API_TTL = {
-    "holdings": timedelta(seconds=30),
-    "summary": timedelta(seconds=30),
-    "daily-pnl": timedelta(seconds=60),
-    "intraday": timedelta(seconds=60),
+    # The background job replaces these once per minute. A two-minute read TTL
+    # keeps the last fully-built snapshot available throughout the next cycle.
+    "holdings": timedelta(minutes=2),
+    "summary": timedelta(minutes=2),
+    "performance": timedelta(minutes=2),
+    "daily-pnl": timedelta(minutes=2),
+    "dividends": timedelta(minutes=2),
+    "sold": timedelta(minutes=2),
+    "intraday": timedelta(minutes=2),
     "intraday-hist": timedelta(days=30),
-    "intraday-multiday": timedelta(seconds=60),
+    "intraday-multiday": timedelta(minutes=2),
 }
 
 
@@ -138,6 +161,14 @@ def _get_api_cache(key: str) -> Optional[dict]:
 def _set_api_cache(key: str, data: dict) -> None:
     with _api_cache_lock:
         _api_cache[key] = (data, datetime.now())
+
+
+def _set_api_caches(entries: dict[str, dict]) -> None:
+    """Publish a complete group of precomputed responses atomically."""
+    cached_at = datetime.now()
+    with _api_cache_lock:
+        for key, data in entries.items():
+            _api_cache[key] = (data, cached_at)
 
 
 def _get_stale_api_cache(key: str, max_age: timedelta) -> Optional[dict]:
@@ -203,6 +234,243 @@ def _queue_intraday_refresh(
     )
 
 
+def _holding_to_dict(holding) -> dict:
+    """Serialize one Holding consistently across holdings and summary APIs."""
+    return {
+        "symbol": holding.symbol,
+        "quantity": float(holding.quantity),
+        "cost_basis": float(holding.cost_basis),
+        "avg_cost": float(holding.avg_cost),
+        "current_price": float(holding.current_price) if holding.current_price is not None else None,
+        "market_value": float(holding.market_value) if holding.market_value is not None else None,
+        "unrealized_pnl": float(holding.unrealized_pnl) if holding.unrealized_pnl is not None else None,
+        "pnl_percent": float(holding.pnl_percent) if holding.pnl_percent is not None else None,
+        "daily_change_percent": float(holding.daily_change_percent) if holding.daily_change_percent is not None else None,
+        "daily_change_amount": float(holding.daily_change_amount) if holding.daily_change_amount is not None else None,
+        "holding_days": holding.holding_days,
+        "annualized_return": float(holding.annualized_return) if holding.annualized_return is not None else None,
+        "weighted_annualized_return": float(holding.weighted_annualized_return) if holding.weighted_annualized_return is not None else None,
+        "long_term_quantity": float(holding.long_term_quantity) if holding.long_term_quantity is not None else None,
+        "short_term_quantity": float(holding.short_term_quantity) if holding.short_term_quantity is not None else None,
+        "lt_unrealized_pnl": float(holding.lt_unrealized_pnl) if holding.lt_unrealized_pnl is not None else None,
+        "st_unrealized_pnl": float(holding.st_unrealized_pnl) if holding.st_unrealized_pnl is not None else None,
+        "realized_pnl": float(holding.realized_pnl) if holding.realized_pnl is not None else None,
+        "lt_realized_pnl": float(holding.lt_realized_pnl) if holding.lt_realized_pnl is not None else None,
+        "st_realized_pnl": float(holding.st_realized_pnl) if holding.st_realized_pnl is not None else None,
+        "total_pnl": float(holding.total_pnl) if holding.total_pnl is not None else None,
+        "total_pnl_percent": float(holding.total_pnl_percent) if holding.total_pnl_percent is not None else None,
+        "ytd_pnl": float(holding.ytd_pnl) if holding.ytd_pnl is not None else None,
+        "ytd_pnl_percent": float(holding.ytd_pnl_percent) if holding.ytd_pnl_percent is not None else None,
+        "lt_ytd_pnl": float(holding.lt_ytd_pnl) if holding.lt_ytd_pnl is not None else None,
+        "st_ytd_pnl": float(holding.st_ytd_pnl) if holding.st_ytd_pnl is not None else None,
+    }
+
+
+def _build_summary_response(active_portfolio: Portfolio) -> dict:
+    """Calculate the full live summary without consulting the API cache."""
+    summary = active_portfolio.get_portfolio_summary(fetch_prices=True)
+
+    ytd_pnl = 0.0
+    ytd_pnl_percent = 0.0
+    ytd_lt_pnl = None
+    ytd_st_pnl = None
+    today = market_today()
+    jan1 = date_type(today.year, 1, 1)
+    ytd_history = active_portfolio.get_historical_values(
+        start_date=jan1, end_date=today
+    )
+    if ytd_history:
+        first = ytd_history[0]
+        first_inv_pnl = float(first["investment_value"]) - float(first["cost_basis"])
+        last_inv_pnl = float(summary.total_unrealized_pnl)
+        ytd_pnl = last_inv_pnl - first_inv_pnl
+        first_total = float(first["value"])
+        if first_total > 0:
+            ytd_pnl_percent = ytd_pnl / first_total * 100
+
+    if summary.lt_unrealized_pnl is not None and summary.st_unrealized_pnl is not None:
+        jan1_lt, jan1_st = active_portfolio.get_lt_st_unrealized_pnl_at_date(jan1)
+        ytd_lt_pnl = float(summary.lt_unrealized_pnl) - float(jan1_lt)
+        ytd_st_pnl = float(summary.st_unrealized_pnl) - float(jan1_st)
+
+    return {
+        "total_cost_basis": float(summary.total_cost_basis),
+        "total_market_value": float(summary.total_market_value),
+        "investment_market_value": float(summary.investment_market_value),
+        "total_unrealized_pnl": float(summary.total_unrealized_pnl),
+        "lt_unrealized_pnl": float(summary.lt_unrealized_pnl) if summary.lt_unrealized_pnl is not None else None,
+        "st_unrealized_pnl": float(summary.st_unrealized_pnl) if summary.st_unrealized_pnl is not None else None,
+        "total_realized_pnl": float(summary.total_realized_pnl),
+        "total_pnl": float(summary.total_pnl),
+        "total_pnl_percent": float(summary.total_pnl_percent),
+        "total_dividends": float(summary.total_dividends),
+        "total_fees": float(summary.total_fees),
+        "all_time_cost_basis": float(summary.all_time_cost_basis),
+        "weighted_annualized_return": float(summary.weighted_annualized_return) if summary.weighted_annualized_return is not None else None,
+        "ytd_pnl": ytd_pnl,
+        "ytd_pnl_percent": ytd_pnl_percent,
+        "ytd_lt_pnl": ytd_lt_pnl,
+        "ytd_st_pnl": ytd_st_pnl,
+        "holdings": [_holding_to_dict(holding) for holding in summary.holdings],
+        "dividend_summaries": [
+            {
+                "symbol": item.symbol,
+                "total_amount": float(item.total_amount),
+                "payment_count": item.payment_count,
+            }
+            for item in summary.dividend_summaries
+        ],
+    }
+
+
+def _performance_cache_key(
+    start_date: Optional[date_type], end_date: Optional[date_type]
+) -> str:
+    start = start_date.isoformat() if start_date else "all"
+    end = end_date.isoformat() if end_date else "all"
+    return f"performance_{start}_{end}"
+
+
+def _build_performance_response(
+    active_portfolio: Portfolio,
+    start_date: Optional[date_type] = None,
+    end_date: Optional[date_type] = None,
+) -> dict:
+    return {
+        "performance": active_portfolio.get_historical_values(
+            start_date=start_date, end_date=end_date
+        ),
+        "realized_by_year": active_portfolio.get_realized_pnl_by_year(),
+        "realized_details_by_year": active_portfolio.get_realized_details_by_year(),
+    }
+
+
+def _slice_performance_response(
+    response: dict, start_date: date_type, end_date: date_type
+) -> dict:
+    return {
+        **response,
+        "performance": [
+            point
+            for point in response.get("performance", [])
+            if start_date.isoformat() <= point["date"] <= end_date.isoformat()
+        ],
+    }
+
+
+def _build_sold_response(active_portfolio: Portfolio) -> dict:
+    sold_assets = active_portfolio.get_sold_assets()
+    return {
+        "sold_assets": sold_assets,
+        "total_pnl": sum(item["pnl"] for item in sold_assets),
+        "total_proceeds": sum(item["proceeds"] for item in sold_assets),
+        "total_cost_basis": sum(item["cost_basis"] for item in sold_assets),
+    }
+
+
+def _refresh_market_snapshot(
+    force_prices: bool = True, wait_for_lock: bool = False
+) -> dict:
+    """Pull live prices, precompute dashboard data, then atomically publish it."""
+    if not _market_refresh_lock.acquire(blocking=wait_for_lock):
+        return {"status": "already-refreshing"}
+
+    started_at = datetime.now(MARKET_TZ)
+    entries: dict[str, dict] = {}
+    try:
+        active_portfolio = portfolio
+        generation = _portfolio_generation
+        if active_portfolio is None:
+            return {"status": "portfolio-unavailable"}
+
+        if force_prices:
+            price_service.clear_live_cache()
+
+        try:
+            summary = _build_summary_response(active_portfolio)
+            entries["summary"] = summary
+            entries["holdings"] = {"holdings": summary["holdings"]}
+            entries["dividends"] = {
+                "total_dividends": summary["total_dividends"],
+                "by_asset": summary["dividend_summaries"],
+            }
+        except Exception:
+            logger.exception("Failed to precompute portfolio summary")
+
+        try:
+            sold = _build_sold_response(active_portfolio)
+            entries["sold"] = sold
+        except Exception:
+            logger.exception("Failed to precompute sold positions")
+
+        try:
+            all_performance = _build_performance_response(active_portfolio)
+            entries[_performance_cache_key(None, None)] = all_performance
+            today = market_today()
+            jan1 = date_type(today.year, 1, 1)
+            try:
+                one_year_ago = today.replace(year=today.year - 1)
+            except ValueError:
+                one_year_ago = date_type(today.year - 1, 2, 28)
+            entries[_performance_cache_key(jan1, today)] = _slice_performance_response(
+                all_performance, jan1, today
+            )
+            entries[_performance_cache_key(one_year_ago, today)] = _slice_performance_response(
+                all_performance, one_year_ago, today
+            )
+        except Exception:
+            logger.exception("Failed to precompute performance charts")
+
+        try:
+            monthly_pnl = {"daily_pnl": active_portfolio.get_daily_pnl_history(num_days=400)}
+            entries["daily-pnl_400"] = monthly_pnl
+            entries["daily-pnl_42"] = {"daily_pnl": monthly_pnl["daily_pnl"][-42:]}
+        except Exception:
+            logger.exception("Failed to precompute daily P&L")
+
+        try:
+            today = market_today()
+            intraday = active_portfolio.get_intraday_values(interval="1m")
+            entries[f"intraday_{today.isoformat()}_1m"] = {
+                "intraday": intraday,
+                "date": today.isoformat(),
+                "cache_status": "fresh",
+            }
+        except Exception:
+            logger.exception("Failed to precompute intraday chart")
+
+        if generation != _portfolio_generation or active_portfolio is not portfolio:
+            logger.info("Discarding market snapshot for superseded portfolio generation")
+            return {"status": "superseded"}
+
+        _set_api_caches(entries)
+        finished_at = datetime.now(MARKET_TZ)
+        logger.info(
+            "Market snapshot refreshed: %s responses in %.2fs",
+            len(entries),
+            (finished_at - started_at).total_seconds(),
+        )
+        return {
+            "status": "fresh",
+            "responses_precomputed": len(entries),
+            "refreshed_at": finished_at.isoformat(),
+        }
+    finally:
+        _market_refresh_lock.release()
+
+
+async def _market_refresh_loop() -> None:
+    """Refresh the in-memory dashboard snapshot once per configured interval."""
+    while True:
+        await asyncio.sleep(MARKET_REFRESH_INTERVAL_SECONDS)
+        try:
+            await asyncio.to_thread(_refresh_market_snapshot, True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Scheduled market refresh failed")
+
+
 def load_portfolio() -> Portfolio:
     """Load portfolio from all transactions stored in Postgres."""
     global portfolio, _portfolio_generation
@@ -222,7 +490,8 @@ def load_portfolio() -> Portfolio:
 
 @app.on_event("startup")
 async def startup_event():
-    """Apply DB schema (idempotent) and load portfolio data on startup."""
+    """Load the portfolio, build the first snapshot, and start minute refreshes."""
+    global _market_refresh_task
     if not API_TOKEN:
         logger.warning("API_TOKEN not set — authentication is DISABLED (dev mode).")
     init_schema()
@@ -233,6 +502,24 @@ async def startup_event():
         if holding.symbol != "CASH"
     ]
     price_service.prime_intraday_cache_from_db(symbols, interval="1m")
+    await asyncio.to_thread(_refresh_market_snapshot, True)
+    _market_refresh_task = asyncio.create_task(
+        _market_refresh_loop(), name="market-snapshot-refresh"
+    )
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop the scheduled refresh cleanly during deploys and local restarts."""
+    global _market_refresh_task
+    if _market_refresh_task is None:
+        return
+    _market_refresh_task.cancel()
+    try:
+        await _market_refresh_task
+    except asyncio.CancelledError:
+        pass
+    _market_refresh_task = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -252,40 +539,9 @@ async def get_holdings():
         return cached
 
     try:
-        holdings = portfolio.get_holdings(fetch_prices=True)
-        result = {
-            "holdings": [
-                {
-                    "symbol": h.symbol,
-                    "quantity": float(h.quantity),
-                    "cost_basis": float(h.cost_basis),
-                    "avg_cost": float(h.avg_cost),
-                    "current_price": float(h.current_price) if h.current_price else None,
-                    "market_value": float(h.market_value) if h.market_value else None,
-                    "unrealized_pnl": float(h.unrealized_pnl) if h.unrealized_pnl else None,
-                    "pnl_percent": float(h.pnl_percent) if h.pnl_percent else None,
-                    "daily_change_percent": float(h.daily_change_percent) if h.daily_change_percent else None,
-                    "daily_change_amount": float(h.daily_change_amount) if h.daily_change_amount else None,
-                    "holding_days": h.holding_days,
-                    "annualized_return": float(h.annualized_return) if h.annualized_return else None,
-                    "weighted_annualized_return": float(h.weighted_annualized_return) if h.weighted_annualized_return else None,
-                    "long_term_quantity": float(h.long_term_quantity) if h.long_term_quantity is not None else None,
-                    "short_term_quantity": float(h.short_term_quantity) if h.short_term_quantity is not None else None,
-                    "lt_unrealized_pnl": float(h.lt_unrealized_pnl) if h.lt_unrealized_pnl is not None else None,
-                    "st_unrealized_pnl": float(h.st_unrealized_pnl) if h.st_unrealized_pnl is not None else None,
-                    "realized_pnl": float(h.realized_pnl) if h.realized_pnl is not None else None,
-                    "lt_realized_pnl": float(h.lt_realized_pnl) if h.lt_realized_pnl is not None else None,
-                    "st_realized_pnl": float(h.st_realized_pnl) if h.st_realized_pnl is not None else None,
-                    "total_pnl": float(h.total_pnl) if h.total_pnl is not None else None,
-                    "total_pnl_percent": float(h.total_pnl_percent) if h.total_pnl_percent is not None else None,
-                    "ytd_pnl": float(h.ytd_pnl) if h.ytd_pnl is not None else None,
-                    "ytd_pnl_percent": float(h.ytd_pnl_percent) if h.ytd_pnl_percent is not None else None,
-                    "lt_ytd_pnl": float(h.lt_ytd_pnl) if h.lt_ytd_pnl is not None else None,
-                    "st_ytd_pnl": float(h.st_ytd_pnl) if h.st_ytd_pnl is not None else None,
-                }
-                for h in holdings
-            ]
-        }
+        active_portfolio = portfolio
+        holdings = await asyncio.to_thread(active_portfolio.get_holdings, True)
+        result = {"holdings": [_holding_to_dict(item) for item in holdings]}
         _set_api_cache("holdings", result)
         return result
     except Exception as e:
@@ -304,92 +560,8 @@ async def get_summary():
         return cached
 
     try:
-        summary = portfolio.get_portfolio_summary(fetch_prices=True)
-
-        # YTD P&L: change in (investment_value - cost_basis) since Jan 1
-        ytd_pnl = 0.0
-        ytd_pnl_percent = 0.0
-        ytd_lt_pnl = None
-        ytd_st_pnl = None
-        today = market_today()
-        jan1 = date_type(today.year, 1, 1)
-        ytd_history = portfolio.get_historical_values(
-            start_date=jan1, end_date=today
-        )
-        if ytd_history and len(ytd_history) >= 1:
-            first = ytd_history[0]
-            first_inv_pnl = float(first["investment_value"]) - float(first["cost_basis"])
-            # Use live unrealized P&L for the "now" leg so YTD P&L tracks intraday price moves
-            last_inv_pnl = float(summary.total_unrealized_pnl)
-            ytd_pnl = last_inv_pnl - first_inv_pnl
-            first_total = float(first["value"])
-            if first_total > 0:
-                ytd_pnl_percent = ytd_pnl / first_total * 100
-
-        # YTD LT/ST P&L: compute LT/ST unrealized P&L at Jan 1, diff against today
-        if summary.lt_unrealized_pnl is not None and summary.st_unrealized_pnl is not None:
-            jan1_lt, jan1_st = portfolio.get_lt_st_unrealized_pnl_at_date(jan1)
-            ytd_lt_pnl = float(summary.lt_unrealized_pnl) - float(jan1_lt)
-            ytd_st_pnl = float(summary.st_unrealized_pnl) - float(jan1_st)
-
-        result = {
-            "total_cost_basis": float(summary.total_cost_basis),
-            "total_market_value": float(summary.total_market_value),
-            "investment_market_value": float(summary.investment_market_value),
-            "total_unrealized_pnl": float(summary.total_unrealized_pnl),
-            "lt_unrealized_pnl": float(summary.lt_unrealized_pnl) if summary.lt_unrealized_pnl is not None else None,
-            "st_unrealized_pnl": float(summary.st_unrealized_pnl) if summary.st_unrealized_pnl is not None else None,
-            "total_realized_pnl": float(summary.total_realized_pnl),
-            "total_pnl": float(summary.total_pnl),
-            "total_pnl_percent": float(summary.total_pnl_percent),
-            "total_dividends": float(summary.total_dividends),
-            "total_fees": float(summary.total_fees),
-            "all_time_cost_basis": float(summary.all_time_cost_basis),
-            "weighted_annualized_return": float(summary.weighted_annualized_return) if summary.weighted_annualized_return else None,
-            "ytd_pnl": ytd_pnl,
-            "ytd_pnl_percent": ytd_pnl_percent,
-            "ytd_lt_pnl": ytd_lt_pnl,
-            "ytd_st_pnl": ytd_st_pnl,
-            "holdings": [
-                {
-                    "symbol": h.symbol,
-                    "quantity": float(h.quantity),
-                    "cost_basis": float(h.cost_basis),
-                    "avg_cost": float(h.avg_cost),
-                    "current_price": float(h.current_price) if h.current_price else None,
-                    "market_value": float(h.market_value) if h.market_value else None,
-                    "unrealized_pnl": float(h.unrealized_pnl) if h.unrealized_pnl else None,
-                    "pnl_percent": float(h.pnl_percent) if h.pnl_percent else None,
-                    "daily_change_percent": float(h.daily_change_percent) if h.daily_change_percent else None,
-                    "daily_change_amount": float(h.daily_change_amount) if h.daily_change_amount else None,
-                    "holding_days": h.holding_days,
-                    "annualized_return": float(h.annualized_return) if h.annualized_return else None,
-                    "weighted_annualized_return": float(h.weighted_annualized_return) if h.weighted_annualized_return else None,
-                    "long_term_quantity": float(h.long_term_quantity) if h.long_term_quantity is not None else None,
-                    "short_term_quantity": float(h.short_term_quantity) if h.short_term_quantity is not None else None,
-                    "lt_unrealized_pnl": float(h.lt_unrealized_pnl) if h.lt_unrealized_pnl is not None else None,
-                    "st_unrealized_pnl": float(h.st_unrealized_pnl) if h.st_unrealized_pnl is not None else None,
-                    "realized_pnl": float(h.realized_pnl) if h.realized_pnl is not None else None,
-                    "lt_realized_pnl": float(h.lt_realized_pnl) if h.lt_realized_pnl is not None else None,
-                    "st_realized_pnl": float(h.st_realized_pnl) if h.st_realized_pnl is not None else None,
-                    "total_pnl": float(h.total_pnl) if h.total_pnl is not None else None,
-                    "total_pnl_percent": float(h.total_pnl_percent) if h.total_pnl_percent is not None else None,
-                    "ytd_pnl": float(h.ytd_pnl) if h.ytd_pnl is not None else None,
-                    "ytd_pnl_percent": float(h.ytd_pnl_percent) if h.ytd_pnl_percent is not None else None,
-                    "lt_ytd_pnl": float(h.lt_ytd_pnl) if h.lt_ytd_pnl is not None else None,
-                    "st_ytd_pnl": float(h.st_ytd_pnl) if h.st_ytd_pnl is not None else None,
-                }
-                for h in summary.holdings
-            ],
-            "dividend_summaries": [
-                {
-                    "symbol": d.symbol,
-                    "total_amount": float(d.total_amount),
-                    "payment_count": d.payment_count,
-                }
-                for d in summary.dividend_summaries
-            ],
-        }
+        active_portfolio = portfolio
+        result = await asyncio.to_thread(_build_summary_response, active_portfolio)
         _set_api_cache("summary", result)
         return result
     except Exception as e:
@@ -417,14 +589,29 @@ async def get_performance(
         if end_date:
             end = datetime.strptime(end_date, "%Y-%m-%d").date()
 
-        history = portfolio.get_historical_values(start_date=start, end_date=end)
-        realized_by_year = portfolio.get_realized_pnl_by_year()
-        realized_details_by_year = portfolio.get_realized_details_by_year()
-        return {
-            "performance": history,
-            "realized_by_year": realized_by_year,
-            "realized_details_by_year": realized_details_by_year,
-        }
+        cache_key = _performance_cache_key(start, end)
+        cached = _get_api_cache(cache_key)
+        if cached is not None:
+            return cached
+
+        # Any requested chart window can be sliced from the precomputed ALL
+        # series in memory, avoiding another historical calculation.
+        all_cached = _get_api_cache(_performance_cache_key(None, None))
+        if all_cached is not None and (start is not None or end is not None):
+            start_bound = start or date_type.min
+            end_bound = end or date_type.max
+            result = _slice_performance_response(
+                all_cached, start_bound, end_bound
+            )
+            _set_api_cache(cache_key, result)
+            return result
+
+        active_portfolio = portfolio
+        result = await asyncio.to_thread(
+            _build_performance_response, active_portfolio, start, end
+        )
+        _set_api_cache(cache_key, result)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
     except Exception as e:
@@ -449,8 +636,17 @@ async def get_daily_pnl(num_days: int = 42):
     if cached is not None:
         return cached
 
+    monthly_cached = _get_api_cache("daily-pnl_400")
+    if monthly_cached is not None and 0 < num_days <= 400:
+        result = {"daily_pnl": monthly_cached.get("daily_pnl", [])[-num_days:]}
+        _set_api_cache(cache_key, result)
+        return result
+
     try:
-        data = portfolio.get_daily_pnl_history(num_days=num_days)
+        active_portfolio = portfolio
+        data = await asyncio.to_thread(
+            active_portfolio.get_daily_pnl_history, num_days
+        )
         result = {"daily_pnl": data}
         _set_api_cache(cache_key, result)
         return result
@@ -465,11 +661,15 @@ async def get_dividends():
     if portfolio is None:
         load_portfolio()
 
+    cached = _get_api_cache("dividends")
+    if cached is not None:
+        return cached
+
     try:
         summaries = portfolio.get_dividend_summaries()
         total = portfolio.get_total_dividends()
 
-        return {
+        result = {
             "total_dividends": float(total),
             "by_asset": [
                 {
@@ -480,6 +680,8 @@ async def get_dividends():
                 for s in summaries
             ],
         }
+        _set_api_cache("dividends", result)
+        return result
     except Exception as e:
         logger.error(f"Error fetching dividends: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -491,27 +693,24 @@ async def get_sold_assets():
     if portfolio is None:
         load_portfolio()
 
-    try:
-        sold_assets = portfolio.get_sold_assets()
-        total_pnl = sum(s["pnl"] for s in sold_assets)
-        total_proceeds = sum(s["proceeds"] for s in sold_assets)
-        total_cost_basis = sum(s["cost_basis"] for s in sold_assets)
+    cached = _get_api_cache("sold")
+    if cached is not None:
+        return cached
 
-        return {
-            "sold_assets": sold_assets,
-            "total_pnl": total_pnl,
-            "total_proceeds": total_proceeds,
-            "total_cost_basis": total_cost_basis,
-        }
+    try:
+        result = _build_sold_response(portfolio)
+        _set_api_cache("sold", result)
+        return result
     except Exception as e:
         logger.error(f"Error fetching sold assets: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _refresh_after_write() -> None:
-    """Reload the portfolio and drop the API response cache after a DB write."""
+def _refresh_after_write() -> dict:
+    """Reload transactions and leave a complete fresh dashboard snapshot."""
     load_portfolio()
     _clear_api_cache()
+    return _refresh_market_snapshot(force_prices=False, wait_for_lock=True)
 
 
 class TransactionCreate(BaseModel):
@@ -555,7 +754,7 @@ async def create_transaction(txn_in: TransactionCreate):
 
     try:
         new_id = repository.insert_transaction(txn, broker=txn_in.broker)
-        _refresh_after_write()
+        await asyncio.to_thread(_refresh_after_write)
         return {
             "id": new_id,
             "message": (
@@ -582,7 +781,7 @@ async def upload_csv(file: UploadFile = File(...)):
         transactions = parse_csv_content(content_str)
         count = repository.insert_transactions(transactions)
 
-        _refresh_after_write()
+        await asyncio.to_thread(_refresh_after_write)
 
         return {
             "message": f"Imported {count} transactions from {file.filename}",
@@ -604,6 +803,7 @@ async def upload_csv(file: UploadFile = File(...)):
 async def reload_portfolio(
     clear_history_cache: bool = Query(False, description="Also clear historical data cache"),
     clear_price_cache: bool = Query(False, description="Force a fresh market-data fetch"),
+    precompute: bool = Query(False, description="Precompute dashboard responses before returning"),
 ):
     """Reload portfolio transactions while preserving market caches by default."""
     try:
@@ -613,7 +813,15 @@ async def reload_portfolio(
         _clear_api_cache()
         if clear_history_cache:
             cache_service.clear_cache()
-        return {"message": "Portfolio reloaded successfully"}
+        refresh = None
+        if precompute:
+            refresh = await asyncio.to_thread(
+                _refresh_market_snapshot, False, True
+            )
+        return {
+            "message": "Portfolio reloaded successfully",
+            "refresh": refresh,
+        }
     except Exception as e:
         logger.error(f"Error reloading portfolio: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -645,7 +853,7 @@ async def delete_transaction(txn_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Transaction {txn_id} not found")
 
-    _refresh_after_write()
+    await asyncio.to_thread(_refresh_after_write)
     return {"id": txn_id, "message": f"Deleted transaction {txn_id}"}
 
 
@@ -911,7 +1119,8 @@ class SimulatorRequest(BaseModel):
 
 
 class AnalysisReportRequest(BaseModel):
-    period: Literal["1d", "30d", "6m", "1y"]
+    start_date: date_type
+    end_date: date_type
 
 
 @app.post("/api/simulator/run")
@@ -945,26 +1154,41 @@ async def simulator_run(req: SimulatorRequest):
 # Saved portfolio analysis
 # ---------------------------------------------------------------------------
 
-def _generate_and_save_analysis(period: str) -> dict:
+def _generate_and_save_analysis(start_date: date_type, end_date: date_type) -> dict:
     active_portfolio = portfolio
     if active_portfolio is None:
         raise RuntimeError("Portfolio is not loaded")
     report = generate_analysis_report(
         active_portfolio,
         repository.get_all_transactions(),
-        period,
+        start_date=start_date,
+        end_date=end_date,
     )
+    report = add_gpt_analysis(report)
     return repository.create_analysis_report(report)
 
 
 @app.post("/api/analysis/reports")
 async def create_analysis_report(req: AnalysisReportRequest):
-    """Generate and persist an immutable analysis report snapshot."""
+    """Generate a GPT analysis for the requested dates and persist its snapshot."""
     if portfolio is None:
         load_portfolio()
+    if req.start_date > req.end_date:
+        raise HTTPException(status_code=400, detail="Start date must be on or before end date")
+    if req.end_date > market_today():
+        raise HTTPException(status_code=400, detail="End date cannot be in the future")
     try:
-        report = await asyncio.to_thread(_generate_and_save_analysis, req.period)
+        report = await asyncio.to_thread(
+            _generate_and_save_analysis,
+            req.start_date,
+            req.end_date,
+        )
         return {"report": report}
+    except AnalysisConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except AnalysisGenerationError as exc:
+        logger.error("GPT analysis request failed", exc_info=True)
+        raise HTTPException(status_code=502, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
