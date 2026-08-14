@@ -807,11 +807,13 @@ function updateSummaryCards(summary) {
 
     const ytdPnlEl = document.getElementById('ytdPnl');
     ytdPnlEl.textContent = `${ytdSign}${formatCurrencyAlways(ytdPnl)}`;
-    ytdPnlEl.className = `card-text fs-4 fw-bold mb-0 ${ytdColor}`;
+    ytdPnlEl.className = `card-text fs-4 fw-bold mb-0 has-tooltip ${ytdColor}`;
+    ytdPnlEl.dataset.tooltip = `YTD P&L = Open-position YTD P&L + gains realized this year\nUses prior-year-end value for older lots and cost for lots bought this year.`;
 
     const ytdPctEl = document.getElementById('ytdPnlPercent');
     ytdPctEl.textContent = `${ytdSign}${ytdPct.toFixed(2)}%`;
-    ytdPctEl.className = `card-text fs-6 mb-0 ${ytdColor}`;
+    ytdPctEl.className = `card-text fs-6 mb-0 has-tooltip ${ytdColor}`;
+    ytdPctEl.dataset.tooltip = `YTD P&L / ${formatCurrency(summary.ytd_basis || 0)} YTD baseline`;
 
     const ltSt = document.getElementById('ytdLtSt');
     if (ltSt && summary.ytd_lt_pnl != null && summary.ytd_st_pnl != null) {
@@ -1024,7 +1026,7 @@ function buildTotalRowHtml(holdings, totalInvValue) {
     const totalLtYtd = holdings.reduce((s, h) => s + (h.lt_ytd_pnl || 0), 0);
     const totalStYtd = holdings.reduce((s, h) => s + (h.st_ytd_pnl || 0), 0);
     const totalYtdBaseline = holdings.reduce(
-        (s, h) => s + ((h.market_value || 0) - (h.ytd_pnl || 0)), 0);
+        (s, h) => s + (h.ytd_basis || 0), 0);
     const totalYtdPct = totalYtdBaseline > 0 ? (totalYtd / totalYtdBaseline * 100) : 0;
     const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost * 100) : 0;
     // Total % uses all-time invested cost (current + sold) for parity with Total P&L semantics
@@ -1103,7 +1105,7 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
     const ltYtd = catHoldings.reduce((s, h) => s + (h.lt_ytd_pnl || 0), 0);
     const stYtd = catHoldings.reduce((s, h) => s + (h.st_ytd_pnl || 0), 0);
     const ytdBaseline = catHoldings.reduce(
-        (s, h) => s + ((h.market_value || 0) - (h.ytd_pnl || 0)), 0);
+        (s, h) => s + (h.ytd_basis || 0), 0);
     const ytdPct = ytdBaseline > 0 ? (ytd / ytdBaseline * 100) : 0;
     const pnlPct = cost > 0 ? (pnl / cost * 100) : 0;
     const totalCatPnlPct = cost > 0 ? (totalCatPnl / cost * 100) : 0;

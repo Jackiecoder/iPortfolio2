@@ -115,8 +115,6 @@ class Portfolio:
             # Adjust sell quantity and price for splits
             adjusted_qty = txn.quantity * factor
             adjusted_price = txn.ave_price / factor if factor != 0 else txn.ave_price
-            proceeds = adjusted_qty * adjusted_price
-
             # Remove shares using FIFO and track cost basis (split LT vs ST)
             remaining = adjusted_qty
             total_cost_basis = Decimal("0")
@@ -125,12 +123,15 @@ class Portfolio:
             st_cost_basis = Decimal("0")
             lt_proceeds = Decimal("0")
             st_proceeds = Decimal("0")
+            lot_slices = []
             sale_price = adjusted_price  # per share
 
             while remaining > 0 and self._lots[symbol]:
                 lot = self._lots[symbol][0]
+                purchase_date = lot.purchase_date
+                cost_per_share = lot.cost_per_share
                 # LT if held >= 365 days at sale date
-                is_lt = (txn.date - lot.purchase_date).days >= 365
+                is_lt = (txn.date - purchase_date).days >= 365
                 if lot.quantity <= remaining:
                     # Sell entire lot
                     slice_qty = lot.quantity
@@ -149,6 +150,13 @@ class Portfolio:
                     remaining = Decimal("0")
 
                 slice_proceeds = slice_qty * sale_price
+                lot_slices.append({
+                    "purchase_date": purchase_date,
+                    "quantity": slice_qty,
+                    "cost_per_share": cost_per_share,
+                    "cost_basis": slice_cost,
+                    "proceeds": slice_proceeds,
+                })
                 if is_lt:
                     lt_cost_basis += slice_cost
                     lt_proceeds += slice_proceeds
@@ -162,11 +170,12 @@ class Portfolio:
                     "date": txn.date,
                     "quantity": qty_sold,
                     "cost_basis": total_cost_basis,
-                    "proceeds": proceeds,
+                    "proceeds": qty_sold * sale_price,
                     "lt_cost_basis": lt_cost_basis,
                     "st_cost_basis": st_cost_basis,
                     "lt_proceeds": lt_proceeds,
                     "st_proceeds": st_proceeds,
+                    "lot_slices": lot_slices,
                 })
 
         elif txn.action == ActionType.DIV:
@@ -351,6 +360,66 @@ class Portfolio:
                 daily_pnl / daily_basis * 100 if daily_basis > 0 else Decimal("0")
             )
 
+    def _get_sale_ytd_metrics(
+        self,
+        symbol: str,
+        year_start_price: Optional[Decimal],
+        year_start: date,
+        as_of: date,
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+        """Return YTD P&L, baseline, LT P&L, and ST P&L for closed lots.
+
+        A lot carried into the year is rebased to the prior-year-end market
+        price, so gains earned in earlier years are not counted again. A lot
+        opened during the year uses its actual purchase cost as its baseline.
+        """
+        ytd_pnl = Decimal("0")
+        ytd_basis = Decimal("0")
+        lt_ytd = Decimal("0")
+        st_ytd = Decimal("0")
+
+        for sale in self._sales.get(symbol, []):
+            sale_date = sale["date"]
+            if sale_date < year_start or sale_date > as_of:
+                continue
+
+            lot_slices = sale.get("lot_slices", [])
+            if lot_slices:
+                for lot_slice in lot_slices:
+                    quantity = lot_slice["quantity"]
+                    purchase_date = lot_slice["purchase_date"]
+                    if purchase_date < year_start and year_start_price is not None:
+                        baseline_price = year_start_price
+                    else:
+                        baseline_price = lot_slice["cost_per_share"]
+                    baseline = baseline_price * quantity
+                    slice_ytd = lot_slice["proceeds"] - baseline
+                    ytd_pnl += slice_ytd
+                    ytd_basis += baseline
+                    if (sale_date - purchase_date).days >= 365:
+                        lt_ytd += slice_ytd
+                    else:
+                        st_ytd += slice_ytd
+                continue
+
+            # Compatibility fallback for manually-injected/legacy in-memory
+            # sale dictionaries that predate per-lot slice tracking.
+            gain = sale["proceeds"] - sale["cost_basis"]
+            ytd_pnl += gain
+            ytd_basis += sale["cost_basis"]
+            lt_gain = sale.get("lt_proceeds", Decimal("0")) - sale.get(
+                "lt_cost_basis", Decimal("0")
+            )
+            st_gain = sale.get("st_proceeds", Decimal("0")) - sale.get(
+                "st_cost_basis", Decimal("0")
+            )
+            if lt_gain == 0 and st_gain == 0:
+                st_gain = gain
+            lt_ytd += lt_gain
+            st_ytd += st_gain
+
+        return ytd_pnl, ytd_basis, lt_ytd, st_ytd
+
     def get_holdings(self, fetch_prices: bool = True) -> list[Holding]:
         """Get current holdings.
 
@@ -441,10 +510,9 @@ class Portfolio:
                     holding.lt_unrealized_pnl = lt_unreal
                     holding.st_unrealized_pnl = st_unreal
 
-            # YTD P&L on currently-held lots. For lots purchased before Jan 1
-            # the baseline is the prior-year-end close; for lots purchased this
-            # year the baseline is the lot's cost (effectively unrealized P&L
-            # for that lot). Sales during the year are reflected in realized P&L.
+            # YTD P&L combines open-lot market gains with gains realized by
+            # sales during this calendar year. Lots carried into the year use
+            # the prior-year-end close; lots bought this year use their cost.
             if holding.current_price is not None and holding.symbol in self._lots:
                 year_start = date(today.year, 1, 1)
                 year_start_price = year_start_prices.get(holding.symbol)
@@ -466,7 +534,21 @@ class Portfolio:
                         lt_ytd += lot_ytd
                     else:
                         st_ytd += lot_ytd
+
+                sale_ytd, sale_basis, sale_lt_ytd, sale_st_ytd = (
+                    self._get_sale_ytd_metrics(
+                        holding.symbol,
+                        year_start_price,
+                        year_start,
+                        today,
+                    )
+                )
+                ytd_pnl += sale_ytd
+                ytd_basis += sale_basis
+                lt_ytd += sale_lt_ytd
+                st_ytd += sale_st_ytd
                 holding.ytd_pnl = ytd_pnl
+                holding.ytd_basis = ytd_basis
                 holding.lt_ytd_pnl = lt_ytd
                 holding.st_ytd_pnl = st_ytd
                 if ytd_basis > 0:
@@ -869,6 +951,64 @@ class Portfolio:
             lt_unrealized_pnl = None
             st_unrealized_pnl = None
 
+        # Portfolio-level YTD uses the same economic-return basis as each
+        # holding and also includes symbols that were fully sold this year.
+        ytd_pnl = None
+        ytd_pnl_percent = None
+        ytd_basis = None
+        ytd_lt_pnl = None
+        ytd_st_pnl = None
+        if fetch_prices:
+            ytd_pnl = sum(
+                (h.ytd_pnl or Decimal("0")) for h in investments
+            )
+            ytd_basis = sum(
+                (h.ytd_basis or Decimal("0")) for h in investments
+            )
+            ytd_lt_pnl = sum(
+                (h.lt_ytd_pnl or Decimal("0")) for h in investments
+            )
+            ytd_st_pnl = sum(
+                (h.st_ytd_pnl or Decimal("0")) for h in investments
+            )
+
+            today = _market_today()
+            year_start = date(today.year, 1, 1)
+            current_symbols = {h.symbol for h in investments}
+            sold_only_symbols = sorted(
+                symbol
+                for symbol, sales in self._sales.items()
+                if symbol != "CASH"
+                and symbol not in current_symbols
+                and any(year_start <= sale["date"] <= today for sale in sales)
+            )
+            sold_year_start_prices = (
+                price_service.get_year_start_prices_batch(
+                    sold_only_symbols, today.year
+                )
+                if sold_only_symbols
+                else {}
+            )
+            for symbol in sold_only_symbols:
+                sale_ytd, sale_basis, sale_lt, sale_st = (
+                    self._get_sale_ytd_metrics(
+                        symbol,
+                        sold_year_start_prices.get(symbol),
+                        year_start,
+                        today,
+                    )
+                )
+                ytd_pnl += sale_ytd
+                ytd_basis += sale_basis
+                ytd_lt_pnl += sale_lt
+                ytd_st_pnl += sale_st
+
+            ytd_pnl_percent = (
+                ytd_pnl / ytd_basis * 100
+                if ytd_basis > 0
+                else Decimal("0")
+            )
+
         return PortfolioSummary(
             total_cost_basis=investment_cost_basis,
             total_market_value=total_market_value,
@@ -883,6 +1023,11 @@ class Portfolio:
             weighted_annualized_return=weighted_annualized_return,
             lt_unrealized_pnl=lt_unrealized_pnl,
             st_unrealized_pnl=st_unrealized_pnl,
+            ytd_pnl=ytd_pnl,
+            ytd_pnl_percent=ytd_pnl_percent,
+            ytd_basis=ytd_basis,
+            ytd_lt_pnl=ytd_lt_pnl,
+            ytd_st_pnl=ytd_st_pnl,
             holdings=holdings,
             dividend_summaries=dividend_summaries,
         )

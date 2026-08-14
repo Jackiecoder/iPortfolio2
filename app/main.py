@@ -261,6 +261,7 @@ def _holding_to_dict(holding) -> dict:
         "total_pnl_percent": float(holding.total_pnl_percent) if holding.total_pnl_percent is not None else None,
         "ytd_pnl": float(holding.ytd_pnl) if holding.ytd_pnl is not None else None,
         "ytd_pnl_percent": float(holding.ytd_pnl_percent) if holding.ytd_pnl_percent is not None else None,
+        "ytd_basis": float(holding.ytd_basis) if holding.ytd_basis is not None else None,
         "lt_ytd_pnl": float(holding.lt_ytd_pnl) if holding.lt_ytd_pnl is not None else None,
         "st_ytd_pnl": float(holding.st_ytd_pnl) if holding.st_ytd_pnl is not None else None,
     }
@@ -269,29 +270,6 @@ def _holding_to_dict(holding) -> dict:
 def _build_summary_response(active_portfolio: Portfolio) -> dict:
     """Calculate the full live summary without consulting the API cache."""
     summary = active_portfolio.get_portfolio_summary(fetch_prices=True)
-
-    ytd_pnl = 0.0
-    ytd_pnl_percent = 0.0
-    ytd_lt_pnl = None
-    ytd_st_pnl = None
-    today = market_today()
-    jan1 = date_type(today.year, 1, 1)
-    ytd_history = active_portfolio.get_historical_values(
-        start_date=jan1, end_date=today
-    )
-    if ytd_history:
-        first = ytd_history[0]
-        first_inv_pnl = float(first["investment_value"]) - float(first["cost_basis"])
-        last_inv_pnl = float(summary.total_unrealized_pnl)
-        ytd_pnl = last_inv_pnl - first_inv_pnl
-        first_total = float(first["value"])
-        if first_total > 0:
-            ytd_pnl_percent = ytd_pnl / first_total * 100
-
-    if summary.lt_unrealized_pnl is not None and summary.st_unrealized_pnl is not None:
-        jan1_lt, jan1_st = active_portfolio.get_lt_st_unrealized_pnl_at_date(jan1)
-        ytd_lt_pnl = float(summary.lt_unrealized_pnl) - float(jan1_lt)
-        ytd_st_pnl = float(summary.st_unrealized_pnl) - float(jan1_st)
 
     return {
         "total_cost_basis": float(summary.total_cost_basis),
@@ -307,10 +285,11 @@ def _build_summary_response(active_portfolio: Portfolio) -> dict:
         "total_fees": float(summary.total_fees),
         "all_time_cost_basis": float(summary.all_time_cost_basis),
         "weighted_annualized_return": float(summary.weighted_annualized_return) if summary.weighted_annualized_return is not None else None,
-        "ytd_pnl": ytd_pnl,
-        "ytd_pnl_percent": ytd_pnl_percent,
-        "ytd_lt_pnl": ytd_lt_pnl,
-        "ytd_st_pnl": ytd_st_pnl,
+        "ytd_pnl": float(summary.ytd_pnl) if summary.ytd_pnl is not None else None,
+        "ytd_pnl_percent": float(summary.ytd_pnl_percent) if summary.ytd_pnl_percent is not None else None,
+        "ytd_basis": float(summary.ytd_basis) if summary.ytd_basis is not None else None,
+        "ytd_lt_pnl": float(summary.ytd_lt_pnl) if summary.ytd_lt_pnl is not None else None,
+        "ytd_st_pnl": float(summary.ytd_st_pnl) if summary.ytd_st_pnl is not None else None,
         "holdings": [_holding_to_dict(holding) for holding in summary.holdings],
         "dividend_summaries": [
             {
