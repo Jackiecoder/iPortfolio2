@@ -325,12 +325,6 @@ async function saveTarget(symbol, pct) {
     }
 }
 
-// Auto-refresh settings
-let autoRefreshInterval = 0; // 0 = off, otherwise seconds
-let autoRefreshTimer = null;
-let countdownTimer = null;
-let countdownValue = 0;
-
 // Cache for API responses
 const apiCache = {
     data: {},
@@ -3964,52 +3958,6 @@ async function loadAllData() {
     }
 }
 
-// Auto-refresh functions
-function startAutoRefresh(intervalSeconds) {
-    stopAutoRefresh();
-
-    autoRefreshInterval = intervalSeconds;
-    document.getElementById('autoRefreshLabel').textContent = intervalSeconds === 0 ? 'Off' :
-        intervalSeconds < 60 ? `${intervalSeconds}s` : `${intervalSeconds / 60}m`;
-
-    if (intervalSeconds === 0) {
-        document.getElementById('refreshCountdown').classList.add('d-none');
-        return;
-    }
-
-    // Show countdown badge
-    document.getElementById('refreshCountdown').classList.remove('d-none');
-    countdownValue = intervalSeconds;
-    updateCountdownDisplay();
-
-    // Start countdown timer (updates every second)
-    countdownTimer = setInterval(() => {
-        countdownValue--;
-        if (countdownValue <= 0) {
-            countdownValue = intervalSeconds;
-            // Trigger refresh
-            refreshData();
-        }
-        updateCountdownDisplay();
-    }, 1000);
-}
-
-function stopAutoRefresh() {
-    if (countdownTimer) {
-        clearInterval(countdownTimer);
-        countdownTimer = null;
-    }
-    if (autoRefreshTimer) {
-        clearInterval(autoRefreshTimer);
-        autoRefreshTimer = null;
-    }
-}
-
-function updateCountdownDisplay() {
-    const display = countdownValue < 60 ? `${countdownValue}s` : `${Math.floor(countdownValue / 60)}:${(countdownValue % 60).toString().padStart(2, '0')}`;
-    document.getElementById('countdownValue').textContent = display;
-}
-
 async function refreshData() {
     // Clear cache and reload data
     apiCache.clear();
@@ -4047,12 +3995,6 @@ async function runManualRefresh() {
     try {
         await refreshData();
         showToast('Latest snapshot loaded', 'success');
-
-        // Reset countdown if auto-refresh is on
-        if (autoRefreshInterval > 0) {
-            countdownValue = autoRefreshInterval;
-            updateCountdownDisplay();
-        }
     } catch (error) {
         showToast('Error refreshing data', 'error');
     } finally {
@@ -4732,21 +4674,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Auto-refresh dropdown handlers
-    document.querySelectorAll('.auto-refresh-option').forEach(option => {
-        option.addEventListener('click', (e) => {
-            e.preventDefault();
-            const interval = parseInt(option.dataset.interval);
-            startAutoRefresh(interval);
-
-            // Update active state
-            document.querySelectorAll('.auto-refresh-option').forEach(opt => {
-                opt.classList.remove('active');
-            });
-            option.classList.add('active');
-        });
-    });
-
     // Anonymous mode button
     document.getElementById('anonymousBtn').addEventListener('click', toggleAnonymousMode);
     updateAnonymousButton();
@@ -5020,16 +4947,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Load data
     loadAllData();
-
-    // Auto-start 1-minute refresh
-    startAutoRefresh(60);
-    // Mark the 1 minute option as active
-    document.querySelectorAll('.auto-refresh-option').forEach(opt => {
-        opt.classList.remove('active');
-        if (opt.dataset.interval === '60') {
-            opt.classList.add('active');
-        }
-    });
 
     // -----------------------------------------------------------------------
     // Simulator event listeners

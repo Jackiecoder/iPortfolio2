@@ -335,14 +335,6 @@ body {
         width: 100%;
     }
 
-    #refreshCountdown:not(.d-none) {
-        display: inline-flex !important;
-        align-items: center;
-        justify-content: center;
-        min-height: 38px;
-        padding: 0.4rem 0.5rem;
-    }
-
     #addTxnBtn,
     .navbar label.btn {
         grid-column: span 2;
@@ -1965,17 +1957,6 @@ h1, h2, h3, h4, h5, h6,
     font-size: 1rem;
 }
 
-.nav-actions #refreshCountdown {
-    background: var(--mint-soft) !important;
-    border: 1px solid #ccecdf;
-    color: #187252 !important;
-    font-family: var(--data-font);
-    font-size: 0.68rem;
-    font-weight: 600;
-    min-height: 34px;
-    padding: 0.5rem 0.65rem;
-}
-
 .dropdown-menu {
     border: 1px solid var(--slate-200);
     border-radius: 12px;
@@ -2798,7 +2779,6 @@ h1, h2, h3, h4, h5, h6,
     }
     .nav-actions .dropdown .btn { padding-inline: 0.45rem; width: auto; }
     .nav-actions .dropdown .btn i { display: none; }
-    .nav-actions #refreshCountdown { display: none !important; }
     .nav-actions #addTxnBtn,
     .nav-actions > label { grid-column: auto; }
 
