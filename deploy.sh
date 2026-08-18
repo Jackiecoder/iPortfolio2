@@ -59,10 +59,10 @@ fi
 
 echo ""
 echo ">>> Deploying $SERVICE to Cloud Run (region $REGION) from source..."
-# The app maintains an in-process one-minute market refresh loop. Keep one
-# instance alive with CPU outside requests so Cloud Run does not pause it.
+# The portfolio and precomputed responses live in process memory. Keep exactly
+# one always-on instance so every request sees the same snapshot and refresh loop.
 gcloud run deploy "$SERVICE" --source . --region "$REGION" \
-    --min 1 --no-cpu-throttling
+    --min 1 --max 1 --no-cpu-throttling
 
 URL="$(gcloud run services describe "$SERVICE" --region "$REGION" \
     --format='value(status.url)' 2>/dev/null || true)"

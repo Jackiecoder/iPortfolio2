@@ -746,19 +746,6 @@ async function uploadFile(file) {
     }
 }
 
-async function reloadPortfolio() {
-    try {
-        const response = await fetch('/api/reload?clear_price_cache=true&precompute=true', { method: 'POST' });
-        if (!response.ok) throw new Error('Failed to reload');
-        // Clear cache after reload
-        apiCache.clear();
-        return await response.json();
-    } catch (error) {
-        console.error('Error reloading portfolio:', error);
-        throw error;
-    }
-}
-
 // UI Update functions
 function updateSummaryCards(summary) {
     document.getElementById('totalValue').textContent = formatCurrency(summary.total_market_value);
@@ -4039,7 +4026,7 @@ function setManualRefreshState(isRefreshing) {
 
     btn.disabled = isRefreshing;
     btn.setAttribute('aria-label', isRefreshing ? 'Refreshing data' : 'Refresh portfolio data');
-    btn.setAttribute('title', isRefreshing ? 'Refreshing data' : 'Pull fresh market data and refresh the portfolio');
+    btn.setAttribute('title', isRefreshing ? 'Loading latest snapshot' : 'Load the latest precomputed portfolio snapshot');
     btn.innerHTML = isRefreshing
         ? '<i class="bi bi-arrow-clockwise spin" aria-hidden="true"></i><span class="refresh-label">Refreshing</span>'
         : '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>';
@@ -4048,7 +4035,7 @@ function setManualRefreshState(isRefreshing) {
     card.setAttribute('aria-busy', isRefreshing ? 'true' : 'false');
     card.setAttribute('aria-disabled', isRefreshing ? 'true' : 'false');
     card.setAttribute('aria-label', isRefreshing ? 'Refreshing portfolio market data' : 'Refresh portfolio market data');
-    card.setAttribute('title', isRefreshing ? 'Refreshing portfolio market data' : 'Click to pull fresh market data and refresh the portfolio');
+    card.setAttribute('title', isRefreshing ? 'Loading latest portfolio snapshot' : 'Click to load the latest precomputed portfolio snapshot');
 }
 
 async function runManualRefresh() {
@@ -4058,10 +4045,8 @@ async function runManualRefresh() {
     setManualRefreshState(true);
 
     try {
-        await reloadPortfolio();
-        Object.keys(transactionCache).forEach(k => delete transactionCache[k]);
-        await loadAllData();
-        showToast('Data refreshed successfully', 'success');
+        await refreshData();
+        showToast('Latest snapshot loaded', 'success');
 
         // Reset countdown if auto-refresh is on
         if (autoRefreshInterval > 0) {

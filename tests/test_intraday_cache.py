@@ -145,6 +145,41 @@ class ApiCacheTests(unittest.TestCase):
             main._portfolio_generation = original_generation
 
 
+class MarketRefreshLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_cadence_includes_calculation_time(self):
+        class FakeLoop:
+            now = 0.0
+
+            def time(self):
+                return self.now
+
+        fake_loop = FakeLoop()
+        sleep_delays = []
+
+        async def fake_sleep(delay):
+            sleep_delays.append(delay)
+            if len(sleep_delays) == 2:
+                raise asyncio.CancelledError
+            fake_loop.now += delay
+
+        async def fake_to_thread(*args, **kwargs):
+            fake_loop.now += 8.0
+            return {"status": "fresh"}
+
+        with (
+            patch.object(main, "MARKET_REFRESH_INTERVAL_SECONDS", 60),
+            patch.object(main.asyncio, "get_running_loop", return_value=fake_loop),
+            patch.object(main.asyncio, "sleep", side_effect=fake_sleep),
+            patch.object(main.asyncio, "to_thread", side_effect=fake_to_thread),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await main._market_refresh_loop()
+
+        # The next refresh starts 60 seconds after the prior start, so an
+        # 8-second calculation leaves a 52-second wait rather than another 60.
+        self.assertEqual(sleep_delays, [60.0, 52.0])
+
+
 class PriceCacheTests(unittest.TestCase):
     def test_clear_live_cache_preserves_historical_data(self):
         service = PriceService()

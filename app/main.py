@@ -439,15 +439,21 @@ def _refresh_market_snapshot(
 
 
 async def _market_refresh_loop() -> None:
-    """Refresh the in-memory dashboard snapshot once per configured interval."""
+    """Refresh on a fixed start-to-start cadence, including calculation time."""
+    loop = asyncio.get_running_loop()
+    next_refresh_at = loop.time() + MARKET_REFRESH_INTERVAL_SECONDS
     while True:
-        await asyncio.sleep(MARKET_REFRESH_INTERVAL_SECONDS)
+        await asyncio.sleep(max(0, next_refresh_at - loop.time()))
         try:
             await asyncio.to_thread(_refresh_market_snapshot, True)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Scheduled market refresh failed")
+        finally:
+            next_refresh_at += MARKET_REFRESH_INTERVAL_SECONDS
+            while next_refresh_at <= loop.time():
+                next_refresh_at += MARKET_REFRESH_INTERVAL_SECONDS
 
 
 def load_portfolio() -> Portfolio:
