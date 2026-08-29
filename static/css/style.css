@@ -25,6 +25,146 @@
     --danger-color: #dc3545;
 }
 
+/* Annual Performance drill-down */
+.annual-year-row {
+    cursor: pointer;
+}
+
+.annual-year-toggle {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    display: inline-flex;
+    padding: 0;
+}
+
+.annual-year-toggle:focus-visible {
+    border-radius: 3px;
+    outline: 2px solid #0d6efd;
+    outline-offset: 3px;
+}
+
+.annual-chevron {
+    display: inline-block;
+    transition: transform 160ms ease;
+}
+
+.annual-detail-row > td {
+    padding: 1rem 1.25rem;
+}
+
+.annual-detail-shell {
+    min-width: 0;
+}
+
+.annual-asset-ledger {
+    background: #fff;
+    border: 1px solid #dbe3ec;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.annual-detail-heading {
+    align-items: center;
+    background: #f7f9fc;
+    border-bottom: 1px solid #dbe3ec;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    padding: 0.75rem 0.9rem;
+}
+
+.annual-asset-count {
+    background: #e8eef6;
+    border-radius: 999px;
+    color: #526170;
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 0.2rem 0.55rem;
+    text-transform: uppercase;
+}
+
+.annual-asset-table {
+    min-width: 680px;
+}
+
+.annual-asset-table th,
+.annual-asset-table td {
+    padding: 0.55rem 0.75rem;
+    vertical-align: middle;
+}
+
+.annual-asset-table thead th {
+    background: #fff;
+    color: #64748b;
+    font-size: 0.68rem;
+    letter-spacing: 0.035em;
+    text-transform: uppercase;
+}
+
+.annual-asset-table tfoot td {
+    background: #f7f9fc;
+    border-top: 1px solid #cbd5e1;
+    font-weight: 700;
+}
+
+.annual-asset-name {
+    line-height: 1.1;
+}
+
+.annual-contribution-track {
+    background: #edf1f5;
+    border-radius: 999px;
+    height: 3px;
+    margin-top: 0.35rem;
+    overflow: hidden;
+    width: 92px;
+}
+
+.annual-contribution-bar {
+    border-radius: inherit;
+    display: block;
+    height: 100%;
+}
+
+.annual-contribution-bar.is-positive {
+    background: var(--success-color);
+}
+
+.annual-contribution-bar.is-negative {
+    background: var(--danger-color);
+}
+
+.annual-detail-empty {
+    color: #64748b;
+    font-size: 0.82rem;
+    padding: 1rem;
+}
+
+.annual-detail-secondary {
+    margin-top: 0.25rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .annual-chevron {
+        transition: none;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .annual-detail-row > td {
+        padding: 0.75rem;
+    }
+
+    .annual-detail-heading {
+        align-items: flex-start;
+        padding: 0.7rem 0.75rem;
+    }
+}
+
 /* Add Transaction / Trade Preview */
 .txn-mode-switch {
     display: grid;

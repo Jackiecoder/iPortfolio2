@@ -836,6 +836,142 @@ class Portfolio:
             by_year[year].sort(key=lambda r: r["date"])
         return by_year
 
+    def get_annual_asset_pnl_by_year(
+        self,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> dict[str, list[dict]]:
+        """Break each Annual Performance P&L total down by asset.
+
+        The Annual Performance table defines P&L as::
+
+            end investment value - start investment value - net invested
+
+        This method applies that exact identity to every symbol at the same
+        calendar-year boundaries, so the asset rows reconcile to the displayed
+        annual P&L. Realized sale gains remain a separate annual detail because
+        the headline P&L is the change in mark-to-market P&L, not total return.
+        """
+        if not self._transactions:
+            return {}
+
+        first_transaction_date = min(txn.date for txn in self._transactions)
+        start = start_date or first_transaction_date
+        end = end_date or _market_today()
+        if end < start:
+            return {}
+
+        # The first point and each calendar-year end are all the snapshots
+        # needed to reproduce the frontend's annual formula.
+        year_ends = {
+            min(date(year, 12, 31), end)
+            for year in range(start.year, end.year + 1)
+        }
+        checkpoints = sorted({start, *year_ends})
+
+        position_actions = {
+            ActionType.BUY,
+            ActionType.SELL,
+            ActionType.GIFT,
+            ActionType.GAS,
+            ActionType.FIX,
+        }
+        symbols = sorted({
+            txn.asset
+            for txn in self._transactions
+            if txn.action in position_actions and txn.date <= end
+        })
+
+        prices_at_checkpoint: dict[date, dict[str, Decimal]] = {}
+        for checkpoint in checkpoints:
+            window_start = checkpoint - timedelta(days=14)
+            historical = price_service.get_historical_prices_batch(
+                symbols,
+                datetime.combine(window_start, datetime.min.time()),
+                datetime.combine(checkpoint, datetime.max.time()),
+            )
+            prices_at_checkpoint[checkpoint] = {}
+            for symbol in symbols:
+                prices = historical.get(symbol) or {}
+                applicable = [price_date for price_date in prices if price_date <= checkpoint]
+                if applicable:
+                    prices_at_checkpoint[checkpoint][symbol] = prices[max(applicable)]
+
+        snapshots: dict[date, dict[str, dict[str, Decimal]]] = {}
+        temp_portfolio = Portfolio(adjust_splits=self._adjust_splits)
+        sorted_txns = sorted(
+            self._transactions,
+            key=lambda txn: txn.effective_executed_at,
+        )
+        txn_idx = 0
+
+        for checkpoint in checkpoints:
+            while txn_idx < len(sorted_txns) and sorted_txns[txn_idx].date <= checkpoint:
+                temp_portfolio._process_transaction(sorted_txns[txn_idx])
+                txn_idx += 1
+
+            snapshot: dict[str, dict[str, Decimal]] = {}
+            for symbol, lots in temp_portfolio._lots.items():
+                quantity = sum((lot.quantity for lot in lots), Decimal("0"))
+                cost_basis = sum((lot.total_cost for lot in lots), Decimal("0"))
+                price = prices_at_checkpoint[checkpoint].get(symbol)
+                market_value = quantity * price if quantity > 0 and price is not None else Decimal("0")
+                if quantity > 0 or cost_basis != 0:
+                    snapshot[symbol] = {
+                        "value": market_value,
+                        "cost_basis": cost_basis,
+                    }
+            snapshots[checkpoint] = snapshot
+
+        by_year: dict[str, list[dict]] = {}
+        previous_end = start
+        for year in range(start.year, end.year + 1):
+            year_end = min(date(year, 12, 31), end)
+            year_start = start if year == start.year else previous_end
+            start_snapshot = snapshots.get(year_start, {})
+            end_snapshot = snapshots.get(year_end, {})
+            rows = []
+
+            for symbol in sorted(set(start_snapshot) | set(end_snapshot)):
+                start_values = start_snapshot.get(
+                    symbol, {"value": Decimal("0"), "cost_basis": Decimal("0")}
+                )
+                end_values = end_snapshot.get(
+                    symbol, {"value": Decimal("0"), "cost_basis": Decimal("0")}
+                )
+                # The frontend treats the first displayed year's opening cost
+                # basis as its Start Value; later years use prior year-end value.
+                start_value = (
+                    start_values["cost_basis"]
+                    if year == start.year
+                    else start_values["value"]
+                )
+                net_invested = end_values["cost_basis"] - start_values["cost_basis"]
+                pnl = end_values["value"] - start_value - net_invested
+
+                if any(
+                    abs(value) >= Decimal("0.005")
+                    for value in (
+                        start_value,
+                        end_values["value"],
+                        net_invested,
+                        pnl,
+                    )
+                ):
+                    rows.append({
+                        "symbol": symbol,
+                        "start_value": float(start_value),
+                        "end_value": float(end_values["value"]),
+                        "net_invested": float(net_invested),
+                        "pnl": float(pnl),
+                    })
+
+            rows.sort(key=lambda row: abs(row["pnl"]), reverse=True)
+            by_year[str(year)] = rows
+            previous_end = year_end
+
+        return by_year
+
     def get_portfolio_summary(self, fetch_prices: bool = True) -> PortfolioSummary:
         """Get complete portfolio summary.
 

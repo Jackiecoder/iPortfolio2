@@ -2289,8 +2289,10 @@ function updatePnlChart(performance) {
 
     // Calculate P&L for each data point: market_value - cost_basis
     const pnlData = data.map(d => {
-        const investmentValue = d.investment_value || d.value;
-        const costBasis = d.cost_basis || 0;
+        // Zero is a valid investment value (for example after every position
+        // is sold); only fall back when the field is actually absent.
+        const investmentValue = d.investment_value ?? d.value;
+        const costBasis = d.cost_basis ?? 0;
         return investmentValue - costBasis;
     });
 
@@ -3363,6 +3365,7 @@ function updateAnnualTable(performance) {
     });
 
     const realizedDetails = performance.realized_details_by_year || {};
+    const annualAssetPnl = performance.annual_asset_pnl_by_year || {};
 
     // Render table rows (most recent year first). Each year row is clickable to
     // expand a detail row with the P&L breakdown + that year's realized sales.
@@ -3379,8 +3382,9 @@ function updateAnnualTable(performance) {
         }
 
         const yearRow = `
-        <tr class="annual-year-row" data-year="${r.year}" style="cursor:pointer">
-            <td><i class="bi bi-chevron-right annual-chevron me-1"></i><strong>${r.year}</strong></td>
+        <tr class="annual-year-row" data-year="${r.year}">
+            <td><button type="button" class="annual-year-toggle" aria-expanded="false"
+                aria-controls="annual-detail-${r.year}"><i class="bi bi-chevron-right annual-chevron me-1"></i><strong>${r.year}</strong></button></td>
             <td>${formatCurrency(r.startValue)}</td>
             <td>${formatCurrency(r.endValue)}</td>
             <td>${formatCurrency(r.netInvested)}</td>
@@ -3390,33 +3394,43 @@ function updateAnnualTable(performance) {
         </tr>`;
 
         const detailRow = `
-        <tr class="annual-detail-row d-none" data-year-detail="${r.year}">
-            <td colspan="7" class="bg-light">${buildAnnualDetail(r, realizedDetails[r.year] || [])}</td>
+        <tr class="annual-detail-row d-none" id="annual-detail-${r.year}" data-year-detail="${r.year}">
+            <td colspan="7" class="bg-light">${buildAnnualDetail(
+                r,
+                realizedDetails[r.year] || [],
+                annualAssetPnl[r.year] || []
+            )}</td>
         </tr>`;
 
         return yearRow + detailRow;
     }).join('');
 
-    // Toggle a year's detail row on click (idempotent: replaces any prior handler).
-    tbody.onclick = (e) => {
-        const yearRow = e.target.closest('.annual-year-row');
-        if (!yearRow) return;
+    const toggleYear = (yearRow) => {
         const year = yearRow.dataset.year;
         const detail = tbody.querySelector(`.annual-detail-row[data-year-detail="${year}"]`);
         const chevron = yearRow.querySelector('.annual-chevron');
+        const toggle = yearRow.querySelector('.annual-year-toggle');
         if (!detail) return;
         const opening = detail.classList.contains('d-none');
         detail.classList.toggle('d-none', !opening);
+        if (toggle) toggle.setAttribute('aria-expanded', String(opening));
         if (chevron) {
             chevron.classList.toggle('bi-chevron-right', !opening);
             chevron.classList.toggle('bi-chevron-down', opening);
         }
     };
+
+    // Toggle a year's detail row. The native button remains keyboard accessible;
+    // clicking elsewhere in the summary row also opens the same detail.
+    tbody.onclick = (e) => {
+        const yearRow = e.target.closest('.annual-year-row');
+        if (yearRow) toggleYear(yearRow);
+    };
 }
 
 // Build the expanded detail HTML for one Annual Performance year: a P&L
-// breakdown plus a sub-table of the individual realized sales that year.
-function buildAnnualDetail(r, sales) {
+// asset ledger, formula breakdown, and individual realized sales that year.
+function buildAnnualDetail(r, sales, assetRows) {
     const totalInvested = r.startValue + r.netInvested;
     const pnlBreakdown = `P&L = End Value − Start Value − Net Invested
     = ${formatCurrency(r.endValue)} − ${formatCurrency(r.startValue)} − ${formatCurrency(r.netInvested)}
@@ -3425,6 +3439,48 @@ function buildAnnualDetail(r, sales) {
 P&L % = P&L ÷ (Start Value + Net Invested) × 100
     = ${formatCurrency(r.pnl)} ÷ ${formatCurrency(totalInvested)} × 100
     = ${r.pnlPercent.toFixed(2)}%`;
+
+    let assetHtml;
+    if (!assetRows.length) {
+        assetHtml = '<div class="annual-detail-empty">No asset-level P&L data available.</div>';
+    } else {
+        const maxAbsPnl = Math.max(...assetRows.map(asset => Math.abs(asset.pnl || 0)), 0);
+        const body = assetRows.map(asset => {
+            const pnl = asset.pnl || 0;
+            const pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+            const barClass = pnl >= 0 ? 'is-positive' : 'is-negative';
+            const barWidth = maxAbsPnl > 0 ? Math.max(2, Math.abs(pnl) / maxAbsPnl * 100) : 0;
+            return `<tr>
+                <td>
+                    <div class="annual-asset-name"><strong>${escapeHtml(displaySymbol(asset.symbol))}</strong></div>
+                    <div class="annual-contribution-track" aria-hidden="true">
+                        <span class="annual-contribution-bar ${barClass}" style="width:${barWidth.toFixed(1)}%"></span>
+                    </div>
+                </td>
+                <td class="text-end">${formatCurrency(asset.start_value)}</td>
+                <td class="text-end">${formatCurrency(asset.end_value)}</td>
+                <td class="text-end">${formatCurrency(asset.net_invested)}</td>
+                <td class="text-end ${pnlClass} fw-semibold">${formatCurrency(pnl)}</td>
+            </tr>`;
+        }).join('');
+        const assetTotal = assetRows.reduce((total, asset) => total + (asset.pnl || 0), 0);
+        const totalClass = assetTotal >= 0 ? 'text-success' : 'text-danger';
+        assetHtml = `
+        <div class="table-responsive">
+            <table class="table table-sm annual-asset-table mb-0">
+                <thead><tr>
+                    <th>Asset</th><th class="text-end">Start Value</th>
+                    <th class="text-end">End Value</th><th class="text-end">Net Invested</th>
+                    <th class="text-end">P&L Contribution</th>
+                </tr></thead>
+                <tbody>${body}</tbody>
+                <tfoot><tr>
+                    <td colspan="4" class="text-end">Annual P&L</td>
+                    <td class="text-end ${totalClass}">${formatCurrency(assetTotal)}</td>
+                </tr></tfoot>
+            </table>
+        </div>`;
+    }
 
     let salesHtml;
     if (!sales.length) {
@@ -3462,7 +3518,18 @@ P&L % = P&L ÷ (Start Value + Net Invested) × 100
     }
 
     return `
-    <div class="row g-3 py-2">
+    <div class="annual-detail-shell py-2">
+        <section class="annual-asset-ledger" aria-label="${r.year} P&L by asset">
+            <div class="annual-detail-heading">
+                <div>
+                    <div class="fw-semibold"><i class="bi bi-layers me-1"></i>P&L by asset</div>
+                    <div class="small text-muted">Mark-to-market contribution to the annual P&L above; realized gains are listed separately.</div>
+                </div>
+                <span class="annual-asset-count">${assetRows.length} asset${assetRows.length === 1 ? '' : 's'}</span>
+            </div>
+            ${assetHtml}
+        </section>
+        <div class="row g-3 annual-detail-secondary">
         <div class="col-lg-4">
             <div class="fw-semibold mb-1"><i class="bi bi-calculator me-1"></i>P&L breakdown</div>
             <div class="small text-muted" style="white-space:pre-line">${pnlBreakdown}</div>
@@ -3470,6 +3537,7 @@ P&L % = P&L ÷ (Start Value + Net Invested) × 100
         <div class="col-lg-8">
             <div class="fw-semibold mb-1"><i class="bi bi-cash-coin me-1"></i>Realized sales in ${r.year}</div>
             <div class="table-responsive">${salesHtml}</div>
+        </div>
         </div>
     </div>`;
 }

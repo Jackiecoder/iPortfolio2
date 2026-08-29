@@ -319,6 +319,9 @@ def _build_performance_response(
         "performance": active_portfolio.get_historical_values(
             start_date=start_date, end_date=end_date
         ),
+        "annual_asset_pnl_by_year": active_portfolio.get_annual_asset_pnl_by_year(
+            start_date=start_date, end_date=end_date
+        ),
         "realized_by_year": active_portfolio.get_realized_pnl_by_year(),
         "realized_details_by_year": active_portfolio.get_realized_details_by_year(),
     }
