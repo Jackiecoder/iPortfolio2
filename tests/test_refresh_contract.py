@@ -22,7 +22,10 @@ class RefreshContractTests(unittest.TestCase):
     def test_cloud_run_uses_one_instance_for_in_memory_snapshot(self):
         deploy_script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
 
-        self.assertIn("--min 1 --max 1 --no-cpu-throttling", deploy_script)
+        self.assertIn(
+            "--min-instances 1 --max-instances 1 --no-cpu-throttling",
+            deploy_script,
+        )
 
 
 if __name__ == "__main__":
