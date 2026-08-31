@@ -63,6 +63,15 @@ class PriceService:
         self._price_cache: dict[str, tuple[Decimal, datetime]] = {}
         self._history_cache: dict[str, tuple[dict, datetime]] = {}
         self._prev_close_cache: dict[str, tuple[dict, datetime]] = {}
+        self._prev_close_cache_market_date: dict[str, date] = {}
+        # A previous close is an immutable market-day baseline.  Once a full
+        # symbol set has been validated against the actual prior US trading
+        # session, keep it for the rest of the market day so an upstream data
+        # gap cannot make Today P&L jump between two different baselines.
+        self._locked_prev_close_cache: dict[
+            str, tuple[date, date, dict[str, Optional[Decimal]]]
+        ] = {}
+        self._previous_market_session_cache: dict[date, date] = {}
         self._crypto_midnight_cache: dict[str, tuple[dict, datetime]] = {}
         self._intraday_cache: dict[str, tuple[list, datetime]] = {}
 
@@ -540,6 +549,117 @@ class PriceService:
             # No bar for today yet → iloc[-1] is already yesterday's close
             return Decimal(str(close_series.iloc[-1]))
 
+    @staticmethod
+    def _market_date_from_timestamp(timestamp) -> Optional[date]:
+        """Return a yfinance index value as an America/New_York date."""
+        if hasattr(timestamp, "to_pydatetime"):
+            timestamp = timestamp.to_pydatetime()
+        if isinstance(timestamp, datetime):
+            if timestamp.tzinfo is not None:
+                timestamp = timestamp.astimezone(MARKET_TZ)
+            return timestamp.date()
+        if isinstance(timestamp, date):
+            return timestamp
+        return None
+
+    def _close_on_session(self, close_series, session_date: date) -> Optional[Decimal]:
+        """Return the close only when the requested trading session exists."""
+        close_series = close_series.dropna()
+        for timestamp, value in reversed(list(close_series.items())):
+            if self._market_date_from_timestamp(timestamp) == session_date:
+                return Decimal(str(value))
+        return None
+
+    @staticmethod
+    def _symbol_frame(data, symbol: str):
+        """Extract one symbol from either flat or MultiIndex yfinance output."""
+        columns = getattr(data, "columns", None)
+        if columns is None or getattr(columns, "nlevels", 1) == 1:
+            return data
+
+        for level in range(columns.nlevels):
+            if symbol in columns.get_level_values(level):
+                return data.xs(symbol, axis=1, level=level, drop_level=True)
+        return None
+
+    def _get_previous_market_session(self, today_date: date) -> Optional[date]:
+        """Identify the last real US trading session from SPY minute bars.
+
+        Minute bars are intentionally used as an independent session calendar.
+        Yahoo's daily endpoint can occasionally omit an entire trading day;
+        deriving the expected session from that same daily response would fail
+        to notice the gap.  This also handles weekends and exchange holidays
+        without maintaining a separate holiday table.
+        """
+        cached = self._previous_market_session_cache.get(today_date)
+        if cached is not None:
+            return cached
+
+        try:
+            session_bars = yf.download(
+                "SPY",
+                period="5d",
+                interval="1m",
+                prepost=False,
+                progress=False,
+            )
+            if session_bars.empty:
+                logger.warning("Cannot identify prior market session: SPY minute data is empty")
+                return None
+
+            session_dates = {
+                market_date
+                for timestamp in session_bars.index
+                if (market_date := self._market_date_from_timestamp(timestamp)) is not None
+                and market_date < today_date
+            }
+            if not session_dates:
+                logger.warning(
+                    "Cannot identify prior market session before %s from SPY minute data",
+                    today_date,
+                )
+                return None
+
+            previous_session = max(session_dates)
+            self._previous_market_session_cache[today_date] = previous_session
+            return previous_session
+        except Exception as e:
+            logger.error("Error identifying previous US market session: %s", e)
+            return None
+
+    def _get_regular_session_close_batch(
+        self, symbols: list[str], session_date: date
+    ) -> dict[str, Optional[Decimal]]:
+        """Fallback to each symbol's final regular-session one-minute close."""
+        results = {symbol: None for symbol in symbols}
+        if not symbols:
+            return results
+
+        try:
+            data = yf.download(
+                symbols,
+                start=session_date.isoformat(),
+                end=(session_date + timedelta(days=1)).isoformat(),
+                interval="1m",
+                prepost=False,
+                progress=False,
+                group_by="ticker",
+            )
+            for symbol in symbols:
+                symbol_data = self._symbol_frame(data, symbol)
+                if symbol_data is None or symbol_data.empty or "Close" not in symbol_data:
+                    continue
+                results[symbol] = self._close_on_session(
+                    symbol_data["Close"], session_date
+                )
+        except Exception as e:
+            logger.error(
+                "Error fetching regular-session close fallback for %s: %s",
+                session_date,
+                e,
+            )
+        return results
+
     def get_previous_close(self, symbol: str) -> Optional[Decimal]:
         """Get previous trading day's closing price for a symbol.
 
@@ -549,19 +669,7 @@ class PriceService:
         Returns:
             Previous close price as Decimal, or None if not available
         """
-        try:
-            ticker = yf.Ticker(symbol)
-            # Get last 5 days of daily data
-            history = ticker.history(period="5d")
-
-            if history.empty:
-                return None
-
-            return self._get_prev_close_from_series(history["Close"], _market_today())
-
-        except Exception as e:
-            logger.error(f"Error fetching previous close for {symbol}: {e}")
-            return None
+        return self.get_previous_close_batch([symbol]).get(symbol)
 
     def get_previous_close_batch(self, symbols: list[str]) -> dict[str, Optional[Decimal]]:
         """Get previous trading day's closing prices for multiple symbols.
@@ -583,9 +691,16 @@ class PriceService:
             return results
 
         cache_key = str(sorted(symbols))
+        locked = self._locked_prev_close_cache.get(cache_key)
+        if locked is not None and locked[0] == today:
+            return dict(locked[2])
+
         if cache_key in self._prev_close_cache:
             data, cached_at = self._prev_close_cache[cache_key]
-            if datetime.now() - cached_at < self.cache_ttl:
+            if (
+                self._prev_close_cache_market_date.get(cache_key) == today
+                and datetime.now() - cached_at < self.cache_ttl
+            ):
                 return data
 
         crypto_symbols = [s for s in symbols if self._is_crypto_symbol(s)]
@@ -598,30 +713,30 @@ class PriceService:
 
         # --- Stocks: use last daily close ---
         if stock_symbols:
+            previous_session = self._get_previous_market_session(today)
             try:
                 data = yf.download(
                     stock_symbols,
-                    period="5d",
+                    period="10d",
                     progress=False,
-                    group_by="ticker" if len(stock_symbols) > 1 else None
+                    group_by="ticker",
                 )
 
                 for symbol in stock_symbols:
                     try:
-                        if len(stock_symbols) == 1:
-                            symbol_data = data
-                        else:
-                            if symbol not in data.columns.get_level_values(0):
-                                results[symbol] = None
-                                continue
-                            symbol_data = data[symbol]
+                        symbol_data = self._symbol_frame(data, symbol)
 
-                        if symbol_data.empty:
+                        if symbol_data is None or symbol_data.empty or "Close" not in symbol_data:
                             results[symbol] = None
-                        else:
-                            results[symbol] = self._get_prev_close_from_series(
-                                symbol_data["Close"], today
+                        elif previous_session is not None:
+                            results[symbol] = self._close_on_session(
+                                symbol_data["Close"], previous_session
                             )
+                        else:
+                            # Without an independently verified session date,
+                            # returning the last available daily row can turn
+                            # a multi-day move into a false Today result.
+                            results[symbol] = None
 
                     except Exception as e:
                         logger.error(f"Error processing previous close for {symbol}: {e}")
@@ -631,9 +746,38 @@ class PriceService:
                 logger.error(f"Error in batch previous close fetch for stocks: {e}")
                 for symbol in stock_symbols:
                     if symbol not in results:
-                        results[symbol] = self.get_previous_close(symbol)
+                        results[symbol] = None
+
+            # A missing expected session is a data-source gap, not permission
+            # to silently use the prior available row.  Recover it from the
+            # completed session's minute bars instead.
+            if previous_session is not None:
+                missing = [symbol for symbol in stock_symbols if results.get(symbol) is None]
+                if missing:
+                    logger.warning(
+                        "Daily data missing expected session %s for %s; using 1m close fallback",
+                        previous_session,
+                        missing,
+                    )
+                    fallback = self._get_regular_session_close_batch(
+                        missing, previous_session
+                    )
+                    for symbol in missing:
+                        if fallback.get(symbol) is not None:
+                            results[symbol] = fallback[symbol]
 
         self._prev_close_cache[cache_key] = (results, datetime.now())
+        self._prev_close_cache_market_date[cache_key] = today
+        if (
+            stock_symbols
+            and previous_session is not None
+            and all(results.get(symbol) is not None for symbol in symbols)
+        ):
+            self._locked_prev_close_cache[cache_key] = (
+                today,
+                previous_session,
+                dict(results),
+            )
         return results
 
     # yfinance rolling window for intraday data (days back from today)
@@ -943,6 +1087,9 @@ class PriceService:
         self._price_cache.clear()
         self._history_cache.clear()
         self._prev_close_cache.clear()
+        self._prev_close_cache_market_date.clear()
+        self._locked_prev_close_cache.clear()
+        self._previous_market_session_cache.clear()
         self._crypto_midnight_cache.clear()
         self._intraday_cache.clear()
 
