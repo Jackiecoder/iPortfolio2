@@ -1,6 +1,7 @@
 import asyncio
 from datetime import date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -44,10 +45,21 @@ class TickerHistoryTests(unittest.TestCase):
                 ave_price=Decimal("120"),
                 executed_at=datetime(2026, 8, 15, 11, 0, tzinfo=market_tz),
             ),
+            Transaction(
+                date=date(2025, 1, 10),
+                asset="MSFT",
+                action=ActionType.SELL,
+                quantity=Decimal("1"),
+                ave_price=Decimal("400"),
+                executed_at=datetime(2025, 1, 10, 9, 45, tzinfo=market_tz),
+            ),
         ]
 
         class FakePortfolio:
             _transactions = transactions
+
+            def get_holdings(self, fetch_prices=True):
+                return [SimpleNamespace(symbol="AAPL")]
 
         original_portfolio = main.portfolio
         main.portfolio = FakePortfolio()
@@ -73,6 +85,8 @@ class TickerHistoryTests(unittest.TestCase):
             main.portfolio = original_portfolio
 
         self.assertEqual(result["symbol"], "AAPL")
+        self.assertEqual(result["active_symbols"], ["AAPL"])
+        self.assertEqual(result["archived_symbols"], ["MSFT"])
         self.assertEqual(result["granularity"], "daily")
         self.assertEqual(len(result["prices"]), 2)
         self.assertEqual([row["action"] for row in result["transactions"]], ["BUY", "SELL"])

@@ -937,22 +937,30 @@ async def get_ticker_history(
 
     all_transactions = portfolio._transactions
     available_symbols = sorted({t.asset for t in all_transactions if t.asset != "CASH"})
+    active_symbols = sorted(
+        holding.symbol
+        for holding in portfolio.get_holdings(fetch_prices=False)
+        if holding.symbol != "CASH"
+    )
+    active_symbol_set = set(active_symbols)
+    archived_symbols = [
+        symbol for symbol in available_symbols if symbol not in active_symbol_set
+    ]
     if not available_symbols:
         return {
             "symbol": None,
             "period": period,
             "granularity": "daily",
             "available_symbols": [],
+            "active_symbols": [],
+            "archived_symbols": [],
             "prices": [],
             "transactions": [],
         }
 
     selected_symbol = (symbol or "").strip().upper()
     if not selected_symbol:
-        selected_symbol = next(
-            (t.asset for t in reversed(all_transactions) if t.asset != "CASH"),
-            available_symbols[0],
-        )
+        selected_symbol = active_symbols[0] if active_symbols else available_symbols[0]
     if selected_symbol not in available_symbols:
         raise HTTPException(
             status_code=404,
@@ -1016,6 +1024,8 @@ async def get_ticker_history(
         "end_date": end_date.isoformat(),
         "granularity": granularity,
         "available_symbols": available_symbols,
+        "active_symbols": active_symbols,
+        "archived_symbols": archived_symbols,
         "prices": sampled_prices,
         "transactions": markers,
     }

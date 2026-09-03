@@ -693,11 +693,52 @@ async function fetchTickerHistory(symbol, period = '6M') {
     return data;
 }
 
-function populateTickerHistorySymbols(symbols, selectedSymbol) {
+function appendTickerOptions(group, symbols) {
+    symbols.forEach(symbol => group.appendChild(new Option(displaySymbol(symbol), symbol)));
+}
+
+function populateTickerHistorySymbols(data) {
     const select = document.getElementById('tickerHistorySymbol');
     if (!select) return;
-    select.replaceChildren(...symbols.map(symbol => new Option(displaySymbol(symbol), symbol)));
-    select.value = selectedSymbol || symbols[0] || '';
+    const activeSymbols = data.active_symbols || [];
+    const archivedSymbols = data.archived_symbols || [];
+    const groups = [];
+
+    if (activeSymbols.length) {
+        const activeGroup = document.createElement('optgroup');
+        activeGroup.label = 'Active tickers';
+        appendTickerOptions(activeGroup, activeSymbols);
+        groups.push(activeGroup);
+    }
+    if (archivedSymbols.length) {
+        const archivedGroup = document.createElement('optgroup');
+        archivedGroup.label = '──────── Archived tickers';
+        appendTickerOptions(archivedGroup, archivedSymbols);
+        groups.push(archivedGroup);
+    }
+    select.replaceChildren(...groups);
+    select.value = data.symbol || activeSymbols[0] || archivedSymbols[0] || '';
+}
+
+function createTickerTradeMarker(letter, color) {
+    const marker = document.createElement('canvas');
+    const size = 30;
+    marker.width = size;
+    marker.height = size;
+    const ctx = marker.getContext('2d');
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, 12, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 13px "DM Sans", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(letter, size / 2, size / 2 + 0.5);
+    return marker;
 }
 
 function tickerHistoryPeriodLabel(period) {
@@ -745,6 +786,8 @@ function renderTickerHistoryChart(data) {
     const transactions = data.transactions || [];
     const buyData = transactions.filter(t => t.action === 'BUY').map(t => ({ x: t.date, y: t.price, trade: t }));
     const sellData = transactions.filter(t => t.action === 'SELL').map(t => ({ x: t.date, y: t.price, trade: t }));
+    const buyMarker = createTickerTradeMarker('B', '#28a977');
+    const sellMarker = createTickerTradeMarker('S', '#cf4f58');
     const timeUnit = data.granularity === 'monthly' ? 'month' : (data.granularity === 'weekly' ? 'week' : 'month');
 
     tickerHistoryChart = new Chart(canvas.getContext('2d'), {
@@ -767,25 +810,20 @@ function renderTickerHistoryChart(data) {
                     label: 'Buy',
                     type: 'scatter',
                     data: buyData,
-                    pointStyle: 'triangle',
-                    pointRadius: 7,
-                    pointHoverRadius: 9,
-                    pointBackgroundColor: '#28a977',
-                    pointBorderColor: '#ffffff',
-                    pointBorderWidth: 2,
+                    pointStyle: buyMarker,
+                    pointRadius: 15,
+                    pointHoverRadius: 17,
+                    pointHitRadius: 7,
                     order: 1,
                 },
                 {
                     label: 'Sell',
                     type: 'scatter',
                     data: sellData,
-                    pointStyle: 'triangle',
-                    pointRotation: 180,
-                    pointRadius: 7,
-                    pointHoverRadius: 9,
-                    pointBackgroundColor: '#cf4f58',
-                    pointBorderColor: '#ffffff',
-                    pointBorderWidth: 2,
+                    pointStyle: sellMarker,
+                    pointRadius: 15,
+                    pointHoverRadius: 17,
+                    pointHitRadius: 7,
                     order: 1,
                 },
             ],
@@ -842,7 +880,7 @@ async function loadTickerHistory(force = false) {
     try {
         const data = await fetchTickerHistory(select?.value, tickerHistoryPeriod);
         if (requestId !== tickerHistoryRequestId) return;
-        populateTickerHistorySymbols(data.available_symbols || [], data.symbol);
+        populateTickerHistorySymbols(data);
         renderTickerHistoryChart(data);
         tickerHistoryInitialized = true;
     } catch (error) {

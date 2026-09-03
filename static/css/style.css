@@ -2553,10 +2553,18 @@ h1, h2, h3, h4, h5, h6,
 }
 
 .ticker-history-key {
+    align-items: center;
     border-radius: 50%;
-    display: inline-block;
-    height: 8px;
-    width: 8px;
+    color: #fff;
+    display: inline-flex;
+    font-family: var(--body-font);
+    font-size: 0.62rem;
+    font-style: normal;
+    font-weight: 700;
+    height: 20px;
+    justify-content: center;
+    line-height: 1;
+    width: 20px;
 }
 
 .ticker-history-key.is-buy { background: var(--mint); }
