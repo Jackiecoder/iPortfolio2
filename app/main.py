@@ -32,6 +32,7 @@ from .db import init_schema
 from .models import ActionType, Transaction, default_transaction_time
 from .portfolio import Portfolio
 from .price_service import price_service
+from .split_service import split_service
 from .simulator import run_simulation
 
 # Configure logging
@@ -885,6 +886,139 @@ async def get_transactions(
     except Exception as e:
         logger.error(f"Error fetching transactions for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+_TICKER_HISTORY_PERIOD_DAYS = {
+    "1M": 31,
+    "3M": 93,
+    "6M": 186,
+    "1Y": 366,
+    "3Y": 365 * 3 + 1,
+    "5Y": 365 * 5 + 2,
+}
+
+
+def _sample_ticker_prices(
+    prices: dict[date_type, Decimal], granularity: str
+) -> list[dict]:
+    """Return the last available close in each requested time bucket."""
+    if granularity == "daily":
+        sampled = sorted(prices.items())
+    else:
+        buckets: dict[tuple[int, ...], tuple[date_type, Decimal]] = {}
+        for price_date, close in sorted(prices.items()):
+            if granularity == "weekly":
+                iso_year, iso_week, _ = price_date.isocalendar()
+                key = (iso_year, iso_week)
+            else:
+                key = (price_date.year, price_date.month)
+            buckets[key] = (price_date, close)
+        sampled = list(buckets.values())
+
+    return [
+        {"date": price_date.isoformat(), "close": float(close)}
+        for price_date, close in sampled
+    ]
+
+
+@app.get("/api/ticker-history")
+async def get_ticker_history(
+    symbol: Optional[str] = Query(None, description="Portfolio ticker symbol"),
+    period: str = Query("6M", description="1M, 3M, 6M, 1Y, 3Y, 5Y, or ALL"),
+):
+    """Return a ticker price series with BUY/SELL markers from the ledger."""
+    if portfolio is None:
+        load_portfolio()
+
+    valid_periods = {*_TICKER_HISTORY_PERIOD_DAYS, "ALL"}
+    period = period.upper()
+    if period not in valid_periods:
+        raise HTTPException(status_code=400, detail=f"Invalid period: {period}")
+
+    all_transactions = portfolio._transactions
+    available_symbols = sorted({t.asset for t in all_transactions if t.asset != "CASH"})
+    if not available_symbols:
+        return {
+            "symbol": None,
+            "period": period,
+            "granularity": "daily",
+            "available_symbols": [],
+            "prices": [],
+            "transactions": [],
+        }
+
+    selected_symbol = (symbol or "").strip().upper()
+    if not selected_symbol:
+        selected_symbol = next(
+            (t.asset for t in reversed(all_transactions) if t.asset != "CASH"),
+            available_symbols[0],
+        )
+    if selected_symbol not in available_symbols:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Ticker {selected_symbol} is not in the portfolio ledger",
+        )
+
+    symbol_transactions = [t for t in all_transactions if t.asset == selected_symbol]
+    end_date = market_today()
+    if period == "ALL":
+        start_date = min(t.date for t in symbol_transactions)
+    else:
+        start_date = end_date - timedelta(days=_TICKER_HISTORY_PERIOD_DAYS[period])
+
+    if period in {"1M", "3M", "6M"}:
+        granularity = "daily"
+    elif period == "1Y":
+        granularity = "weekly"
+    else:
+        granularity = "monthly"
+
+    prices = await asyncio.to_thread(
+        price_service.get_historical_prices,
+        selected_symbol,
+        start_date,
+        end_date,
+    )
+    sampled_prices = _sample_ticker_prices(prices, granularity)
+
+    markers = []
+    for txn in symbol_transactions:
+        if txn.action not in {ActionType.BUY, ActionType.SELL}:
+            continue
+        if txn.date < start_date or txn.date > end_date:
+            continue
+        original_price = txn.ave_price
+        if original_price is None and txn.amount is not None and txn.quantity:
+            original_price = abs(txn.amount / txn.quantity)
+        if original_price is None:
+            continue
+        factor = await asyncio.to_thread(
+            split_service.get_adjustment_factor,
+            selected_symbol,
+            txn.date,
+            end_date,
+        )
+        adjusted_price = original_price / factor if factor else original_price
+        markers.append({
+            "date": txn.date.isoformat(),
+            "executed_at": txn.effective_executed_at.isoformat(),
+            "action": txn.action.value,
+            "price": float(adjusted_price),
+            "execution_price": float(original_price),
+            "quantity": float(txn.quantity) if txn.quantity is not None else None,
+            "amount": float(txn.amount) if txn.amount is not None else None,
+        })
+
+    return {
+        "symbol": selected_symbol,
+        "period": period,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "granularity": granularity,
+        "available_symbols": available_symbols,
+        "prices": sampled_prices,
+        "transactions": markers,
+    }
 
 
 @app.get("/api/files")

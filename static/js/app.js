@@ -116,6 +116,10 @@ let investmentChart = null;
 let allocationChart = null;
 let pnlChart = null;
 let intradayChart = null;
+let tickerHistoryChart = null;
+let tickerHistoryPeriod = '6M';
+let tickerHistoryInitialized = false;
+let tickerHistoryRequestId = 0;
 
 // Portfolio chart view mode
 let portfolioChartView = 'investment'; // 'value' or 'investment'
@@ -677,6 +681,176 @@ async function fetchSoldAssets(useCache = true) {
     } catch (error) {
         console.error('Error fetching sold assets:', error);
         return null;
+    }
+}
+
+async function fetchTickerHistory(symbol, period = '6M') {
+    const params = new URLSearchParams({ period });
+    if (symbol) params.set('symbol', symbol);
+    const response = await fetch(`/api/ticker-history?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Failed to fetch ticker history');
+    return data;
+}
+
+function populateTickerHistorySymbols(symbols, selectedSymbol) {
+    const select = document.getElementById('tickerHistorySymbol');
+    if (!select) return;
+    select.replaceChildren(...symbols.map(symbol => new Option(displaySymbol(symbol), symbol)));
+    select.value = selectedSymbol || symbols[0] || '';
+}
+
+function tickerHistoryPeriodLabel(period) {
+    return ({
+        '1M': '1 month', '3M': '3 months', '6M': '6 months',
+        '1Y': '1 year', '3Y': '3 years', '5Y': '5 years', 'ALL': 'All history',
+    })[period] || period;
+}
+
+function updateTickerHistorySummary(data) {
+    const prices = data.prices || [];
+    const lastEl = document.getElementById('tickerHistoryLast');
+    const changeEl = document.getElementById('tickerHistoryChange');
+    const countEl = document.getElementById('tickerHistoryTradeCount');
+    const metaEl = document.getElementById('tickerHistoryMeta');
+
+    lastEl.textContent = prices.length ? formatPrice(data.symbol, prices.at(-1).close) : '--';
+    countEl.textContent = String((data.transactions || []).length);
+    metaEl.textContent = `${tickerHistoryPeriodLabel(data.period)} · ${data.granularity} closes`;
+
+    if (prices.length > 1 && prices[0].close) {
+        const change = ((prices.at(-1).close / prices[0].close) - 1) * 100;
+        changeEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+        changeEl.classList.toggle('text-success', change >= 0);
+        changeEl.classList.toggle('text-danger', change < 0);
+    } else {
+        changeEl.textContent = '--';
+        changeEl.classList.remove('text-success', 'text-danger');
+    }
+}
+
+function renderTickerHistoryChart(data) {
+    const canvas = document.getElementById('tickerHistoryChart');
+    const empty = document.getElementById('tickerHistoryEmpty');
+    if (!canvas || !empty) return;
+    if (tickerHistoryChart) tickerHistoryChart.destroy();
+    tickerHistoryChart = null;
+
+    const prices = data.prices || [];
+    empty.classList.toggle('d-none', prices.length > 0);
+    canvas.classList.toggle('d-none', prices.length === 0);
+    updateTickerHistorySummary(data);
+    if (!prices.length) return;
+
+    const transactions = data.transactions || [];
+    const buyData = transactions.filter(t => t.action === 'BUY').map(t => ({ x: t.date, y: t.price, trade: t }));
+    const sellData = transactions.filter(t => t.action === 'SELL').map(t => ({ x: t.date, y: t.price, trade: t }));
+    const timeUnit = data.granularity === 'monthly' ? 'month' : (data.granularity === 'weekly' ? 'week' : 'month');
+
+    tickerHistoryChart = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+            datasets: [
+                {
+                    label: `${displaySymbol(data.symbol)} close`,
+                    data: prices.map(p => ({ x: p.date, y: p.close })),
+                    borderColor: '#3157d5',
+                    backgroundColor: 'rgba(49, 87, 213, 0.10)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.18,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    order: 2,
+                },
+                {
+                    label: 'Buy',
+                    type: 'scatter',
+                    data: buyData,
+                    pointStyle: 'triangle',
+                    pointRadius: 7,
+                    pointHoverRadius: 9,
+                    pointBackgroundColor: '#28a977',
+                    pointBorderColor: '#ffffff',
+                    pointBorderWidth: 2,
+                    order: 1,
+                },
+                {
+                    label: 'Sell',
+                    type: 'scatter',
+                    data: sellData,
+                    pointStyle: 'triangle',
+                    pointRotation: 180,
+                    pointRadius: 7,
+                    pointHoverRadius: 9,
+                    pointBackgroundColor: '#cf4f58',
+                    pointBorderColor: '#ffffff',
+                    pointBorderWidth: 2,
+                    order: 1,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { intersect: false, mode: 'nearest' },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        title: items => items[0]?.raw?.trade?.date || items[0]?.raw?.x || '',
+                        label: ctx => {
+                            const trade = ctx.raw.trade;
+                            if (!trade) return ` Close: ${formatPrice(data.symbol, ctx.parsed.y)}`;
+                            const qty = trade.quantity == null ? '' : ` · ${formatNumber(trade.quantity, 4)} shares`;
+                            return ` ${trade.action}: ${formatPrice(data.symbol, trade.execution_price)}${qty}`;
+                        },
+                        afterLabel: ctx => {
+                            const trade = ctx.raw.trade;
+                            return trade?.amount == null ? '' : ` Amount: ${formatCurrency(Math.abs(trade.amount))}`;
+                        },
+                    },
+                },
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: { unit: timeUnit, tooltipFormat: 'MMM d, yyyy' },
+                    grid: { display: false },
+                    ticks: { maxTicksLimit: 8, color: '#77849a', font: { size: 11 } },
+                },
+                y: {
+                    grid: { color: 'rgba(93, 107, 130, 0.10)' },
+                    ticks: {
+                        color: '#77849a',
+                        font: { size: 11 },
+                        callback: value => formatPrice(data.symbol, value),
+                    },
+                },
+            },
+        },
+    });
+}
+
+async function loadTickerHistory(force = false) {
+    if (tickerHistoryInitialized && !force) return;
+    const select = document.getElementById('tickerHistorySymbol');
+    const empty = document.getElementById('tickerHistoryEmpty');
+    const requestId = ++tickerHistoryRequestId;
+    empty.textContent = 'Loading price history…';
+    empty.classList.remove('d-none');
+    try {
+        const data = await fetchTickerHistory(select?.value, tickerHistoryPeriod);
+        if (requestId !== tickerHistoryRequestId) return;
+        populateTickerHistorySymbols(data.available_symbols || [], data.symbol);
+        renderTickerHistoryChart(data);
+        tickerHistoryInitialized = true;
+    } catch (error) {
+        if (requestId !== tickerHistoryRequestId) return;
+        console.error('Error fetching ticker history:', error);
+        empty.textContent = error.message || 'Price history could not be loaded.';
+        empty.classList.remove('d-none');
+        document.getElementById('tickerHistoryChart')?.classList.add('d-none');
     }
 }
 
@@ -4031,6 +4205,7 @@ async function refreshData() {
     apiCache.clear();
     Object.keys(transactionCache).forEach(k => delete transactionCache[k]);
     await loadAllData();
+    if (tickerHistoryInitialized) await loadTickerHistory(true);
 }
 
 // Event handlers
@@ -4582,6 +4757,7 @@ function resizeTrackerCharts() {
         performanceChart,
         investmentChart,
         allocationChart,
+        tickerHistoryChart,
         simPerfChart,
         simDriftChart,
     ].forEach(chart => {
@@ -4615,10 +4791,31 @@ document.addEventListener('DOMContentLoaded', () => {
             requestAnimationFrame(resizeTrackerCharts);
             // Lazy-load the transactions list the first time its tab is opened.
             if (target === '#trackerTransactions') loadTransactions();
+            if (target === '#trackerPerformance') loadTickerHistory();
         });
     });
 
     initTransactionsTab();
+    document.getElementById('tickerHistorySymbol')?.addEventListener('change', () => {
+        tickerHistoryInitialized = false;
+        loadTickerHistory(true);
+    });
+    document.querySelectorAll('.ticker-history-period-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            tickerHistoryPeriod = btn.dataset.period;
+            document.querySelectorAll('.ticker-history-period-btn').forEach(periodBtn => {
+                const active = periodBtn === btn;
+                periodBtn.classList.toggle('btn-primary', active);
+                periodBtn.classList.toggle('active', active);
+                periodBtn.classList.toggle('btn-outline-secondary', !active);
+            });
+            tickerHistoryInitialized = false;
+            loadTickerHistory(true);
+        });
+    });
+    if (localStorage.getItem('trackerActiveTab') === '#trackerPerformance') {
+        loadTickerHistory();
+    }
     // If the transactions tab was the last-active tab (restored above), load it now.
     if (localStorage.getItem('trackerActiveTab') === '#trackerTransactions') {
         loadTransactions();
