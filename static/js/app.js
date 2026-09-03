@@ -720,21 +720,45 @@ function populateTickerHistorySymbols(data) {
     select.value = data.symbol || activeSymbols[0] || archivedSymbols[0] || '';
 }
 
-function createTickerTradeMarker(letter, color) {
+function tickerTradeAmount(trade) {
+    const amount = Number(trade?.amount);
+    if (Number.isFinite(amount) && amount !== 0) return Math.abs(amount);
+
+    const quantity = Number(trade?.quantity);
+    const price = Number(trade?.execution_price);
+    return Number.isFinite(quantity) && Number.isFinite(price)
+        ? Math.abs(quantity * price)
+        : 0;
+}
+
+function tickerTradeMarkerSize(amount, minAmount, maxAmount) {
+    const minSize = 24;
+    const maxSize = 46;
+    if (!(amount > 0)) return minSize;
+    if (!(maxAmount > minAmount)) return 34;
+
+    // A logarithmic scale keeps both small and large trades readable when
+    // transaction values span several orders of magnitude.
+    const minLog = Math.log1p(minAmount);
+    const maxLog = Math.log1p(maxAmount);
+    const normalized = Math.max(0, Math.min(1, (Math.log1p(amount) - minLog) / (maxLog - minLog)));
+    return Math.round(minSize + ((maxSize - minSize) * normalized));
+}
+
+function createTickerTradeMarker(letter, color, size) {
     const marker = document.createElement('canvas');
-    const size = 30;
     marker.width = size;
     marker.height = size;
     const ctx = marker.getContext('2d');
     ctx.beginPath();
-    ctx.arc(size / 2, size / 2, 12, 0, Math.PI * 2);
+    ctx.arc(size / 2, size / 2, (size / 2) - 2, 0, Math.PI * 2);
     ctx.fillStyle = color;
     ctx.fill();
     ctx.lineWidth = 2;
     ctx.strokeStyle = '#ffffff';
     ctx.stroke();
     ctx.fillStyle = '#ffffff';
-    ctx.font = '700 13px "DM Sans", sans-serif';
+    ctx.font = `700 ${Math.max(12, Math.round(size * 0.43))}px "DM Sans", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(letter, size / 2, size / 2 + 0.5);
@@ -784,10 +808,25 @@ function renderTickerHistoryChart(data) {
     if (!prices.length) return;
 
     const transactions = data.transactions || [];
-    const buyData = transactions.filter(t => t.action === 'BUY').map(t => ({ x: t.date, y: t.price, trade: t }));
-    const sellData = transactions.filter(t => t.action === 'SELL').map(t => ({ x: t.date, y: t.price, trade: t }));
-    const buyMarker = createTickerTradeMarker('B', '#28a977');
-    const sellMarker = createTickerTradeMarker('S', '#cf4f58');
+    const tradeAmounts = transactions.map(tickerTradeAmount).filter(amount => amount > 0);
+    const minTradeAmount = tradeAmounts.length ? Math.min(...tradeAmounts) : 0;
+    const maxTradeAmount = tradeAmounts.length ? Math.max(...tradeAmounts) : 0;
+    const toMarkerPoint = (trade, letter, color) => {
+        const markerSize = tickerTradeMarkerSize(tickerTradeAmount(trade), minTradeAmount, maxTradeAmount);
+        return {
+            x: trade.date,
+            y: trade.price,
+            trade,
+            marker: createTickerTradeMarker(letter, color, markerSize),
+            markerRadius: markerSize / 2,
+        };
+    };
+    const buyData = transactions
+        .filter(t => t.action === 'BUY')
+        .map(t => toMarkerPoint(t, 'B', '#28a977'));
+    const sellData = transactions
+        .filter(t => t.action === 'SELL')
+        .map(t => toMarkerPoint(t, 'S', '#cf4f58'));
     const timeUnit = data.granularity === 'monthly' ? 'month' : (data.granularity === 'weekly' ? 'week' : 'month');
 
     tickerHistoryChart = new Chart(canvas.getContext('2d'), {
@@ -810,9 +849,9 @@ function renderTickerHistoryChart(data) {
                     label: 'Buy',
                     type: 'scatter',
                     data: buyData,
-                    pointStyle: buyMarker,
-                    pointRadius: 15,
-                    pointHoverRadius: 17,
+                    pointStyle: context => context.raw?.marker || 'circle',
+                    pointRadius: context => context.raw?.markerRadius || 12,
+                    pointHoverRadius: context => (context.raw?.markerRadius || 12) + 2,
                     pointHitRadius: 7,
                     order: 1,
                 },
@@ -820,9 +859,9 @@ function renderTickerHistoryChart(data) {
                     label: 'Sell',
                     type: 'scatter',
                     data: sellData,
-                    pointStyle: sellMarker,
-                    pointRadius: 15,
-                    pointHoverRadius: 17,
+                    pointStyle: context => context.raw?.marker || 'circle',
+                    pointRadius: context => context.raw?.markerRadius || 12,
+                    pointHoverRadius: context => (context.raw?.markerRadius || 12) + 2,
                     pointHitRadius: 7,
                     order: 1,
                 },
@@ -858,6 +897,7 @@ function renderTickerHistoryChart(data) {
                     ticks: { maxTicksLimit: 8, color: '#77849a', font: { size: 11 } },
                 },
                 y: {
+                    grace: '8%',
                     grid: { color: 'rgba(93, 107, 130, 0.10)' },
                     ticks: {
                         color: '#77849a',

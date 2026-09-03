@@ -2552,6 +2552,11 @@ h1, h2, h3, h4, h5, h6,
     gap: 0.35rem;
 }
 
+.ticker-history-legend .ticker-history-size-note {
+    border-left: 1px solid var(--border-color);
+    padding-left: 0.85rem;
+}
+
 .ticker-history-key {
     align-items: center;
     border-radius: 50%;
