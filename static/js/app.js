@@ -131,6 +131,8 @@ let currentInterval = '1m';
 // Current intraday date (null = today)
 let currentIntradayDate = null;
 let intradayLoadRequestId = 0;
+let renderedIntraday = null;
+let secondaryRefreshTask = null;
 
 // Anonymous mode
 let anonymousMode = localStorage.getItem('anonymousMode') === 'true';
@@ -3092,6 +3094,13 @@ function generateFullDayLabels(interval) {
 }
 
 function updateIntradayChart(intraday, interval = '5m') {
+    renderedIntraday = intraday;
+    const updated = document.getElementById('intradayUpdatedAt');
+    if (updated) {
+        updated.textContent = intraday?.computed_at
+            ? `Chart updated ${new Date(intraday.computed_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'})}${intraday.stale_symbols?.length ? ' · Some prices are cached' : ''}`
+            : '';
+    }
     const ctx = document.getElementById('intradayChart').getContext('2d');
 
     if (intradayChart) {
@@ -4178,10 +4187,9 @@ function renderTopMoversDefault() {
 }
 
 // Main data loading function
-async function loadAllData() {
-    // Snapshot date at function start to guard against mid-flight date changes
-    const snapshotDate = currentIntradayDate;
-
+async function loadAllData({ skipIntraday = false } = {}) {
+    // Give Today first use of the backend and paint it before heavier pages.
+    if (!skipIntraday) await loadIntradayData();
     // Fetch targets alongside other data
     fetchTargets();
 
@@ -4191,7 +4199,7 @@ async function loadAllData() {
         fetchPerformance('ALL'),  // Fetch all data for annual table
         fetchDividends(),
         fetchSoldAssets(),
-        fetchIntradayAutoInterval(snapshotDate)   // returns {data, interval}
+        Promise.resolve(null) // Today was rendered before these requests.
     ];
 
     // For 3D/1W the P&L chart is built from dailyPnl + intraday (fetched below).
@@ -4216,13 +4224,9 @@ async function loadAllData() {
     const monthlyPnlPromise = fetchMonthlyPnlData();
 
     const results = await Promise.all(fetchList);
-    const [summary, allPerformance, dividends, sold, intradayResult, pnlData] = results;
+    const [summary, allPerformance, dividends, sold, , pnlData] = results;
     const portfolioPerformance = needsSeparatePortfolioFetch ? results[6] : allPerformance;
     const dailyPnlData = results[results.length - 1];
-
-    // Unpack auto-detected intraday result
-    const intraday = intradayResult?.data ?? null;
-    const detectedInterval = intradayResult?.interval ?? '1m';
 
     if (summary) {
         updateSummaryCards(summary);
@@ -4231,11 +4235,8 @@ async function loadAllData() {
     }
 
     // Only update the chart if the user hasn't switched date mid-flight
-    if (intraday && currentIntradayDate === snapshotDate) {
-        currentInterval = detectedInterval;
-        updateIntradayIntervalBadge(detectedInterval);
-        updateIntradayChart(intraday, detectedInterval);
-    }
+    // Today was already rendered. Never let a slow secondary response repaint
+    // an older curve over a manual refresh or a date-navigation result.
 
     // Handle P&L chart - always delegate to loadPerformanceData for consistent behavior
     if (useIntradayForPnl) {
@@ -4246,7 +4247,7 @@ async function loadAllData() {
 
     // Update daily P&L list
     if (dailyPnlData) {
-        updateDailyPnlList(dailyPnlData, intraday);
+        updateDailyPnlList(dailyPnlData, currentIntradayDate === null ? renderedIntraday : null);
     }
 
     // Update monthly P&L list (awaits the parallel fetch started above)
@@ -4279,11 +4280,37 @@ async function loadAllData() {
 }
 
 async function refreshData() {
-    // Clear cache and reload data
+    const snapshotDate = currentIntradayDate;
+    const requestId = ++intradayLoadRequestId;
+    let data;
+    let interval = '1m';
+    if (snapshotDate === null) {
+        const response = await fetch('/api/intraday/refresh', { method: 'POST' });
+        if (!response.ok) throw new Error('Today data could not be refreshed');
+        data = await response.json();
+        if (!data?.intraday?.length) throw new Error('No intraday data available');
+    } else {
+        ({ data, interval } = await fetchIntradayAutoInterval(snapshotDate, false));
+        if (!data) throw new Error('Intraday data could not be loaded');
+    }
+    // A newer refresh or date navigation owns both the chart and its cache.
+    if (requestId !== intradayLoadRequestId || currentIntradayDate !== snapshotDate) return null;
+    // Invalidate other browser caches, but do not wait for other pages.
     apiCache.clear();
+    apiCache.set(`intraday_${snapshotDate || 'today'}_${interval}`, data);
     Object.keys(transactionCache).forEach(k => delete transactionCache[k]);
-    await loadAllData();
-    if (tickerHistoryInitialized) await loadTickerHistory(true);
+    currentInterval = interval;
+    updateIntradayIntervalBadge(interval);
+    updateIntradayChart(data, interval);
+    // Coalesce slower refreshes when the button is clicked repeatedly.
+    if (!secondaryRefreshTask) {
+        secondaryRefreshTask = new Promise(resolve => setTimeout(resolve, 0))
+            .then(() => loadAllData({ skipIntraday: true }))
+            .then(() => tickerHistoryInitialized ? loadTickerHistory(true) : undefined)
+            .catch(error => console.error('Secondary refresh failed:', error))
+            .finally(() => { secondaryRefreshTask = null; });
+    }
+    return data;
 }
 
 // Event handlers
@@ -4294,8 +4321,8 @@ function setManualRefreshState(isRefreshing) {
     const card = document.getElementById('portfolioRefreshCard');
 
     btn.disabled = isRefreshing;
-    btn.setAttribute('aria-label', isRefreshing ? 'Refreshing data' : 'Refresh portfolio data');
-    btn.setAttribute('title', isRefreshing ? 'Loading latest snapshot' : 'Load the latest precomputed portfolio snapshot');
+    btn.setAttribute('aria-label', isRefreshing ? 'Updating intraday chart' : 'Refresh intraday chart');
+    btn.setAttribute('title', isRefreshing ? 'Updating intraday chart' : 'Fetch minute prices and update the intraday chart');
     btn.innerHTML = isRefreshing
         ? '<i class="bi bi-arrow-clockwise spin" aria-hidden="true"></i><span class="refresh-label">Refreshing</span>'
         : '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>';
@@ -4303,8 +4330,8 @@ function setManualRefreshState(isRefreshing) {
     card.classList.toggle('is-refreshing', isRefreshing);
     card.setAttribute('aria-busy', isRefreshing ? 'true' : 'false');
     card.setAttribute('aria-disabled', isRefreshing ? 'true' : 'false');
-    card.setAttribute('aria-label', isRefreshing ? 'Refreshing portfolio market data' : 'Refresh portfolio market data');
-    card.setAttribute('title', isRefreshing ? 'Loading latest portfolio snapshot' : 'Click to load the latest precomputed portfolio snapshot');
+    card.setAttribute('aria-label', isRefreshing ? 'Updating intraday chart' : 'Refresh intraday chart');
+    card.setAttribute('title', isRefreshing ? 'Updating intraday chart' : 'Click to update the intraday chart');
 }
 
 async function runManualRefresh() {
@@ -4314,8 +4341,11 @@ async function runManualRefresh() {
     setManualRefreshState(true);
 
     try {
-        await refreshData();
-        showToast('Latest snapshot loaded', 'success');
+        const data = await refreshData();
+        if (!data) return;
+        showToast(data.stale_symbols?.length
+            ? `Chart updated; cached prices used for ${data.stale_symbols.join(', ')}`
+            : 'Intraday chart updated', data.stale_symbols?.length ? 'warning' : 'success');
     } catch (error) {
         showToast('Error refreshing data', 'error');
     } finally {

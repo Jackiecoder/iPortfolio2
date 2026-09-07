@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RefreshContractTests(unittest.TestCase):
-    def test_manual_refresh_reads_snapshot_without_server_reload(self):
+    def test_manual_refresh_does_not_reload_portfolio_or_clear_history(self):
         javascript = (ROOT / "static/js/app.js").read_text(encoding="utf-8")
         template = (ROOT / "templates/index.html").read_text(encoding="utf-8")
 

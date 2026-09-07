@@ -36,16 +36,34 @@ A Python-based portfolio tracking application that reads transaction data from C
 
 ## Live snapshot refresh
 
-The server pulls fresh yfinance quotes and precomputes the dashboard response
-cache every 60 seconds by default. Override the cadence with
-`MARKET_REFRESH_INTERVAL_SECONDS` (minimum 15 seconds). The startup snapshot is
-built before the app becomes ready. Manual refreshes only read the latest
-completed snapshot; transaction writes rebuild it before returning.
+The server collects **1-minute bars every 5 minutes** by default, incrementally
+upserts new or changed bars into Postgres, and rebuilds only the Today chart.
+Override the collection cadence with `MARKET_REFRESH_INTERVAL_SECONDS` (minimum
+15 seconds); this does not change the 1-minute resolution. Each fetch also saves
+the previous day's returned bars to fill the gap around midnight. Coverage still
+depends on the upstream provider; this is not a guarantee of gap-free tick data.
+
+Manual refresh calls `POST /api/intraday/refresh`, bypasses the minute-price TTL,
+and waits only for Today P&L and its movers. It uses minute closes rather than a
+second live-quote download. Concurrent timer/manual requests share one fetch.
+Previous-close baselines and historical caches are preserved. If a fetch falls
+back to older cached bars, the response identifies `stale_symbols` and the UI
+shows a warning. `computed_at` is the chart computation time, not a market quote
+timestamp. Requests that lose a race with a transaction write or midnight retry
+against the new portfolio/date before publishing.
+
+Startup prepares Today first; other dashboard responses compute on demand.
+The browser renders Today before fetching the rest of the dashboard. After a
+manual refresh, other pages update separately without delaying the chart or
+overwriting it. Transaction writes still rebuild the full snapshot before returning.
 
 On Cloud Run, the included `deploy.sh` keeps exactly one instance alive and
 disables CPU throttling so the in-process portfolio, response cache, and refresh
 loop stay consistent while there are no requests. This uses always-on Cloud Run
 resources and therefore has a higher baseline cost than scaling to zero.
+Reducing collection frequency alone does **not** reduce this fixed compute bill.
+Request-based billing would require replacing the unattended in-process timer
+with an external authenticated scheduler; this change does not alter billing.
 
 ## CSV Format
 

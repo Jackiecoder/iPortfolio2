@@ -136,6 +136,13 @@ class DailyPnlTests(unittest.TestCase):
             ),
         ):
             points = portfolio.get_intraday_values("30m")
+            with patch.object(price_service, "get_prices_batch") as quotes:
+                fast_points = portfolio.get_intraday_values(
+                    "30m", refresh_prices=True, use_live_quotes=False
+                )
+                quotes.assert_not_called()
+
+        self.assertEqual(fast_points, points)
 
         by_time = {point["time"]: point for point in points}
         self.assertEqual(by_time["09:30"]["daily_pnl"], 0.0)

@@ -121,20 +121,20 @@ _api_cache_lock = threading.Lock()
 _api_refreshing: set[str] = set()
 _market_refresh_lock = threading.Lock()
 _market_refresh_task: Optional[asyncio.Task] = None
+_today_refresh_task: Optional[asyncio.Task] = None
 
 
 def _configured_refresh_interval() -> int:
     try:
-        return max(15, int(os.environ.get("MARKET_REFRESH_INTERVAL_SECONDS", "60")))
+        return max(15, int(os.environ.get("MARKET_REFRESH_INTERVAL_SECONDS", "300")))
     except ValueError:
-        logger.warning("Invalid MARKET_REFRESH_INTERVAL_SECONDS; using 60 seconds")
-        return 60
+        logger.warning("Invalid MARKET_REFRESH_INTERVAL_SECONDS; using 300 seconds")
+        return 300
 
 
 MARKET_REFRESH_INTERVAL_SECONDS = _configured_refresh_interval()
 _API_TTL = {
-    # The background job replaces these once per minute. A two-minute read TTL
-    # keeps the last fully-built snapshot available throughout the next cycle.
+    # Other dashboard data is computed on demand; Today has its own collector.
     "holdings": timedelta(minutes=2),
     "summary": timedelta(minutes=2),
     "performance": timedelta(minutes=2),
@@ -442,6 +442,60 @@ def _refresh_market_snapshot(
         _market_refresh_lock.release()
 
 
+def _build_today_snapshot() -> dict:
+    """Fetch/persist 1m bars and publish Today without rebuilding other pages."""
+    started_at = datetime.now(MARKET_TZ)
+    active_portfolio = portfolio
+    generation = _portfolio_generation
+    today = market_today()
+    if active_portfolio is None:
+        raise RuntimeError("Portfolio is not loaded")
+    metadata = {}
+    intraday = active_portfolio.get_intraday_values(
+        "1m", refresh_prices=True, use_live_quotes=False, refresh_metadata=metadata
+    )
+    if (generation != _portfolio_generation or active_portfolio is not portfolio
+            or today != market_today()):
+        return {"status": "superseded"}
+    result = {
+        "intraday": intraday,
+        "date": today.isoformat(),
+        "cache_status": "partial" if metadata.get("stale_symbols") else "fresh",
+        "computed_at": datetime.now(MARKET_TZ).isoformat(),
+        **metadata,
+    }
+    _set_api_cache(f"intraday_{today.isoformat()}_1m", result)
+    logger.info(
+        "Today snapshot refreshed: %s points in %.2fs",
+        len(intraday), (datetime.now(MARKET_TZ) - started_at).total_seconds(),
+    )
+    return result
+
+
+async def _refresh_today_snapshot() -> dict:
+    """Share a running fetch between timer/manual requests, even on disconnect."""
+    global _today_refresh_task
+    for _ in range(2):
+        if _today_refresh_task is None or _today_refresh_task.done():
+            _today_refresh_task = asyncio.create_task(asyncio.to_thread(_build_today_snapshot))
+        result = await asyncio.shield(_today_refresh_task)
+        if result.get("status") != "superseded":
+            return result
+    raise HTTPException(status_code=409, detail="Portfolio changed during refresh; please retry.")
+
+
+@app.post("/api/intraday/refresh")
+async def refresh_today_intraday():
+    """Wait only for fresh minute bars and the Today chart, retaining history."""
+    try:
+        return await _refresh_today_snapshot()
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Today refresh failed")
+        raise HTTPException(status_code=503, detail="Today data could not be refreshed. Please retry.")
+
+
 async def _market_refresh_loop() -> None:
     """Refresh on a fixed start-to-start cadence, including calculation time."""
     loop = asyncio.get_running_loop()
@@ -449,7 +503,7 @@ async def _market_refresh_loop() -> None:
     while True:
         await asyncio.sleep(max(0, next_refresh_at - loop.time()))
         try:
-            await asyncio.to_thread(_refresh_market_snapshot, True)
+            await _refresh_today_snapshot()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -479,7 +533,7 @@ def load_portfolio() -> Portfolio:
 
 @app.on_event("startup")
 async def startup_event():
-    """Load the portfolio, build the first snapshot, and start minute refreshes."""
+    """Prepare Today first; other pages compute their responses on demand."""
     global _market_refresh_task
     if not API_TOKEN:
         logger.warning("API_TOKEN not set — authentication is DISABLED (dev mode).")
@@ -491,7 +545,7 @@ async def startup_event():
         if holding.symbol != "CASH"
     ]
     price_service.prime_intraday_cache_from_db(symbols, interval="1m")
-    await asyncio.to_thread(_refresh_market_snapshot, True)
+    await _refresh_today_snapshot()
     _market_refresh_task = asyncio.create_task(
         _market_refresh_loop(), name="market-snapshot-refresh"
     )
@@ -509,6 +563,9 @@ async def shutdown_event():
     except asyncio.CancelledError:
         pass
     _market_refresh_task = None
+    # A shielded collector may still be persisting bars after its caller exits.
+    if _today_refresh_task is not None:
+        await asyncio.gather(_today_refresh_task, return_exceptions=True)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -687,7 +744,7 @@ async def get_sold_assets():
         return cached
 
     try:
-        result = _build_sold_response(portfolio)
+        result = await asyncio.to_thread(_build_sold_response, portfolio)
         _set_api_cache("sold", result)
         return result
     except Exception as e:
@@ -1087,13 +1144,18 @@ async def get_intraday(
     if target_date == today:
         stale = _get_stale_api_cache(cache_key, timedelta(minutes=15))
         if stale is not None:
-            _queue_intraday_refresh(
-                background_tasks, cache_key, target_date, interval
-            )
+            if interval == "1m":
+                background_tasks.add_task(_refresh_today_snapshot)
+            else:
+                _queue_intraday_refresh(
+                    background_tasks, cache_key, target_date, interval
+                )
             return {**stale, "cache_status": "stale-refreshing"}
 
     try:
         if target_date == today:
+            if interval == "1m":
+                return await _refresh_today_snapshot()
             intraday_data = await asyncio.to_thread(
                 portfolio.get_intraday_values, interval
             )
@@ -1143,7 +1205,9 @@ async def get_intraday_multiday(
         return cached
 
     try:
-        data = portfolio.get_multiday_intraday_values(interval=interval, days=days)
+        data = await asyncio.to_thread(
+            portfolio.get_multiday_intraday_values, interval=interval, days=days
+        )
         result = {"data": data, "interval": interval, "days": days}
         _set_api_cache(cache_key, result)
         return result

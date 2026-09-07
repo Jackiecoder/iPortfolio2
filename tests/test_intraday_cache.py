@@ -170,7 +170,7 @@ class MarketRefreshLoopTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "MARKET_REFRESH_INTERVAL_SECONDS", 60),
             patch.object(main.asyncio, "get_running_loop", return_value=fake_loop),
             patch.object(main.asyncio, "sleep", side_effect=fake_sleep),
-            patch.object(main.asyncio, "to_thread", side_effect=fake_to_thread),
+            patch.object(main, "_refresh_today_snapshot", side_effect=fake_to_thread),
         ):
             with self.assertRaises(asyncio.CancelledError):
                 await main._market_refresh_loop()

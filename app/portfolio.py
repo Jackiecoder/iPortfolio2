@@ -1643,7 +1643,10 @@ class Portfolio:
 
         return results
 
-    def get_intraday_values(self, interval: str = "5m") -> list[dict]:
+    def get_intraday_values(
+        self, interval: str = "5m", *, refresh_prices: bool = False,
+        use_live_quotes: bool = True, refresh_metadata: Optional[dict] = None,
+    ) -> list[dict]:
         """Calculate intraday portfolio values for today.
 
         Args:
@@ -1692,7 +1695,15 @@ class Portfolio:
         logger.info(f"Intraday: Baseline value (prev close): {baseline_value}")
 
         # Fetch intraday prices for all symbols
-        intraday_prices = price_service.get_intraday_prices_batch(symbols, interval)
+        intraday_prices = price_service.get_intraday_prices_batch(
+            symbols, interval, force_refresh=refresh_prices
+        )
+        prices_by_time = {
+            symbol: {bar["time"]: bar["price"] for bar in bars}
+            for symbol, bars in intraday_prices.items()
+        }
+        if refresh_metadata is not None:
+            refresh_metadata["stale_symbols"] = price_service.stale_intraday_symbols(symbols, interval)
 
         # Find all timestamps from intraday data
         all_times = set()
@@ -1741,7 +1752,11 @@ class Portfolio:
         sorted_times = sorted(all_times)
 
         # Get real-time current prices (same as holdings table uses)
-        current_realtime_prices = price_service.get_prices_batch(symbols)
+        # The fast Today path uses minute closes throughout, avoiding a second
+        # quote download after the bars have already arrived.
+        current_realtime_prices = (
+            price_service.get_prices_batch(symbols) if use_live_quotes else {}
+        )
         logger.info(f"Intraday: Real-time prices: {current_realtime_prices}")
 
         events = []
@@ -1797,12 +1812,9 @@ class Portfolio:
                     last_prices[symbol] = price_at_time
                 else:
                     # Check if we have intraday data for this time
-                    symbol_prices = intraday_prices.get(symbol, [])
-                    for p in symbol_prices:
-                        if p["time"] == time_str:
-                            price_at_time = p["price"]
-                            last_prices[symbol] = price_at_time
-                            break
+                    price_at_time = prices_by_time.get(symbol, {}).get(time_str)
+                    if price_at_time is not None:
+                        last_prices[symbol] = price_at_time
 
                 # Use last known price (starts with previous close)
                 if price_at_time is None:

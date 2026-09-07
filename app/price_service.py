@@ -74,6 +74,7 @@ class PriceService:
         self._previous_market_session_cache: dict[date, date] = {}
         self._crypto_midnight_cache: dict[str, tuple[dict, datetime]] = {}
         self._intraday_cache: dict[str, tuple[list, datetime]] = {}
+        self._stale_intraday_keys: set[str] = set()
 
     def get_current_price(self, symbol: str) -> Optional[Decimal]:
         """Get current price for a symbol.
@@ -814,7 +815,8 @@ class PriceService:
         self,
         symbol: str,
         interval: str = "5m",
-        days: int = 1
+        days: int = 1,
+        force_refresh: bool = False,
     ) -> list[dict]:
         """Get intraday prices for a symbol.
 
@@ -841,7 +843,7 @@ class PriceService:
             data, cached_at = self._intraday_cache[intraday_key]
             stale_prices = data
             ttl = self.live_cache_ttl if days == 1 else self.cache_ttl
-            if datetime.now() - cached_at < ttl:
+            if not force_refresh and datetime.now() - cached_at < ttl:
                 return data
 
         today_str = today.isoformat()
@@ -849,16 +851,23 @@ class PriceService:
 
         if days == 1:
             # Today only: fetch once per live TTL, then incrementally persist bars.
-            prices = self._fetch_intraday_from_yfinance(symbol, interval, 1, today, is_crypto)
-            if prices:
-                date_str = prices[0]["date"]
+            fetched = self._fetch_intraday_from_yfinance(symbol, interval, 1, today, is_crypto)
+            # The request already covers yesterday as well. Save its final bars
+            # too, so a five-minute collector does not lose bars at midnight.
+            by_date: dict[str, list[dict]] = {}
+            for bar in fetched:
+                by_date.setdefault(bar["date"], []).append(bar)
+            for date_str, date_prices in by_date.items():
                 self._save_intraday_if_valid(
-                    symbol, date_str, interval, prices, overwrite=True
+                    symbol, date_str, interval, date_prices, overwrite=True
                 )
+            prices = by_date.get(today_str, [])
             if prices:
+                self._stale_intraday_keys.discard(intraday_key)
                 self._intraday_cache[intraday_key] = (prices, datetime.now())
                 return prices
             if stale_prices:
+                self._stale_intraday_keys.add(intraday_key)
                 logger.warning(
                     "Using stale intraday fallback for %s [%s]", symbol, interval
                 )
@@ -933,11 +942,14 @@ class PriceService:
         """Validate and persist intraday bars. Returns True if saved.
 
         Validation rules:
-        - Must have at least 30 bars (a very short day would have far more)
+        - Live days can contain one bar; historical days require at least 30
         - All prices must be positive
         """
-        if len(prices) < 30:
-            logger.warning(f"Skipping save for {symbol} {date_str} [{interval}]: only {len(prices)} bars (minimum 30)")
+        # Live days are incomplete by definition. Persist even the first minute;
+        # keep the minimum-length check for historical imports.
+        minimum_bars = 1 if date_str == _market_today().isoformat() else 30
+        if len(prices) < minimum_bars:
+            logger.warning(f"Skipping save for {symbol} {date_str} [{interval}]: only {len(prices)} bars (minimum {minimum_bars})")
             return False
         if any(float(p["price"]) <= 0 for p in prices):
             logger.warning(f"Skipping save for {symbol} {date_str} [{interval}]: non-positive price detected")
@@ -990,11 +1002,10 @@ class PriceService:
                     last_timestamp = _to_market_naive(last_timestamp)
                 end_date = last_timestamp.date()
 
-                if days == 1 and end_date != today:
-                    logger.info(f"No intraday for {symbol}: last trading day {end_date} != {today}")
-                    return []
-
-            start_date = end_date - timedelta(days=safe_days - 1)
+            start_date = (
+                today - timedelta(days=1) if days == 1
+                else end_date - timedelta(days=safe_days - 1)
+            )
 
             prices = []
             for date_idx, row in history.iterrows():
@@ -1025,7 +1036,8 @@ class PriceService:
         self,
         symbols: list[str],
         interval: str = "5m",
-        days: int = 1
+        days: int = 1,
+        force_refresh: bool = False,
     ) -> dict[str, list[dict]]:
         """Get intraday prices for multiple symbols.
 
@@ -1048,7 +1060,10 @@ class PriceService:
         worker_count = min(6, len(symbols))
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
-                executor.submit(self.get_intraday_prices, symbol, interval, days): symbol
+                executor.submit(
+                    self.get_intraday_prices, symbol, interval, days,
+                    **({"force_refresh": True} if force_refresh else {}),
+                ): symbol
                 for symbol in symbols
             }
             for future in as_completed(futures):
@@ -1092,6 +1107,14 @@ class PriceService:
         self._previous_market_session_cache.clear()
         self._crypto_midnight_cache.clear()
         self._intraday_cache.clear()
+        self._stale_intraday_keys.clear()
+
+    def stale_intraday_symbols(self, symbols: list[str], interval: str) -> list[str]:
+        today_str = _market_today().isoformat()
+        return [
+            symbol for symbol in symbols
+            if f"{symbol}_{today_str}_{interval}_1" in self._stale_intraday_keys
+        ]
 
     def clear_live_cache(self) -> None:
         """Expire only live quotes and intraday bars.
