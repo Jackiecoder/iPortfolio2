@@ -122,6 +122,7 @@ _api_refreshing: set[str] = set()
 _market_refresh_lock = threading.Lock()
 _market_refresh_task: Optional[asyncio.Task] = None
 _today_refresh_task: Optional[asyncio.Task] = None
+_today_snapshot_stamp: Optional[tuple[Portfolio, int, datetime, dict]] = None
 
 
 def _configured_refresh_interval() -> int:
@@ -183,8 +184,10 @@ def _get_stale_api_cache(key: str, max_age: timedelta) -> Optional[dict]:
 
 
 def _clear_api_cache() -> None:
+    global _today_snapshot_stamp
     with _api_cache_lock:
         _api_cache.clear()
+        _today_snapshot_stamp = None
 
 
 def _refresh_intraday_cache(
@@ -444,6 +447,7 @@ def _refresh_market_snapshot(
 
 def _build_today_snapshot() -> dict:
     """Fetch/persist 1m bars and publish Today without rebuilding other pages."""
+    global _today_snapshot_stamp
     started_at = datetime.now(MARKET_TZ)
     active_portfolio = portfolio
     generation = _portfolio_generation
@@ -465,6 +469,7 @@ def _build_today_snapshot() -> dict:
         **metadata,
     }
     _set_api_cache(f"intraday_{today.isoformat()}_1m", result)
+    _today_snapshot_stamp = (active_portfolio, generation, started_at, result)
     logger.info(
         "Today snapshot refreshed: %s points in %.2fs",
         len(intraday), (datetime.now(MARKET_TZ) - started_at).total_seconds(),
@@ -472,11 +477,38 @@ def _build_today_snapshot() -> dict:
     return result
 
 
+def _reusable_today_snapshot() -> Optional[dict]:
+    """Reuse a successful check begun in this minute for the same portfolio.
+
+    Use fetch start, not completion or a synthetic chart endpoint: a request
+    spanning a minute boundary must not suppress the next minute's check.
+    Epoch minutes also distinguish repeated wall-clock minutes at DST fall-back.
+    """
+    stamp = _today_snapshot_stamp
+    if stamp is None:
+        return None
+    active_portfolio, generation, started_at, result = stamp
+    now = datetime.now(MARKET_TZ)
+    if (
+        active_portfolio is portfolio
+        and generation == _portfolio_generation
+        and int(started_at.timestamp() // 60) == int(now.timestamp() // 60)
+        and result.get("cache_status") == "fresh"
+        and not result.get("stale_symbols")
+        and result.get("intraday")
+    ):
+        return {**result, "refresh_skipped": True}
+    return None
+
+
 async def _refresh_today_snapshot() -> dict:
     """Share a running fetch between timer/manual requests, even on disconnect."""
     global _today_refresh_task
     for _ in range(2):
         if _today_refresh_task is None or _today_refresh_task.done():
+            cached = _reusable_today_snapshot()
+            if cached is not None:
+                return cached
             _today_refresh_task = asyncio.create_task(asyncio.to_thread(_build_today_snapshot))
         result = await asyncio.shield(_today_refresh_task)
         if result.get("status") != "superseded":

@@ -4295,6 +4295,19 @@ async function refreshData() {
     }
     // A newer refresh or date navigation owns both the chart and its cache.
     if (requestId !== intradayLoadRequestId || currentIntradayDate !== snapshotDate) return null;
+    if (data.refresh_skipped) {
+        apiCache.set(`intraday_${snapshotDate || 'today'}_${interval}`, data);
+        // A new page still needs to draw the server's cached chart. A repeated
+        // click on an already-rendered snapshot needs neither redraw nor a
+        // second round of slower dashboard requests.
+        if (renderedIntraday?.computed_at !== data.computed_at
+                || renderedIntraday?.date !== data.date || currentInterval !== interval) {
+            currentInterval = interval;
+            updateIntradayIntervalBadge(interval);
+            updateIntradayChart(data, interval);
+        }
+        return data;
+    }
     // Invalidate other browser caches, but do not wait for other pages.
     apiCache.clear();
     apiCache.set(`intraday_${snapshotDate || 'today'}_${interval}`, data);
@@ -4343,7 +4356,7 @@ async function runManualRefresh() {
     try {
         const data = await refreshData();
         if (!data) return;
-        showToast(data.stale_symbols?.length
+        showToast(data.refresh_skipped ? 'Already checked this minute' : data.stale_symbols?.length
             ? `Chart updated; cached prices used for ${data.stale_symbols.join(', ')}`
             : 'Intraday chart updated', data.stale_symbols?.length ? 'warning' : 'success');
     } catch (error) {

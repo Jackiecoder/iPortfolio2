@@ -851,7 +851,15 @@ class PriceService:
 
         if days == 1:
             # Today only: fetch once per live TTL, then incrementally persist bars.
-            fetched = self._fetch_intraday_from_yfinance(symbol, interval, 1, today, is_crypto)
+            try:
+                fetched = self._fetch_intraday_from_yfinance(
+                    symbol, interval, 1, today, is_crypto, raise_errors=True
+                )
+            except Exception:
+                # A failed first fetch has no cached bars to fall back to, but
+                # must still be marked partial so another click can retry.
+                self._stale_intraday_keys.add(intraday_key)
+                return stale_prices
             # The request already covers yesterday as well. Save its final bars
             # too, so a five-minute collector does not lose bars at midnight.
             by_date: dict[str, list[dict]] = {}
@@ -873,6 +881,7 @@ class PriceService:
                 )
                 return stale_prices
             self._intraday_cache[intraday_key] = ([], datetime.now())
+            self._stale_intraday_keys.discard(intraday_key)
             return []
 
         # days > 1: mix of live + DB
@@ -966,6 +975,7 @@ class PriceService:
         days: int,
         today,
         is_crypto: bool,
+        raise_errors: bool = False,
     ) -> list[dict]:
         """Fetch intraday bars from yfinance for the given symbol/interval/days."""
         import pandas as pd
@@ -1030,6 +1040,8 @@ class PriceService:
 
         except Exception as e:
             logger.error(f"Error fetching intraday from yfinance for {symbol}: {e}")
+            if raise_errors:
+                raise
             return []
 
     def get_intraday_prices_batch(
@@ -1072,7 +1084,10 @@ class PriceService:
                     results[symbol] = future.result()
                 except Exception as exc:
                     logger.error("Intraday fetch failed for %s: %s", symbol, exc)
-                    results[symbol] = []
+                    key = f"{symbol}_{_market_today().isoformat()}_{interval}_{days}"
+                    if days == 1:
+                        self._stale_intraday_keys.add(key)
+                    results[symbol] = self._intraday_cache.get(key, ([], None))[0]
                 logger.info("Got %s intraday prices for %s", len(results[symbol]), symbol)
 
         return results

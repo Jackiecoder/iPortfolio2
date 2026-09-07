@@ -111,3 +111,22 @@ test('secondary pages never redraw an older Today chart', async () => {
     await context.loadAllData({skipIntraday: true});
     assert.deepEqual(events, []);
 });
+
+test('same-minute reuse avoids chart redraw and secondary page requests', async () => {
+    const {context, events} = setup();
+    const data = {intraday: [{time: '10:01'}], computed_at: '2026-09-07T10:01:02-04:00', date: '2026-09-07', refresh_skipped: true};
+    context.renderedIntraday = data;
+    context.fetch = async () => ({ok: true, json: async () => data});
+    assert.equal((await context.refreshData()).refresh_skipped, true);
+    assert.deepEqual(events, []);
+    assert.equal(context.secondaryRefreshTask, null);
+});
+
+test('same-minute server cache still renders when this browser has no chart', async () => {
+    const {context, events} = setup();
+    context.renderedIntraday = null;
+    context.fetch = async () => ({ok: true, json: async () => ({intraday: [{time: '10:01'}], computed_at: '2026-09-07T10:01:02-04:00', date: '2026-09-07', refresh_skipped: true})});
+    await context.refreshData();
+    assert.deepEqual(events, [['chart', '10:01']]);
+    assert.equal(context.secondaryRefreshTask, null);
+});

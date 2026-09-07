@@ -43,8 +43,15 @@ Override the collection cadence with `MARKET_REFRESH_INTERVAL_SECONDS` (minimum
 the previous day's returned bars to fill the gap around midnight. Coverage still
 depends on the upstream provider; this is not a guarantee of gap-free tick data.
 
-Manual refresh calls `POST /api/intraday/refresh`, bypasses the minute-price TTL,
-and waits only for Today P&L and its movers. It uses minute closes rather than a
+Manual refresh calls `POST /api/intraday/refresh`. If a successful Today check
+started in the current minute for the same portfolio, the server reuses it and
+returns `refresh_skipped: true`. Otherwise it bypasses the minute-price TTL and
+waits only for Today P&L and its movers. Empty/partial results, transaction writes,
+and a new minute require another check; a fetch spanning a minute boundary does
+not suppress the next minute's check. This limits polling to minute cadence;
+the upstream provider can still revise an in-progress minute bar or publish late.
+The browser does not redraw an identical snapshot or refresh other pages for a
+skipped fetch. It uses minute closes rather than a
 second live-quote download. Concurrent timer/manual requests share one fetch.
 Previous-close baselines and historical caches are preserved. If a fetch falls
 back to older cached bars, the response identifies `stale_symbols` and the UI

@@ -175,3 +175,93 @@ class MinutePersistenceTests(unittest.TestCase):
         self.assertEqual(len(calls['2026-09-04']), 30)
         self.assertEqual(calls['2026-09-04'][-1]['time'], '23:59')
         self.assertEqual(len(calls['2026-09-05']), 2)
+
+
+class MinuteReuseTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        main._clear_api_cache()
+        self.old_task = main._today_refresh_task
+        main._today_refresh_task = None
+        self.fake = MagicMock()
+        self.fake.get_intraday_values.return_value = [{'time': '10:00', 'daily_pnl': 1}]
+        self.portfolio_patch = patch.object(main, 'portfolio', self.fake)
+        self.portfolio_patch.start()
+        self.clock = patch.object(main, 'datetime', wraps=datetime).start()
+        self.clock.now.return_value = datetime(2026, 9, 7, 10, 0, 20, tzinfo=main.MARKET_TZ)
+
+    async def asyncTearDown(self):
+        if main._today_refresh_task is not None:
+            await asyncio.gather(main._today_refresh_task, return_exceptions=True)
+        main._today_refresh_task = self.old_task
+        main._clear_api_cache()
+        patch.stopall()
+
+    async def test_same_minute_reuses_snapshot_without_fetching(self):
+        first = await main.refresh_today_intraday()
+        self.clock.now.return_value = datetime(2026, 9, 7, 10, 0, 59, tzinfo=main.MARKET_TZ)
+        second = await main.refresh_today_intraday()
+        self.assertTrue(second['refresh_skipped'])
+        self.assertEqual(second['computed_at'], first['computed_at'])
+        self.fake.get_intraday_values.assert_called_once()
+
+    async def test_next_minute_fetches_without_waiting_sixty_seconds(self):
+        self.clock.now.return_value = datetime(2026, 9, 7, 10, 0, 59, tzinfo=main.MARKET_TZ)
+        await main.refresh_today_intraday()
+        self.clock.now.return_value = datetime(2026, 9, 7, 10, 1, 0, tzinfo=main.MARKET_TZ)
+        result = await main.refresh_today_intraday()
+        self.assertFalse(result.get('refresh_skipped', False))
+        self.assertEqual(self.fake.get_intraday_values.call_count, 2)
+
+    async def test_transaction_generation_or_cache_reset_invalidates_reuse(self):
+        await main.refresh_today_intraday()
+        with patch.object(main, '_portfolio_generation', main._portfolio_generation + 1):
+            await main.refresh_today_intraday()
+            main._clear_api_cache()
+            await main.refresh_today_intraday()
+        self.assertEqual(self.fake.get_intraday_values.call_count, 3)
+
+    async def test_partial_and_empty_results_can_be_retried_in_same_minute(self):
+        def collect(*args, **kwargs):
+            kwargs['refresh_metadata']['stale_symbols'] = ['AAPL']
+            return [{'time': '10:00'}]
+        self.fake.get_intraday_values.side_effect = collect
+        await main.refresh_today_intraday()
+        result = await main.refresh_today_intraday()
+        self.assertFalse(result.get('refresh_skipped', False))
+        self.fake.get_intraday_values.side_effect = None
+        self.fake.get_intraday_values.return_value = []
+        await main.refresh_today_intraday()
+        await main.refresh_today_intraday()
+        self.assertEqual(self.fake.get_intraday_values.call_count, 4)
+
+    async def test_fetch_crossing_minute_boundary_does_not_suppress_next_check(self):
+        def collect(*args, **kwargs):
+            self.clock.now.return_value = datetime(2026, 9, 7, 10, 1, 1, tzinfo=main.MARKET_TZ)
+            return [{'time': '10:00'}]
+        self.fake.get_intraday_values.side_effect = collect
+        await main.refresh_today_intraday()
+        await main.refresh_today_intraday()
+        self.assertEqual(self.fake.get_intraday_values.call_count, 2)
+
+    async def test_repeated_wall_clock_minute_after_dst_fallback_is_new_minute(self):
+        self.clock.now.return_value = datetime(2026, 11, 1, 1, 30, 10, tzinfo=main.MARKET_TZ, fold=0)
+        await main.refresh_today_intraday()
+        self.clock.now.return_value = datetime(2026, 11, 1, 1, 30, 20, tzinfo=main.MARKET_TZ, fold=1)
+        await main.refresh_today_intraday()
+        self.assertEqual(self.fake.get_intraday_values.call_count, 2)
+
+    async def test_new_day_fetches_again_at_same_hour_and_minute(self):
+        await main.refresh_today_intraday()
+        self.clock.now.return_value = datetime(2026, 9, 8, 10, 0, 20, tzinfo=main.MARKET_TZ)
+        await main.refresh_today_intraday()
+        self.assertEqual(self.fake.get_intraday_values.call_count, 2)
+
+
+class FailedFirstFetchTests(unittest.TestCase):
+    def test_first_provider_error_is_partial_even_without_previous_bars(self):
+        service = PriceService()
+        ticker = MagicMock()
+        ticker.history.side_effect = RuntimeError('provider timeout')
+        with patch('app.price_service.yf.Ticker', return_value=ticker):
+            self.assertEqual(service.get_intraday_prices('AAPL', '1m', force_refresh=True), [])
+            self.assertEqual(service.stale_intraday_symbols(['AAPL'], '1m'), ['AAPL'])
