@@ -422,44 +422,6 @@
 
             <div class="tab-pane fade" id="trackerPerformance" role="tabpanel" aria-labelledby="performance-tab" tabindex="0">
 
-        <!-- Individual ticker history with ledger trade markers -->
-        <div class="card border-0 shadow-sm mb-4 ticker-history-card">
-            <div class="card-header bg-white border-0 ticker-history-header">
-                <div class="ticker-history-identity">
-                    <label for="tickerHistorySymbol" class="ticker-history-label">Ticker history</label>
-                    <select id="tickerHistorySymbol" class="form-select form-select-sm" aria-label="Select ticker">
-                        <option value="">Loading tickers…</option>
-                    </select>
-                    <span id="tickerHistoryMeta" class="ticker-history-meta">6 months · daily closes</span>
-                </div>
-                <div class="btn-group btn-group-sm ticker-history-periods" role="group" aria-label="Ticker history period">
-                    <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="1M">1M</button>
-                    <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="3M">3M</button>
-                    <button class="btn btn-primary ticker-history-period-btn active" data-period="6M">6M</button>
-                    <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="1Y">1Y</button>
-                    <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="3Y">3Y</button>
-                    <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="5Y">5Y</button>
-                    <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="ALL">ALL</button>
-                </div>
-            </div>
-            <div class="card-body ticker-history-body">
-                <div class="ticker-history-summary" aria-live="polite">
-                    <div><span>Last</span><strong id="tickerHistoryLast">--</strong></div>
-                    <div><span>Period change</span><strong id="tickerHistoryChange">--</strong></div>
-                    <div><span>Trades shown</span><strong id="tickerHistoryTradeCount">--</strong></div>
-                    <div class="ticker-history-legend" aria-label="Trade marker legend">
-                        <span><i class="ticker-history-key is-buy">B</i>Buy</span>
-                        <span><i class="ticker-history-key is-sell">S</i>Sell</span>
-                        <span class="ticker-history-size-note">Circle size = trade amount</span>
-                    </div>
-                </div>
-                <div class="chart-container ticker-history-chart-wrap">
-                    <canvas id="tickerHistoryChart"></canvas>
-                    <div id="tickerHistoryEmpty" class="ticker-history-empty d-none">No price history is available for this range.</div>
-                </div>
-            </div>
-        </div>
-
         <!-- P&L Chart Row -->
         <div class="row g-4 mb-4">
             <div class="col-12">
@@ -696,6 +658,54 @@
                 </div>
             </div>
         </section>
+        <!-- Individual ticker history with ledger trade markers -->
+        <div class="card border-0 shadow-sm mb-4 ticker-history-card">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0 d-flex align-items-center gap-2">
+                    <button class="card-collapse-btn" type="button" data-collapse-target="tickerHistoryBody" data-default-collapsed="true" aria-expanded="false" aria-controls="tickerHistoryBody" aria-label="Collapse / expand Ticker history">
+                        <i class="bi bi-chevron-down"></i>
+                    </button>
+                    Ticker history
+                </h5>
+            </div>
+            <div id="tickerHistoryBody" style="display: none;">
+                <div class="card-header bg-white border-0 ticker-history-header">
+                    <div class="ticker-history-identity">
+                        <label for="tickerHistorySymbol" class="ticker-history-label">Ticker</label>
+                        <select id="tickerHistorySymbol" class="form-select form-select-sm" aria-label="Select ticker">
+                            <option value="">Loading tickers…</option>
+                        </select>
+                        <span id="tickerHistoryMeta" class="ticker-history-meta">6 months · daily closes</span>
+                    </div>
+                    <div class="btn-group btn-group-sm ticker-history-periods" role="group" aria-label="Ticker history period">
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="1M">1M</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="3M">3M</button>
+                        <button class="btn btn-primary ticker-history-period-btn active" data-period="6M">6M</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="1Y">1Y</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="3Y">3Y</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="5Y">5Y</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="ALL">ALL</button>
+                    </div>
+                </div>
+                <div class="card-body ticker-history-body">
+                    <div class="ticker-history-summary" aria-live="polite">
+                        <div><span>Last</span><strong id="tickerHistoryLast">--</strong></div>
+                        <div><span>Period change</span><strong id="tickerHistoryChange">--</strong></div>
+                        <div><span>Trades shown</span><strong id="tickerHistoryTradeCount">--</strong></div>
+                        <div class="ticker-history-legend" aria-label="Trade marker legend">
+                            <span><i class="ticker-history-key is-buy">B</i>Buy</span>
+                            <span><i class="ticker-history-key is-sell">S</i>Sell</span>
+                            <span class="ticker-history-size-note">Circle size = trade amount</span>
+                        </div>
+                    </div>
+                    <div class="chart-container ticker-history-chart-wrap">
+                        <canvas id="tickerHistoryChart"></canvas>
+                        <div id="tickerHistoryEmpty" class="ticker-history-empty d-none">No price history is available for this range.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
             </div>
 
             <div class="tab-pane fade" id="trackerHoldings" role="tabpanel" aria-labelledby="holdings-tab" tabindex="0">
@@ -1139,7 +1149,7 @@
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/js/trade-preview.js?v=1"></script>
-    <script src="/static/js/app.js?v=131"></script>
+    <script src="/static/js/app.js?v=132"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

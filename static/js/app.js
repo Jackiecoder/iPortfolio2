@@ -913,6 +913,10 @@ function renderTickerHistoryChart(data) {
 }
 
 async function loadTickerHistory(force = false) {
+    if (document.getElementById('tickerHistoryBody')?.style.display === 'none') {
+        if (force) tickerHistoryInitialized = false;
+        return;
+    }
     if (tickerHistoryInitialized && !force) return;
     const select = document.getElementById('tickerHistorySymbol');
     const empty = document.getElementById('tickerHistoryEmpty');
@@ -5272,7 +5276,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const target = document.getElementById(targetId);
             if (!target) return;
             const STORAGE_KEY = `cardCollapsed:${targetId}`;
-            const collapsed = localStorage.getItem(STORAGE_KEY) === '1';
+            const savedState = localStorage.getItem(STORAGE_KEY);
+            const collapsed = savedState === null ? btn.dataset.defaultCollapsed === 'true' : savedState === '1';
 
             function applyState(isCollapsed) {
                 target.style.display = isCollapsed ? 'none' : '';
@@ -5284,12 +5289,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             applyState(collapsed);
+            if (targetId === 'tickerHistoryBody' && !collapsed &&
+                document.getElementById('trackerPerformance')?.classList.contains('active')) {
+                loadTickerHistory();
+            }
 
             btn.addEventListener('click', (ev) => {
                 ev.stopPropagation();
                 const willCollapse = target.style.display !== 'none';
                 applyState(willCollapse);
                 localStorage.setItem(STORAGE_KEY, willCollapse ? '1' : '0');
+                if (targetId === 'tickerHistoryBody' && !willCollapse) loadTickerHistory();
                 // Charts inside collapsed panels should resize when re-shown
                 if (!willCollapse && window.Chart) {
                     setTimeout(() => {
