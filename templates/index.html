@@ -7,7 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <!-- PWA: installable as an app -->
     <link rel="manifest" href="/static/manifest.webmanifest">
-    <meta name="theme-color" content="#0b1324">
+    <meta name="theme-color" content="#19365a">
     <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -17,12 +17,12 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
-    <!-- Editorial display + highly legible data typography -->
+    <!-- Display typography with tabular, readable financial data -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=41">
+    <link rel="stylesheet" href="/static/css/style.css?v=42">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -30,7 +30,7 @@
 </head>
 <body>
     <!-- Navbar -->
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-top app-navbar">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-top app-navbar" aria-label="Workspace">
         <div class="container-fluid">
             <a class="navbar-brand" href="#" aria-label="iPortfolio home">
                 <span class="brand-mark" aria-hidden="true">
@@ -40,8 +40,8 @@
                     </svg>
                 </span>
                 <span class="brand-copy">
-                    <span class="brand-name">Live portfolio</span>
-                    <span class="brand-tagline">iPortfolio · Personal capital desk</span>
+                    <span class="brand-name">iPortfolio</span>
+                    <span class="brand-tagline">Personal capital desk</span>
                 </span>
             </a>
             <!-- Page toggle -->
@@ -218,31 +218,12 @@
     <div id="trackerPage">
         <header id="portfolioRefreshCard" class="portfolio-brief mb-3" role="button" tabindex="0" aria-label="Refresh intraday chart" title="Click to update the intraday chart">
             <div class="portfolio-brief-copy">
-                <div class="brief-eyebrow"><span></span> Market-aware holdings</div>
-                <h1>Capital, in motion.</h1>
-                <p>Track today’s signal without losing sight of the long game.</p>
-            </div>
-            <div class="asset-trajectory" aria-hidden="true">
-                <svg viewBox="0 0 620 112" preserveAspectRatio="none">
-                    <defs>
-                        <linearGradient id="trajectoryStroke" x1="0" x2="1">
-                            <stop offset="0" stop-color="#6f8cff" stop-opacity=".18"/>
-                            <stop offset=".55" stop-color="#6f8cff"/>
-                            <stop offset="1" stop-color="#42d59b"/>
-                        </linearGradient>
-                        <linearGradient id="trajectoryFill" x1="0" x2="0" y1="0" y2="1">
-                            <stop offset="0" stop-color="#4f73ef" stop-opacity=".2"/>
-                            <stop offset="1" stop-color="#4f73ef" stop-opacity="0"/>
-                        </linearGradient>
-                    </defs>
-                    <path class="trajectory-area" d="M0 92 C70 92 75 70 130 76 S210 91 256 59 S333 70 374 46 S445 55 487 29 S557 34 620 10 L620 112 L0 112Z"/>
-                    <path class="trajectory-line" d="M0 92 C70 92 75 70 130 76 S210 91 256 59 S333 70 374 46 S445 55 487 29 S557 34 620 10"/>
-                    <circle cx="620" cy="10" r="5"/>
-                </svg>
+                <h1>Portfolio overview</h1>
+                <p>Your positions, performance and activity, in one place.</p>
             </div>
             <div class="brief-refresh-cue" aria-hidden="true">
                 <i class="bi bi-arrow-clockwise"></i>
-                <span>Click to refresh</span>
+                <span>Refresh prices</span>
             </div>
         </header>
         <!-- Portfolio Summary toggle + condensed strip -->
@@ -251,11 +232,11 @@
                 <i class="bi bi-chevron-down me-1" id="summaryToggleIcon"></i><span id="summaryToggleLabel">Show summary</span>
             </button>
             <div class="summary-strip text-muted small flex-grow-1" id="summaryStrip">
-                <span class="summary-strip-item"><span class="text-muted">Unreal</span> <span id="stripUnrealizedPnl">--</span></span>
+                <span class="summary-strip-item"><span class="text-muted">Unrealized P&amp;L</span> <span id="stripUnrealizedPnl">--</span></span>
                 <span class="summary-strip-sep">·</span>
-                <span class="summary-strip-item"><span class="text-muted">Total</span> <span id="stripTotalPnl">--</span></span>
+                <span class="summary-strip-item"><span class="text-muted">Total P&amp;L</span> <span id="stripTotalPnl">--</span></span>
                 <span class="summary-strip-sep">·</span>
-                <span class="summary-strip-item"><span class="text-muted">YTD</span> <span id="stripYtdPnl">--</span></span>
+                <span class="summary-strip-item"><span class="text-muted">Year to date</span> <span id="stripYtdPnl">--</span></span>
             </div>
         </div>
 
@@ -346,7 +327,7 @@
             <div class="tab-pane fade show active" id="trackerToday" role="tabpanel" aria-labelledby="today-tab" tabindex="0">
 
         <!-- Intraday P&L Chart -->
-        <div class="card border-0 shadow-sm mb-4">
+        <div class="card border-0 shadow-sm mb-4 intraday-focus-card">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Intraday P&L</h5>
                 <div class="intraday-date-controls d-flex align-items-center gap-2 flex-wrap">
@@ -364,6 +345,17 @@
                 </div>
             </div>
             <div class="card-body">
+                <div class="intraday-spotlight" aria-live="polite">
+                    <div class="intraday-headline">
+                        <span class="spotlight-label">Latest daily P&amp;L</span>
+                        <strong id="intradayLatestPnl">--</strong>
+                    </div>
+                    <div class="intraday-return">
+                        <span class="spotlight-label">Daily return</span>
+                        <span id="intradayLatestReturn">--</span>
+                    </div>
+                    <span class="intraday-chart-hint"><i class="bi bi-cursor me-1"></i>Explore the chart to see each moment</span>
+                </div>
                 <div class="chart-container pnl-chart-container">
                     <canvas id="intradayChart"></canvas>
                 </div>
@@ -371,7 +363,7 @@
         </div>
 
         <!-- Today's Top Movers: per-holding daily P&L contributions -->
-        <div class="card border-0 shadow-sm mb-4">
+        <div class="card border-0 shadow-sm mb-4 movers-card">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h5 class="mb-0"><i class="bi bi-arrow-down-up me-2"></i>Today's Top Movers</h5>
                 <span class="small"><span id="topMoversTime" class="text-muted"></span>Daily P&amp;L: <span id="topMoversDailyTotal" class="fw-semibold">--</span></span>
@@ -865,6 +857,10 @@
 
     <!-- ============================================================ SIMULATOR PAGE -->
     <div id="simulatorPage" style="display:none">
+        <header class="workspace-heading">
+            <h1>Portfolio simulator</h1>
+            <p>Explore allocations and compare how a strategy would have performed.</p>
+        </header>
         <div class="row g-4">
 
             <!-- -------- Config Panel -------- -->
@@ -1059,7 +1055,7 @@
         <div class="analysis-toolbar mb-4">
             <div>
                 <h4 class="mb-1"><i class="bi bi-clipboard-data me-2"></i>Investment Analysis</h4>
-                <div class="text-muted small">GPT-assisted review grounded in your calculated portfolio results</div>
+                <div class="text-muted small">A closer look at your performance, allocation and decisions</div>
             </div>
             <div class="analysis-actions">
                 <div class="analysis-date-range">
@@ -1111,7 +1107,7 @@
                 <div id="analysisReportEmpty" class="analysis-empty-state">
                     <i class="bi bi-file-earmark-bar-graph"></i>
                     <h5>No analysis report yet</h5>
-                    <p class="mb-0">Choose a date range to create the first GPT report.</p>
+                    <p class="mb-0">Choose a date range, then generate an analysis of your portfolio.</p>
                 </div>
                 <article id="analysisReport" class="d-none" aria-live="polite"></article>
             </div>
@@ -1122,7 +1118,7 @@
 
     <footer class="app-footer py-3 mt-4">
         <div class="container-fluid text-center text-muted">
-            <small><span class="footer-mark"></span> iPortfolio · Built for the long view</small>
+            <small><span class="footer-mark"></span> iPortfolio — Your personal capital desk</small>
         </div>
     </footer>
 
@@ -1149,7 +1145,7 @@
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/js/trade-preview.js?v=1"></script>
-    <script src="/static/js/app.js?v=132"></script>
+    <script src="/static/js/app.js?v=133"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

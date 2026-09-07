@@ -110,6 +110,24 @@
     };
 })();
 
+// Shared chart typography and interaction styling.
+if (window.Chart) {
+    Chart.defaults.font.family = 'Manrope, sans-serif';
+    Chart.defaults.font.size = 11;
+    Chart.defaults.color = '#6c7e95';
+    Chart.defaults.borderColor = '#e8edf5';
+    Chart.defaults.plugins.tooltip.backgroundColor = '#19365a';
+    Chart.defaults.plugins.tooltip.padding = 12;
+    Chart.defaults.plugins.tooltip.cornerRadius = 10;
+    Chart.defaults.plugins.tooltip.titleFont = { weight: '600' };
+    Chart.defaults.plugins.legend.labels.usePointStyle = true;
+    Chart.defaults.plugins.legend.labels.boxWidth = 8;
+    Chart.defaults.plugins.legend.labels.padding = 18;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        Chart.defaults.animation = false;
+    }
+}
+
 // Chart instances
 let performanceChart = null;
 let investmentChart = null;
@@ -440,6 +458,7 @@ function toggleAnonymousMode() {
     anonymousMode = !anonymousMode;
     localStorage.setItem('anonymousMode', anonymousMode);
     updateAnonymousButton();
+    updateIntradaySpotlight(renderedIntraday);
     // Reload all data to apply the mode
     loadAllData();
 }
@@ -1328,7 +1347,7 @@ function buildTotalRowHtml(holdings, totalInvValue) {
 }
 
 function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, categoryTargetSums, totalInvestedCost) {
-    const catColors = { 'Crypto': '#f59e0b', 'Index': '#2563eb', 'Individual Stocks': '#8b5cf6', 'Cash': '#10b981' };
+    const catColors = { 'Crypto': '#f59e0b', 'Index': '#2563eb', 'Individual Stocks': '#8b5cf6', 'Cash': '#087f65' };
     const color = catColors[catName] || '#6b7280';
     const mv = catHoldings.reduce((s, h) => s + (h.market_value || 0), 0);
     const cost = catHoldings.reduce((s, h) => s + (h.cost_basis || 0), 0);
@@ -1611,7 +1630,7 @@ function updateCategoryTable(holdings) {
         'Crypto': '#f59e0b',
         'Index': '#2563eb',
         'Individual Stocks': '#8b5cf6',
-        'Cash': '#10b981'
+        'Cash': '#087f65'
     };
 
     // Aggregate holdings by category
@@ -1937,7 +1956,7 @@ function updatePerformanceChart(performance) {
                 },
                 y: {
                     grid: {
-                        color: '#e5e7eb'
+                        color: '#e8edf5'
                     },
                     ticks: {
                         callback: (value) => formatCurrency(value)
@@ -2008,7 +2027,7 @@ async function updateInvestmentChart(performance, period = 'ALL') {
         'Crypto': '#f59e0b',
         'Index': '#2563eb',
         'Individual Stocks': '#8b5cf6',
-        'Cash': '#10b981'
+        'Cash': '#087f65'
     };
 
     // Get all unique categories and months
@@ -2079,7 +2098,7 @@ async function updateInvestmentChart(performance, period = 'ALL') {
                 y: {
                     stacked: true,
                     grid: {
-                        color: '#e5e7eb'
+                        color: '#e8edf5'
                     },
                     ticks: {
                         callback: (value) => {
@@ -2569,12 +2588,12 @@ function updatePnlChart(performance) {
     // Create segment coloring based on baseline
     const segmentColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= baselineValue ? '#10b981' : '#ef4444';
+        return value >= baselineValue ? '#087f65' : '#bd4663';
     };
 
     const segmentBgColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= baselineValue ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+        return value >= baselineValue ? 'rgba(8, 127, 101, 0.075)' : 'rgba(189, 70, 99, 0.075)';
     };
 
     // Plugin to draw baseline and last point label
@@ -2646,7 +2665,7 @@ function updatePnlChart(performance) {
                     if (dailyChange != null) {
                         const sign = dailyChange >= 0 ? '+' : '';
                         ctx.font = 'bold 10px sans-serif';
-                        ctx.fillStyle = dailyChange >= 0 ? '#10b981' : '#ef4444';
+                        ctx.fillStyle = dailyChange >= 0 ? '#087f65' : '#bd4663';
                         ctx.fillText(anonymousMode ? '***' : sign + formatCurrencyAlways(dailyChange), x + 4, yAxis.top + 26);
                     }
                     ctx.restore();
@@ -2722,7 +2741,7 @@ function updatePnlChart(performance) {
                             if (pnlChange != null) {
                                 const sign = pnlChange >= 0 ? '+' : '';
                                 ctx.font = 'bold 9px sans-serif';
-                                ctx.fillStyle = pnlChange >= 0 ? '#10b981' : '#ef4444';
+                                ctx.fillStyle = pnlChange >= 0 ? '#087f65' : '#bd4663';
                                 ctx.fillText(anonymousMode ? '***' : sign + formatCurrencyAlways(pnlChange), x + 3, yAxis.top + 24);
                             }
                             ctx.restore();
@@ -2777,7 +2796,7 @@ function updatePnlChart(performance) {
                     ctx.save();
                     ctx.beginPath();
                     ctx.arc(x, y, 5, 0, 2 * Math.PI);
-                    ctx.fillStyle = changeFromBaseline >= 0 ? '#10b981' : '#ef4444';
+                    ctx.fillStyle = changeFromBaseline >= 0 ? '#087f65' : '#bd4663';
                     ctx.fill();
 
                     // Draw vs Start label (position to the left to avoid overflow)
@@ -2786,7 +2805,7 @@ function updatePnlChart(performance) {
                         ? `${changeSign}${formatCurrencyAlways(changeFromBaseline)}`
                         : `${changeSign}${formatCurrencyAlways(changeFromBaseline)} (${changeSign}${changePercent.toFixed(2)}%)`;
                     ctx.font = 'bold 12px sans-serif';
-                    ctx.fillStyle = changeFromBaseline >= 0 ? '#10b981' : '#ef4444';
+                    ctx.fillStyle = changeFromBaseline >= 0 ? '#087f65' : '#bd4663';
 
                     // Measure text width and position label to avoid overflow
                     const textWidth = ctx.measureText(labelText).width;
@@ -2830,8 +2849,8 @@ function updatePnlChart(performance) {
                     borderColor: segmentColor,
                     backgroundColor: segmentBgColor
                 },
-                borderColor: '#10b981',
-                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                borderColor: '#087f65',
+                backgroundColor: 'rgba(8, 127, 101, 0.075)',
                 fill: {
                     target: { value: baselineValue },
                     above: 'rgba(16, 185, 129, 0.15)',
@@ -2915,7 +2934,7 @@ function updatePnlChart(performance) {
                 },
                 y: {
                     grid: {
-                        color: '#e5e7eb'
+                        color: '#e8edf5'
                     },
                     ticks: {
                         callback: (value) => {
@@ -3039,7 +3058,7 @@ const marketHoursPlugin = {
                 ctx.save();
                 ctx.beginPath();
                 ctx.arc(x, y, 5, 0, 2 * Math.PI);
-                ctx.fillStyle = lastValue >= 0 ? '#10b981' : '#ef4444';
+                ctx.fillStyle = lastValue >= 0 ? '#087f65' : '#bd4663';
                 ctx.fill();
 
                 // Draw P&L label (always show amount, hide percentage in anonymous mode)
@@ -3047,7 +3066,7 @@ const marketHoursPlugin = {
                 const pnlText = `${sign}${formatCurrencyAlways(lastValue)}`;
 
                 ctx.font = 'bold 12px sans-serif';
-                ctx.fillStyle = lastValue >= 0 ? '#10b981' : '#ef4444';
+                ctx.fillStyle = lastValue >= 0 ? '#087f65' : '#bd4663';
 
                 // Measure text width and position label to avoid overflow
                 const textWidth = ctx.measureText(pnlText).width;
@@ -3097,8 +3116,23 @@ function generateFullDayLabels(interval) {
     return labels;
 }
 
+function updateIntradaySpotlight(intraday) {
+    const points = intraday?.intraday || [];
+    const latest = [...points].reverse().find(point => point.daily_pnl != null);
+    const value = document.getElementById('intradayLatestPnl');
+    const percent = document.getElementById('intradayLatestReturn');
+    if (!value || !percent) return;
+    value.textContent = latest ? `${latest.daily_pnl >= 0 && !anonymousMode ? '+' : ''}${formatCurrency(latest.daily_pnl)}` : '--';
+    percent.textContent = latest ? formatPercent(latest.daily_pnl_percent) : '--';
+    for (const element of [value, percent]) {
+        element.classList.toggle('text-success', !!latest && latest.daily_pnl >= 0);
+        element.classList.toggle('text-danger', !!latest && latest.daily_pnl < 0);
+    }
+}
+
 function updateIntradayChart(intraday, interval = '5m') {
     renderedIntraday = intraday;
+    updateIntradaySpotlight(intraday);
     const updated = document.getElementById('intradayUpdatedAt');
     if (updated) {
         updated.textContent = intraday?.computed_at
@@ -3162,12 +3196,12 @@ function updateIntradayChart(intraday, interval = '5m') {
     // Segment coloring based on value (green above 0, red below 0)
     const segmentBorderColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= 0 ? '#10b981' : '#ef4444';
+        return value >= 0 ? '#087f65' : '#bd4663';
     };
 
     const segmentBackgroundColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+        return value >= 0 ? 'rgba(8, 127, 101, 0.075)' : 'rgba(189, 70, 99, 0.075)';
     };
 
     intradayChart = new Chart(ctx, {
@@ -3185,8 +3219,8 @@ function updateIntradayChart(intraday, interval = '5m') {
                     borderColor: segmentBorderColor,
                     backgroundColor: segmentBackgroundColor
                 },
-                borderColor: lastPnl >= 0 ? '#10b981' : '#ef4444',
-                backgroundColor: lastPnl >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                borderColor: lastPnl >= 0 ? '#087f65' : '#bd4663',
+                backgroundColor: lastPnl >= 0 ? 'rgba(8, 127, 101, 0.075)' : 'rgba(189, 70, 99, 0.075)',
                 fill: {
                     target: 'origin'
                 },
@@ -3237,21 +3271,19 @@ function updateIntradayChart(intraday, interval = '5m') {
                         display: false
                     },
                     ticks: {
-                        maxTicksLimit: 12,
-                        callback: function(value, index) {
-                            // Show fewer labels for readability
+                        autoSkip: false,
+                        maxRotation: 0,
+                        callback: function(value) {
                             const label = this.getLabelForValue(value);
-                            // Show labels at every 2 hours
-                            if (label && (label.endsWith(':00') && parseInt(label.split(':')[0]) % 2 === 0)) {
-                                return label;
-                            }
-                            return '';
+                            const hourStep = this.chart.width < 500 ? 4 : 2;
+                            return label?.endsWith(':00') && parseInt(label.split(':')[0]) % hourStep === 0
+                                ? label : '';
                         }
                     }
                 },
                 y: {
                     grid: {
-                        color: '#e5e7eb'
+                        color: '#e8edf5'
                     },
                     ticks: {
                         callback: (value) => {
@@ -3358,7 +3390,7 @@ function updateAllocationChart(holdings, view = 'assets') {
             'Crypto': ['#92400e', '#b45309', '#d97706', '#f59e0b', '#fbbf24', '#fcd34d', '#fde68a', '#fef3c7'],
             'Index': ['#1e3a8a', '#1e40af', '#1d4ed8', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe'],
             'Individual Stocks': ['#581c87', '#6b21a8', '#7c3aed', '#8b5cf6', '#a78bfa', '#c4b5fd', '#ddd6fe', '#ede9fe'],
-            'Cash': ['#065f46', '#047857', '#059669', '#10b981', '#34d399', '#6ee7b7', '#a7f3d0', '#d1fae5'],
+            'Cash': ['#065f46', '#047857', '#059669', '#087f65', '#34d399', '#6ee7b7', '#a7f3d0', '#d1fae5'],
         };
         const colorScheme = categoryColorSchemes[view] || ['#9ca3af'];
         // Assign colors from dark to light based on sorted position
@@ -3385,7 +3417,7 @@ function updateAllocationChart(holdings, view = 'assets') {
             'Crypto': '#f59e0b',      // Orange
             'Index': '#2563eb',       // Blue
             'Individual Stocks': '#8b5cf6',  // Purple
-            'Cash': '#10b981',        // Green
+            'Cash': '#087f65',        // Green
         };
 
         chartColors = labels.map(label => categoryBaseColors[label] || '#9ca3af');
@@ -3442,7 +3474,7 @@ function updateAllocationChart(holdings, view = 'assets') {
             'Crypto': ['#92400e', '#b45309', '#d97706', '#f59e0b', '#fbbf24', '#fcd34d'],
             'Index': ['#1e3a8a', '#1e40af', '#1d4ed8', '#2563eb', '#3b82f6', '#60a5fa'],
             'Individual Stocks': ['#581c87', '#6b21a8', '#7c3aed', '#8b5cf6', '#a78bfa', '#c4b5fd'],
-            'Cash': ['#065f46', '#047857', '#059669', '#10b981', '#34d399', '#6ee7b7'],
+            'Cash': ['#065f46', '#047857', '#059669', '#087f65', '#34d399', '#6ee7b7'],
         };
 
         // Track color index per category for gradient effect
