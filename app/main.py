@@ -111,7 +111,7 @@ async def service_worker():
         headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
     )
 
-# Global portfolio instance (reloaded from CSV files)
+# Global portfolio instance (rebuilt only when the Postgres ledger changes)
 portfolio: Optional[Portfolio] = None
 _portfolio_generation = 0
 
@@ -119,6 +119,8 @@ _portfolio_generation = 0
 _api_cache: dict[str, tuple[dict, datetime]] = {}
 _api_cache_lock = threading.Lock()
 _api_refreshing: set[str] = set()
+_dashboard_tasks: dict[tuple, asyncio.Task] = {}
+_api_cache_epoch = 0
 _market_refresh_lock = threading.Lock()
 _market_refresh_task: Optional[asyncio.Task] = None
 _today_refresh_task: Optional[asyncio.Task] = None
@@ -137,11 +139,12 @@ MARKET_REFRESH_INTERVAL_SECONDS = _configured_refresh_interval()
 _API_TTL = {
     # Other dashboard data is computed on demand; Today has its own collector.
     "holdings": timedelta(minutes=2),
+    "positions": timedelta(days=1),
     "summary": timedelta(minutes=2),
-    "performance": timedelta(minutes=2),
-    "daily-pnl": timedelta(minutes=2),
-    "dividends": timedelta(minutes=2),
-    "sold": timedelta(minutes=2),
+    "performance": timedelta(minutes=30),
+    "daily-pnl": timedelta(minutes=15),
+    "dividends": timedelta(days=1),
+    "sold": timedelta(days=1),
     "intraday": timedelta(minutes=2),
     "intraday-hist": timedelta(days=30),
     "intraday-multiday": timedelta(minutes=2),
@@ -184,10 +187,89 @@ def _get_stale_api_cache(key: str, max_age: timedelta) -> Optional[dict]:
 
 
 def _clear_api_cache() -> None:
-    global _today_snapshot_stamp
+    global _today_snapshot_stamp, _api_cache_epoch
     with _api_cache_lock:
+        _api_cache_epoch += 1
         _api_cache.clear()
         _today_snapshot_stamp = None
+
+
+class _DashboardSuperseded(Exception):
+    """A ledger reload invalidated a computation before it completed."""
+
+
+async def _dashboard_response(key: str, builder, wait_for_fresh: bool = False) -> dict:
+    """Reuse snapshots and share one refresh, without publishing pre-write data."""
+    while True:
+        cached = _get_api_cache(key)
+        if cached is not None:
+            return cached
+        active_portfolio = portfolio
+        generation = _portfolio_generation
+        epoch = _api_cache_epoch
+        task_key = (key, generation, epoch)
+        task = _dashboard_tasks.get(task_key)
+        if task is None:
+            async def compute(active=active_portfolio, gen=generation, cache_epoch=epoch):
+                started = datetime.now(MARKET_TZ)
+                data = await asyncio.to_thread(builder, active)
+                result = {
+                    **data, "cache_status": "fresh",
+                    "computed_at": datetime.now(MARKET_TZ).isoformat(),
+                }
+                with _api_cache_lock:
+                    if (active is not portfolio or gen != _portfolio_generation
+                            or cache_epoch != _api_cache_epoch):
+                        raise _DashboardSuperseded()
+                    _api_cache[key] = (result, datetime.now())
+                logger.info("Dashboard %s computed in %.2fs", key,
+                            (datetime.now(MARKET_TZ) - started).total_seconds())
+                return result
+
+            task = asyncio.create_task(compute(), name=f"dashboard-{key}")
+            _dashboard_tasks[task_key] = task
+            def finished(done, identity=task_key):
+                if _dashboard_tasks.get(identity) is done:
+                    _dashboard_tasks.pop(identity, None)
+                # Stale-response refreshes can outlive their requesting browser.
+                if not done.cancelled():
+                    error = done.exception()
+                    if error and not isinstance(error, _DashboardSuperseded):
+                        logger.error("Dashboard refresh failed for %s: %s", identity[0], error)
+            task.add_done_callback(finished)
+
+        stale = _get_stale_api_cache(key, timedelta(days=1))
+        if stale is not None and not wait_for_fresh:
+            with _api_cache_lock:
+                cached_at = _api_cache.get(key, ({}, datetime.now()))[1]
+            return {**stale, "cache_status": "stale",
+                    "computed_at": stale.get("computed_at") or cached_at.astimezone(MARKET_TZ).isoformat()}
+        try:
+            return await asyncio.shield(task)
+        except _DashboardSuperseded:
+            # A response begun before a transaction write must use the new ledger.
+            continue
+
+
+def _build_positions_response(active_portfolio: Portfolio) -> dict:
+    """Ledger-only holdings: no live quote or historical-market-data requests."""
+    holdings = []
+    for holding in active_portfolio.get_holdings(fetch_prices=False):
+        item = _holding_to_dict(holding)
+        item["prices_pending"] = True
+        # Total return is not known until both realized and unrealized are known.
+        item["total_pnl"] = item["total_pnl_percent"] = None
+        holdings.append(item)
+    return {"holdings": holdings}
+
+
+@app.get("/api/positions")
+async def get_positions():
+    if portfolio is None:
+        await asyncio.to_thread(load_portfolio)
+    return await _dashboard_response(
+        f"positions_{market_today().isoformat()}", _build_positions_response
+    )
 
 
 def _refresh_intraday_cache(
@@ -549,16 +631,18 @@ async def _market_refresh_loop() -> None:
 def load_portfolio() -> Portfolio:
     """Load portfolio from all transactions stored in Postgres."""
     global portfolio, _portfolio_generation
-    portfolio = Portfolio()
+    loaded = Portfolio()
 
     transactions = repository.get_all_transactions()
     if transactions:
-        portfolio.add_transactions(transactions)
+        loaded.add_transactions(transactions)
         logger.info(f"Loaded {len(transactions)} transactions from database")
     else:
         logger.info("No transactions found in database")
 
+    portfolio = loaded
     _portfolio_generation += 1
+    _clear_api_cache()
 
     return portfolio
 
@@ -587,6 +671,8 @@ async def startup_event():
 async def shutdown_event():
     """Stop the scheduled refresh cleanly during deploys and local restarts."""
     global _market_refresh_task
+    if _dashboard_tasks:
+        await asyncio.gather(*list(_dashboard_tasks.values()), return_exceptions=True)
     if _market_refresh_task is None:
         return
     _market_refresh_task.cancel()
@@ -607,43 +693,21 @@ async def index(request: Request):
 
 
 @app.get("/api/holdings")
-async def get_holdings():
-    """Get current holdings with live prices."""
-    if portfolio is None:
-        load_portfolio()
-
-    cached = _get_api_cache("holdings")
-    if cached is not None:
-        return cached
-
-    try:
-        active_portfolio = portfolio
-        holdings = await asyncio.to_thread(active_portfolio.get_holdings, True)
-        result = {"holdings": [_holding_to_dict(item) for item in holdings]}
-        _set_api_cache("holdings", result)
-        return result
-    except Exception as e:
-        logger.error(f"Error fetching holdings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+async def get_holdings(wait_for_fresh: bool = False):
+    """Share the summary's live pricing work; ledger-only data is /api/positions."""
+    summary = await get_summary(wait_for_fresh=wait_for_fresh)
+    return {key: value for key, value in summary.items()
+            if key in {"holdings", "computed_at", "cache_status"}}
 
 
 @app.get("/api/summary")
-async def get_summary():
-    """Get portfolio summary including totals."""
+async def get_summary(wait_for_fresh: bool = False):
     if portfolio is None:
-        load_portfolio()
-
-    cached = _get_api_cache("summary")
-    if cached is not None:
-        return cached
-
+        await asyncio.to_thread(load_portfolio)
     try:
-        active_portfolio = portfolio
-        result = await asyncio.to_thread(_build_summary_response, active_portfolio)
-        _set_api_cache("summary", result)
-        return result
+        return await _dashboard_response("summary", _build_summary_response, wait_for_fresh)
     except Exception as e:
-        logger.error(f"Error fetching summary: {e}")
+        logger.exception("Error fetching summary")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -651,85 +715,48 @@ async def get_summary():
 async def get_performance(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    wait_for_fresh: bool = False,
 ):
-    """Get historical portfolio performance data."""
+    """All chart ranges share one history calculation and slice it in memory."""
     if portfolio is None:
-        load_portfolio()
-
+        await asyncio.to_thread(load_portfolio)
     try:
-        from datetime import datetime
-
-        start = None
-        end = None
-
-        if start_date:
-            start = datetime.strptime(start_date, "%Y-%m-%d").date()
-        if end_date:
-            end = datetime.strptime(end_date, "%Y-%m-%d").date()
-
-        cache_key = _performance_cache_key(start, end)
-        cached = _get_api_cache(cache_key)
-        if cached is not None:
-            return cached
-
-        # Any requested chart window can be sliced from the precomputed ALL
-        # series in memory, avoiding another historical calculation.
-        all_cached = _get_api_cache(_performance_cache_key(None, None))
-        if all_cached is not None and (start is not None or end is not None):
-            start_bound = start or date_type.min
-            end_bound = end or date_type.max
-            result = _slice_performance_response(
-                all_cached, start_bound, end_bound
-            )
-            _set_api_cache(cache_key, result)
-            return result
-
-        active_portfolio = portfolio
-        result = await asyncio.to_thread(
-            _build_performance_response, active_portfolio, start, end
+        start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
+        end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
+        if start and end and start > end:
+            raise ValueError("Start date must not be after end date")
+        result = await _dashboard_response(
+            _performance_cache_key(None, None), _build_performance_response, wait_for_fresh
         )
-        _set_api_cache(cache_key, result)
+        if start is not None or end is not None:
+            result = _slice_performance_response(result, start or date_type.min, end or date_type.max)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
     except Exception as e:
-        logger.error(f"Error fetching performance: {e}")
+        logger.exception("Error fetching performance")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/daily-pnl")
-async def get_daily_pnl(num_days: int = 42):
-    """Get daily P&L for the last `num_days` days using EST midnight as the daily boundary.
-
-    Default 42 days so the 5-week (current + past 4) Daily P&L panel always
-    has a full window's worth of data, even when today falls early in the week.
-    """
+async def get_daily_pnl(num_days: int = 42, wait_for_fresh: bool = False):
+    """Short and monthly panels share the same computed daily series."""
     if portfolio is None:
-        load_portfolio()
-
-    # Cache is keyed on the endpoint name only, so vary it by num_days.
-    # `_get_api_cache` splits on "_" to look up the TTL, so use "_" not ":" in the suffix.
-    cache_key = f"daily-pnl_{num_days}"
-    cached = _get_api_cache(cache_key)
-    if cached is not None:
-        return cached
-
-    monthly_cached = _get_api_cache("daily-pnl_400")
-    if monthly_cached is not None and 0 < num_days <= 400:
-        result = {"daily_pnl": monthly_cached.get("daily_pnl", [])[-num_days:]}
-        _set_api_cache(cache_key, result)
-        return result
-
+        await asyncio.to_thread(load_portfolio)
+    if num_days < 1 or num_days > 3660:
+        raise HTTPException(status_code=400, detail="num_days must be between 1 and 3660")
+    window = max(400, num_days)
     try:
-        active_portfolio = portfolio
-        data = await asyncio.to_thread(
-            active_portfolio.get_daily_pnl_history, num_days
+        result = await _dashboard_response(
+            f"daily-pnl_{window}",
+            lambda active: {"daily_pnl": active.get_daily_pnl_history(num_days=window)},
+            wait_for_fresh,
         )
-        result = {"daily_pnl": data}
-        _set_api_cache(cache_key, result)
+        if num_days != window:
+            result = {**result, "daily_pnl": result["daily_pnl"][-num_days:]}
         return result
     except Exception as e:
-        logger.error(f"Error fetching daily P&L: {e}")
+        logger.exception("Error fetching daily P&L")
         raise HTTPException(status_code=500, detail=str(e))
 
 

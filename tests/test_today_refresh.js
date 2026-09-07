@@ -16,6 +16,15 @@ function setup() {
     const context = {
         currentIntradayDate: null, intradayLoadRequestId: 0, currentInterval: '1m',
         secondaryRefreshTask: null, tickerHistoryInitialized: false,
+        dashboardLoadRequestId: 0, holdingsData: [], allocationView: 'assets',
+        portfolioChartView: 'investment', renderedIntraday: null,
+        fetchPositions: async () => null,
+        fetchTargets: async () => {},
+        setDashboardStatus() {}, snapshotStatus: () => '', slicePerformance: data => data,
+        renderHoldingsTable() {}, updateSummaryCards() {}, updateHoldingsTable() {},
+        updateAllocationChart() {}, updateInvestmentChart: async () => {},
+        updateSoldTable() {}, updateDividendsTable() {}, updateAnnualTable() {},
+        updatePnlChart() {}, updateDailyPnlList() {}, updateMonthlyPnlList() {},
         transactionCache: {}, apiCache: {clear() {}, set() {}}, console, setTimeout,
         fetch: async (url, options) => {
             events.push(['fetch', url, options.method]);
@@ -83,7 +92,7 @@ test('initial page waits for the Today render before requesting heavy endpoints'
     const chart = deferred();
     const heavy = deferred();
     context.loadIntradayData = () => { events.push(['today']); return chart.promise; };
-    context.fetchTargets = () => {};
+    context.fetchTargets = async () => {};
     for (const name of ['fetchSummary', 'fetchPerformance', 'fetchDividends', 'fetchSoldAssets', 'fetchDailyPnl', 'fetchMonthlyPnlData']) {
         context[name] = () => { events.push([name]); return heavy.promise; };
     }
@@ -102,7 +111,7 @@ test('initial page waits for the Today render before requesting heavy endpoints'
 test('secondary pages never redraw an older Today chart', async () => {
     const {context, events} = setup();
     context.loadIntradayData = () => { throw new Error('Should skip intraday'); };
-    context.fetchTargets = () => {};
+    context.fetchTargets = async () => {};
     for (const name of ['fetchSummary', 'fetchPerformance', 'fetchDividends', 'fetchSoldAssets', 'fetchDailyPnl', 'fetchMonthlyPnlData']) context[name] = async () => null;
     context.currentPeriod = 'YTD';
     context.portfolioPeriod = 'ALL';
@@ -129,4 +138,80 @@ test('same-minute server cache still renders when this browser has no chart', as
     await context.refreshData();
     assert.deepEqual(events, [['chart', '10:01']]);
     assert.equal(context.secondaryRefreshTask, null);
+});
+
+function setupPanels() {
+    const { context, events } = setup();
+    const requests = Object.fromEntries(['positions','summary','performance','daily','monthly','sold','dividends'].map(key => [key,deferred()]));
+    Object.assign(context, {
+        currentPeriod: 'YTD', portfolioPeriod: '1Y',
+        fetchPositions: () => requests.positions.promise,
+        fetchSummary: () => requests.summary.promise,
+        fetchPerformance: () => requests.performance.promise,
+        fetchDailyPnl: () => requests.daily.promise,
+        fetchMonthlyPnlData: () => requests.monthly.promise,
+        fetchSoldAssets: () => requests.sold.promise,
+        fetchDividends: () => requests.dividends.promise,
+        updateHoldingsTable(data) { events.push(['holdings',data]); context.holdingsData=data; },
+        updateAnnualTable(data) { events.push(['annual',data]); },
+        updateSoldTable(data) { events.push(['sold',data]); },
+        updateDividendsTable(data) { events.push(['dividends',data]); },
+    });
+    vm.runInContext(allSource, context);
+    return { context, events, requests, finish() { Object.values(requests).forEach(request => request.resolve(null)); } };
+}
+const settle = () => new Promise(resolve => setImmediate(resolve));
+
+test('positions render before Today or any slow market requests complete', async () => {
+    const {context,events,requests,finish} = setupPanels();
+    const today = deferred();context.loadIntradayData = () => today.promise;
+    const task = context.loadAllData();
+    requests.positions.resolve({holdings:[{symbol:'AAPL',quantity:5,cost_basis:100,prices_pending:true}]});
+    await settle();
+    assert.equal(events[0][0], 'holdings');
+    assert.equal(events[0][1][0].quantity, 5);
+    today.resolve();finish();await task;
+});
+
+test('a pending history calculation never blocks holdings, sales or dividends', async () => {
+    const {context,events,requests,finish} = setupPanels();
+    const task = context.loadAllData({skipIntraday:true});
+    requests.summary.resolve({holdings:[{symbol:'AAPL',current_price:150}]});
+    requests.sold.resolve({sold_assets:[]});requests.dividends.resolve({by_asset:[]});
+    await settle();
+    assert.deepEqual(events.map(event => event[0]).sort(), ['dividends','holdings','sold']);
+    finish();await task;
+});
+
+test('a late ledger-only response cannot erase loaded prices', async () => {
+    const {context,events,requests,finish} = setupPanels();
+    const task = context.loadAllData({skipIntraday:true});
+    requests.summary.resolve({holdings:[{symbol:'AAPL',current_price:150}]});await settle();
+    requests.positions.resolve({holdings:[{symbol:'AAPL',prices_pending:true}]});await settle();
+    assert.equal(events.filter(event => event[0]==='holdings').length,1);
+    assert.equal(context.holdingsData[0].current_price,150);
+    finish();await task;
+});
+
+test('stale summary paints immediately and is replaced once its shared refresh finishes', async () => {
+    const {context,events,requests,finish} = setupPanels();
+    const fresh = deferred();
+    context.fetchSummary = (_cached,waitFresh) => waitFresh ? fresh.promise : requests.summary.promise;
+    const task = context.loadAllData({skipIntraday:true});
+    requests.summary.resolve({holdings:[{symbol:'AAPL',current_price:100}],cache_status:'stale'});
+    await settle();assert.equal(context.holdingsData[0].current_price,100);
+    fresh.resolve({holdings:[{symbol:'AAPL',current_price:105}],cache_status:'fresh'});
+    await settle();assert.equal(context.holdingsData[0].current_price,105);
+    assert.equal(events.filter(event => event[0]==='holdings').length,2);
+    finish();await task;
+});
+
+test('a superseded load cannot overwrite holdings after a ledger change', async () => {
+    const {context,events,requests,finish} = setupPanels();
+    const task = context.loadAllData({skipIntraday:true});
+    context.dashboardLoadRequestId++;
+    requests.summary.resolve({holdings:[{symbol:'OLD'}]});
+    requests.positions.resolve({holdings:[{symbol:'OLD',prices_pending:true}]});
+    finish();await task;
+    assert.equal(events.filter(event => event[0]==='holdings').length,0);
 });

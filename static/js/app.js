@@ -151,6 +151,7 @@ let currentIntradayDate = null;
 let intradayLoadRequestId = 0;
 let renderedIntraday = null;
 let secondaryRefreshTask = null;
+let dashboardLoadRequestId = 0;
 
 // Anonymous mode
 let anonymousMode = localStorage.getItem('anonymousMode') === 'true';
@@ -540,7 +541,7 @@ function setupTooltips() {
 }
 
 // API functions
-async function fetchSummary(useCache = true) {
+async function fetchSummary(useCache = true, waitForFresh = false) {
     const cacheKey = 'summary';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -548,7 +549,7 @@ async function fetchSummary(useCache = true) {
     }
 
     try {
-        const response = await fetch('/api/summary');
+        const response = await fetch('/api/summary' + (waitForFresh ? '?wait_for_fresh=true' : ''));
         if (!response.ok) throw new Error('Failed to fetch summary');
         const data = await response.json();
         apiCache.set(cacheKey, data);
@@ -605,9 +606,11 @@ function getDateRangeForPeriod(period) {
     };
 }
 
-async function fetchPerformance(period = '1Y', useCache = true) {
+async function fetchPerformance(period = '1Y', useCache = true, waitForFresh = false) {
     const cacheKey = `performance_${period}`;
-    if (useCache) {
+    if (useCache && !waitForFresh) {
+        const all = apiCache.get("performance_ALL");
+        if (all) return slicePerformance(all, period);
         const cached = apiCache.get(cacheKey);
         if (cached) return cached;
     }
@@ -616,6 +619,7 @@ async function fetchPerformance(period = '1Y', useCache = true) {
         const { start_date, end_date } = getDateRangeForPeriod(period);
         let url = '/api/performance';
         const params = new URLSearchParams();
+        if (waitForFresh) params.append('wait_for_fresh', 'true');
         if (start_date) params.append('start_date', start_date);
         if (end_date) params.append('end_date', end_date);
         if (params.toString()) url += '?' + params.toString();
@@ -631,14 +635,14 @@ async function fetchPerformance(period = '1Y', useCache = true) {
     }
 }
 
-async function fetchDailyPnl(useCache = true) {
+async function fetchDailyPnl(useCache = true, waitForFresh = false) {
     const cacheKey = 'daily_pnl';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
         if (cached) return cached;
     }
     try {
-        const response = await fetch('/api/daily-pnl');
+        const response = await fetch('/api/daily-pnl' + (waitForFresh ? '?wait_for_fresh=true' : ''));
         if (!response.ok) throw new Error('Failed to fetch daily P&L');
         const data = await response.json();
         apiCache.set(cacheKey, data);
@@ -649,14 +653,14 @@ async function fetchDailyPnl(useCache = true) {
     }
 }
 
-async function fetchMonthlyPnlData(useCache = true) {
+async function fetchMonthlyPnlData(useCache = true, waitForFresh = false) {
     const cacheKey = 'monthly_pnl_data';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
         if (cached) return cached;
     }
     try {
-        const response = await fetch('/api/daily-pnl?num_days=400');
+        const response = await fetch('/api/daily-pnl?num_days=400' + (waitForFresh ? '&wait_for_fresh=true' : ''));
         if (!response.ok) throw new Error('Failed to fetch monthly P&L data');
         const data = await response.json();
         apiCache.set(cacheKey, data);
@@ -1479,6 +1483,14 @@ function renderHoldingsTable(holdings) {
 
     rows += buildTotalRowHtml(holdings, totalInvValue);
     tbody.innerHTML = rows;
+    if (holdings.some(holding => holding.prices_pending)) {
+        const marketColumns = [4, 5, 6, 7, 9, 10, 11, 12, 13, 15, 16, 17, 18];
+        tbody.querySelectorAll(marketColumns.map(col => `[data-col="${col}"]`).join(',')).forEach(cell => {
+            cell.textContent = '--';
+            cell.className = 'text-muted';
+            cell.removeAttribute('title');
+        });
+    }
     updateSortIndicators();
 }
 
@@ -1609,8 +1621,17 @@ function updateHoldingsTable(holdings) {
     renderHoldingsTable(holdingsData);
     // Also update category table
     updateCategoryTable(holdingsData);
-    // Today tab: refresh the Top Movers card (defaults to the latest intraday point)
-    renderTopMoversDefault();
+    if (holdingsData.some(holding => holding.prices_pending)) {
+        document.querySelectorAll('#categoryBody tr').forEach(row => {
+            [2, 3, 4, 5].forEach(index => {
+                const cell = row.children[index];
+                if (cell) { cell.textContent = '--'; cell.className = 'text-muted'; }
+            });
+            row.querySelector('td:first-child .text-muted')?.remove();
+        });
+    } else {
+        renderTopMoversDefault();
+    }
 }
 
 function updateCategoryTable(holdings) {
@@ -3861,7 +3882,7 @@ async function loadPerformanceData(period) {
 
         const [multidayData, summary, dailyPnlData] = await Promise.all([
             fetchIntradayMultiday(interval, days),
-            fetchSummary(),
+            fetchPositions(),
             fetchDailyPnl(false)
         ]);
 
@@ -4222,97 +4243,122 @@ function renderTopMoversDefault() {
     }
 }
 
-// Main data loading function
+function slicePerformance(data, period) {
+    const { start_date, end_date } = getDateRangeForPeriod(period);
+    return { ...data, performance: (data.performance || []).filter(point =>
+        (!start_date || point.date >= start_date) && (!end_date || point.date <= end_date)) };
+}
+
+function setDashboardStatus(id, text) {
+    const element = document.getElementById(id);
+    if (element) element.textContent = text;
+}
+
+function snapshotStatus(data, label) {
+    const time = data?.computed_at
+        ? new Date(data.computed_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})
+        : '';
+    return `${label}${time ? ` as of ${time}` : ''}${data?.cache_status === 'stale' ? ' · Updating…' : ''}`;
+}
+
+async function fetchPositions() {
+    try {
+        const response = await fetch('/api/positions');
+        if (!response.ok) throw new Error('Positions could not be loaded');
+        return await response.json();
+    } catch (error) {
+        console.error('Error loading positions:', error);
+        return null;
+    }
+}
+
+// Main data loading function: each panel paints as soon as its data arrives.
 async function loadAllData({ skipIntraday = false } = {}) {
-    // Give Today first use of the backend and paint it before heavier pages.
+    const requestId = ++dashboardLoadRequestId;
+    const isCurrent = () => requestId === dashboardLoadRequestId;
+    let pricedHoldingsRendered = false;
+    const positionsTask = fetchPositions().then(data => {
+        if (!data || !isCurrent() || pricedHoldingsRendered) return;
+        const sameLedger = holdingsData.length === data.holdings.length && data.holdings.every(position =>
+            holdingsData.some(holding => !holding.prices_pending && holding.symbol === position.symbol &&
+                holding.quantity === position.quantity && holding.cost_basis === position.cost_basis));
+        if (sameLedger) return;
+        updateHoldingsTable(data.holdings);
+        setDashboardStatus('holdingsDataStatus', 'Positions ready · Updating prices…');
+    });
+
+    // Ledger reads are cheap; live and historical work still gives Today priority.
     if (!skipIntraday) await loadIntradayData();
-    // Fetch targets alongside other data
-    fetchTargets();
+    if (!isCurrent()) return;
 
-    // Fetch all data in parallel; intraday auto-selects the finest available interval
-    const fetchList = [
-        fetchSummary(),
-        fetchPerformance('ALL'),  // Fetch all data for annual table
-        fetchDividends(),
-        fetchSoldAssets(),
-        Promise.resolve(null) // Today was rendered before these requests.
-    ];
-
-    // For 3D/1W the P&L chart is built from dailyPnl + intraday (fetched below).
-    // For other periods fetch the regular performance data.
-    const useIntradayForPnl = currentPeriod === '3D' || currentPeriod === '1W';
-    if (!useIntradayForPnl) {
-        fetchList.push(fetchPerformance(currentPeriod));
-    } else {
-        fetchList.push(Promise.resolve(null)); // placeholder to keep index alignment
-    }
-
-    // Add separate fetch for portfolio chart if period is different from ALL
-    const needsSeparatePortfolioFetch = portfolioPeriod !== 'ALL';
-    if (needsSeparatePortfolioFetch) {
-        fetchList.push(fetchPerformance(portfolioPeriod));
-    }
-
-    // Fetch daily P&L list (EST midnight boundary for crypto)
-    fetchList.push(fetchDailyPnl());
-
-    // Kick off monthly P&L fetch in parallel (larger dataset, separate cache key)
-    const monthlyPnlPromise = fetchMonthlyPnlData();
-
-    const results = await Promise.all(fetchList);
-    const [summary, allPerformance, dividends, sold, , pnlData] = results;
-    const portfolioPerformance = needsSeparatePortfolioFetch ? results[6] : allPerformance;
-    const dailyPnlData = results[results.length - 1];
-
-    if (summary) {
-        updateSummaryCards(summary);
-        updateHoldingsTable(summary.holdings);
-        updateAllocationChart(summary.holdings, allocationView);
-    }
-
-    // Only update the chart if the user hasn't switched date mid-flight
-    // Today was already rendered. Never let a slow secondary response repaint
-    // an older curve over a manual refresh or a date-navigation result.
-
-    // Handle P&L chart - always delegate to loadPerformanceData for consistent behavior
-    if (useIntradayForPnl) {
-        loadPerformanceData(currentPeriod);
-    } else if (pnlData) {
-        updatePnlChart(pnlData);
-    }
-
-    // Update daily P&L list
-    if (dailyPnlData) {
-        updateDailyPnlList(dailyPnlData, currentIntradayDate === null ? renderedIntraday : null);
-    }
-
-    // Update monthly P&L list (awaits the parallel fetch started above)
-    const monthlyPnlData = await monthlyPnlPromise;
-    if (monthlyPnlData) {
-        updateMonthlyPnlList(monthlyPnlData);
-    }
-
-    // Update Portfolio Value chart based on portfolioPeriod
-    if (portfolioPerformance) {
-        currentPerformanceData = portfolioPerformance;
-        if (portfolioChartView === 'value') {
-            updatePerformanceChart(portfolioPerformance);
-        } else {
-            updateInvestmentChart(null, portfolioPeriod);
+    async function paint(fetcher, render, statusId, label) {
+        try {
+            const data = await fetcher(false);
+            if (!isCurrent()) return;
+            if (!data) throw new Error(`${label || 'Data'} unavailable`);
+            render(data);
+            if (statusId) setDashboardStatus(statusId, snapshotStatus(data, label));
+            if (data.cache_status === 'stale') {
+                const fresh = await fetcher(true);
+                if (!isCurrent()) return;
+                if (!fresh) throw new Error(`${label || 'Data'} refresh failed`);
+                render(fresh);
+                if (statusId) setDashboardStatus(statusId, snapshotStatus(fresh, label));
+            }
+        } catch (error) {
+            console.error('Dashboard panel failed:', error);
+            if (isCurrent() && statusId) {
+                setDashboardStatus(statusId, `${label} update failed · Refresh to retry`);
+                if (statusId === 'summaryDataStatus') setDashboardStatus('holdingsDataStatus', 'Price update failed · Refresh to retry');
+            }
         }
     }
 
-    if (allPerformance) {
-        updateAnnualTable(allPerformance);
-    }
+    const summaryTask = paint(
+        fresh => fetchSummary(!fresh, fresh),
+        summary => {
+            pricedHoldingsRendered = true;
+            updateSummaryCards(summary);
+            updateHoldingsTable(summary.holdings);
+            updateAllocationChart(summary.holdings, allocationView);
+            setDashboardStatus('holdingsDataStatus', snapshotStatus(summary, 'Prices'));
+        }, 'summaryDataStatus', 'Prices'
+    );
+    const targetsTask = fetchTargets().then(() => {
+        if (isCurrent()) renderHoldingsTable(holdingsData);
+    });
 
-    if (sold) {
-        updateSoldTable(sold);
-    }
+    // Transaction-derived cards never wait for historical prices.
+    const investmentsTask = portfolioChartView === 'investment'
+        ? updateInvestmentChart(null, portfolioPeriod) : Promise.resolve();
+    const soldTask = paint(() => fetchSoldAssets(), updateSoldTable);
+    const dividendsTask = paint(() => fetchDividends(), updateDividendsTable);
 
-    if (dividends) {
-        updateDividendsTable(dividends);
-    }
+    const shortTask = currentPeriod === '3D' || currentPeriod === '1W'
+        ? loadPerformanceData(currentPeriod) : Promise.resolve();
+    const performanceTask = paint(
+        fresh => fetchPerformance('ALL', !fresh, fresh),
+        all => {
+            updateAnnualTable(all);
+            const shortPeriod = currentPeriod === '3D' || currentPeriod === '1W';
+            if (!shortPeriod) updatePnlChart(slicePerformance(all, currentPeriod));
+            if (portfolioChartView === 'value') {
+                currentPerformanceData = slicePerformance(all, portfolioPeriod);
+                updatePerformanceChart(currentPerformanceData);
+            }
+        }, 'performanceDataStatus', 'Performance'
+    );
+    const dailyTask = paint(
+        fresh => fetchDailyPnl(!fresh, fresh),
+        data => updateDailyPnlList(data, currentIntradayDate === null ? renderedIntraday : null),
+        'dailyPnlDataStatus', 'Daily P&L'
+    );
+    const monthlyTask = paint(
+        fresh => fetchMonthlyPnlData(!fresh, fresh), updateMonthlyPnlList,
+        'monthlyPnlDataStatus', 'Monthly P&L'
+    );
+    await Promise.allSettled([positionsTask, summaryTask, targetsTask, investmentsTask,
+        soldTask, dividendsTask, shortTask, performanceTask, dailyTask, monthlyTask]);
 }
 
 async function refreshData() {

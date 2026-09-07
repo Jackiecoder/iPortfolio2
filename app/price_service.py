@@ -298,6 +298,7 @@ class PriceService:
         results: dict[str, dict[date, Decimal]] = {}
         need_fetch: dict[str, date] = {}  # symbol -> earliest date to fetch
 
+        uncached = []
         for symbol in symbols:
             cache_key = f"{symbol}_{start_d}_{end_d}"
             if cache_key in self._history_cache:
@@ -305,8 +306,11 @@ class PriceService:
                 if datetime.now() - cached_at < self.cache_ttl:
                     results[symbol] = data
                     continue
+            uncached.append(symbol)
 
-            cached_prices = cache_service.get_historical_prices(symbol, start_d, end_d)
+        persisted = cache_service.get_historical_prices_batch(uncached, start_d, end_d)
+        for symbol in uncached:
+            cached_prices = persisted.get(symbol, {})
             results[symbol] = dict(cached_prices)
 
             if cached_prices:

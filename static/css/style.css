@@ -2765,3 +2765,7 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }
+
+.dashboard-data-status { color: var(--slate-600); font-size: 11px; line-height: 1.5; margin: 6px 0 12px; }
+.dashboard-data-status:empty { display: none; }
+.card-header .dashboard-data-status { margin-bottom: 0; }
