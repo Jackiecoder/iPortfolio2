@@ -36,6 +36,15 @@ A Python-based portfolio tracking application that reads transaction data from C
 
 ## Live snapshot refresh
 
+The **Live** switch beside Refresh is off by default. When enabled, the browser
+runs the same refresh every minute and automatically turns off after **3 hours**.
+The expiry time is shared across tabs and survives reloads without restarting the
+clock. Reopening an expired session leaves Live off; turn it on again to start a
+new 3-hour session. Older saved preferences without an expiry default to off.
+Manual and automatic refreshes share an in-flight guard. Automatic updates do
+not show repeated toasts; a suspended tab checks expiry before catching up when
+it becomes visible. Manual refresh remains available after Live expires.
+
 The server collects **1-minute bars every 5 minutes** by default, incrementally
 upserts new or changed bars into Postgres, and rebuilds only the Today chart.
 Override the collection cadence with `MARKET_REFRESH_INTERVAL_SECONDS` (minimum
@@ -62,7 +71,13 @@ against the new portfolio/date before publishing.
 Startup prepares Today first; other dashboard responses compute on demand.
 The browser renders Today before fetching the rest of the dashboard. After a
 manual refresh, other pages update separately without delaying the chart or
-overwriting it. Transaction writes still rebuild the full snapshot before returning.
+overwriting it. Transaction writes return as soon as Postgres commits. A shared
+background job rebuilds the ledger; readers wait for that ledger without waiting
+for prices or history. After saving, the modal closes, today's share count updates
+from the saved receipt, and pending values show a spinner. Confirmed quantities
+and FIFO costs arrive from `/api/positions`; each remaining panel updates independently.
+Historical quantities wait for the server's split adjustments. Update failures
+are shown separately from save failures, with a retry that never resubmits the trade.
 
 On Cloud Run, the included `deploy.sh` keeps exactly one instance alive and
 disables CPU throttling so the in-process portfolio, response cache, and refresh

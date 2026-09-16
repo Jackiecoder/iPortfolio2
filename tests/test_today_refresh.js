@@ -14,9 +14,13 @@ function setup() {
     const events = [];
     const secondary = deferred();
     const context = {
+        syncMarketDay: () => false, updateIntradayDateNavigation() {},
+        marketTodayStr: () => '2026-09-07', TodayPnl: require('../static/js/today-pnl.js'),
+        latestTodaySnapshot: null, baseHoldingsData: [],
         currentIntradayDate: null, intradayLoadRequestId: 0, currentInterval: '1m',
         secondaryRefreshTask: null, tickerHistoryInitialized: false,
         dashboardLoadRequestId: 0, holdingsData: [], allocationView: 'assets',
+        transactionUpdateState: 'idle', holdingsLedgerKnown: false,
         portfolioChartView: 'investment', renderedIntraday: null,
         fetchPositions: async () => null,
         fetchTargets: async () => {},
@@ -28,7 +32,7 @@ function setup() {
         transactionCache: {}, apiCache: {clear() {}, set() {}}, console, setTimeout,
         fetch: async (url, options) => {
             events.push(['fetch', url, options.method]);
-            return {ok: true, json: async () => ({intraday: [{time: '10:01'}]})};
+            return {ok: true, json: async () => ({date: '2026-09-07', intraday: [{time: '10:01'}]})};
         },
         updateIntradayIntervalBadge() {},
         updateIntradayChart(data) { events.push(['chart', data.intraday[0].time]); },
@@ -66,7 +70,7 @@ test('date navigation during a request cannot be overwritten by its result', asy
     const refresh = context.refreshData();
     context.currentIntradayDate = '2026-09-03';
     context.intradayLoadRequestId++;
-    request.resolve({ok: true, json: async () => ({intraday: [{time: '10:01'}]})});
+    request.resolve({ok: true, json: async () => ({date: '2026-09-07', intraday: [{time: '10:01'}]})});
     await refresh;
     assert.equal(events.filter(e => e[0] === 'chart').length, 0);
     assert.equal(cacheWrites, 0);
@@ -162,6 +166,38 @@ function setupPanels() {
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('post-save positions and summary render while Today is still waiting', async () => {
+    const {context, events, requests, finish} = setupPanels();
+    const today = deferred();
+    context.loadIntradayData = () => today.promise;
+    const task = context.loadAllData({prioritizeIntraday: false});
+    requests.positions.resolve({holdings: [{symbol: 'AAPL', quantity: 6, cost_basis: 620, prices_pending: true}]});
+    await settle();
+    assert.equal(context.holdingsData[0].quantity, 6);
+    assert.equal(context.holdingsData[0].cost_basis, 620);
+    requests.summary.resolve({holdings: [{symbol: 'AAPL', quantity: 6, cost_basis: 620, current_price: 130}]});
+    await settle();
+    assert.equal(context.holdingsData[0].current_price, 130);
+    assert.equal(events.filter(event => event[0] === 'holdings').length, 2);
+    today.resolve(true); finish(); await task;
+});
+
+test('a failed post-save panel reports an update error and a later retry recovers', async () => {
+    const {context, requests, finish} = setupPanels();
+    const states = [];
+    context.transactionUpdateState = 'updating';
+    context.setTransactionUpdateState = state => { states.push(state); context.transactionUpdateState = state; };
+    const task = context.loadAllData({skipIntraday: true});
+    requests.summary.resolve(null); finish(); await task;
+    assert.equal(states.at(-1), 'error');
+    context.transactionUpdateState = 'updating';
+    context.fetchPositions = async () => ({holdings: []});
+    context.fetchSummary = async () => ({holdings: []});
+    for (const name of ['fetchPerformance', 'fetchDailyPnl', 'fetchMonthlyPnlData', 'fetchSoldAssets', 'fetchDividends']) context[name] = async () => ({});
+    await context.loadAllData({skipIntraday: true});
+    assert.equal(states.at(-1), 'idle');
+});
+
 test('positions render before Today or any slow market requests complete', async () => {
     const {context,events,requests,finish} = setupPanels();
     const today = deferred();context.loadIntradayData = () => today.promise;
@@ -214,4 +250,25 @@ test('a superseded load cannot overwrite holdings after a ledger change', async 
     requests.positions.resolve({holdings:[{symbol:'OLD',prices_pending:true}]});
     finish();await task;
     assert.equal(events.filter(event => event[0]==='holdings').length,0);
+});
+
+test('response spanning midnight cannot render or populate the new day cache', async () => {
+    const { context, events } = setup();
+    const request = deferred();
+    let cacheWrites = 0;
+    context.apiCache.set = () => cacheWrites++;
+    context.fetch = () => request.promise;
+    const pending = context.refreshData();
+    context.marketTodayStr = () => '2026-09-08';
+    request.resolve({ ok: true, json: async () => ({ date: '2026-09-07', intraday: [{ time: '23:59' }] }) });
+    assert.equal(await pending, null);
+    assert.equal(cacheWrites, 0);
+    assert.deepEqual(events, []);
+});
+
+test('wrong-date server response cannot be displayed under Today', async () => {
+    const { context, events } = setup();
+    context.fetch = async () => ({ ok: true, json: async () => ({ date: '2026-09-06', intraday: [{ time: '23:59' }] }) });
+    await assert.rejects(context.refreshData(), /date changed/);
+    assert.deepEqual(events, []);
 });

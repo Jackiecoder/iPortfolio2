@@ -50,7 +50,8 @@ class TodayRefreshTests(unittest.IsolatedAsyncioTestCase):
             started.set()
             release.wait(3)
             return payload
-        with patch.object(main, '_build_today_snapshot', side_effect=build) as collect:
+        with patch.object(main, 'portfolio', MagicMock()), \
+             patch.object(main, '_build_today_snapshot', side_effect=build) as collect:
             timer = asyncio.create_task(main._refresh_today_snapshot())
             await asyncio.to_thread(started.wait, 3)
             manual = asyncio.create_task(main.refresh_today_intraday())

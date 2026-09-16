@@ -4,7 +4,7 @@ import bisect
 import logging
 from collections import defaultdict
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -1867,7 +1867,8 @@ class Portfolio:
                         )
                         asset_changes.append({
                             "symbol": symbol,
-                            "pnl": float(asset_pnl),
+                            "quantity": float(quantities[symbol]),
+                            "pnl": float(asset_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
                             "pnl_percent": float(asset_pnl_percent),
                             "prev_price": float(prev_price) if prev_price is not None else None,
                             "current_price": float(current_price),
@@ -1876,13 +1877,19 @@ class Portfolio:
                 # Sort by absolute P&L (largest movers first)
                 asset_changes.sort(key=lambda x: abs(x["pnl"]), reverse=True)
 
+                # The visible total is the sum of visible cents, including positions
+                # sold today. Retain every contribution at the latest point; the
+                # historical hover payload can stay limited to the top movers.
+                daily_pnl = sum((Decimal(str(a["pnl"])) for a in asset_changes), Decimal("0"))
+                daily_pnl_percent = daily_pnl / daily_basis * 100 if daily_basis > 0 else Decimal("0")
                 results.append({
                     "time": time_str,
                     "value": float(total_value),
                     "baseline_value": float(daily_basis),
                     "daily_pnl": float(daily_pnl),
                     "daily_pnl_percent": float(daily_pnl_percent),
-                    "asset_changes": asset_changes[:10],  # Top 10 movers
+                    "asset_changes": asset_changes if is_last_time_point else asset_changes[:10],
+                    "holdings_complete": is_last_time_point,
                 })
 
         logger.info(f"Intraday: Returning {len(results)} data points")

@@ -15,7 +15,6 @@ class RefreshContractTests(unittest.TestCase):
             javascript,
         )
         self.assertIn("await refreshData();", javascript)
-        self.assertNotIn("startAutoRefresh", javascript)
         self.assertNotIn("auto-refresh-option", template)
         self.assertNotIn("refreshCountdown", template)
 

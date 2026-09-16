@@ -22,7 +22,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=43">
+    <link rel="stylesheet" href="/static/css/style.css?v=45">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -66,10 +66,16 @@
                 <button id="addTxnBtn" class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTxnModal" aria-label="Add transaction" title="Add transaction">
                     <i class="bi bi-plus-lg me-1"></i><span class="nav-label">Add Transaction</span>
                 </button>
-                <button id="refreshBtn" class="btn btn-sm nav-refresh-btn" type="button" aria-label="Refresh intraday chart" title="Fetch minute prices and update the intraday chart">
-                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
-                    <span class="refresh-label">Refresh</span>
-                </button>
+                <div class="nav-refresh-controls">
+                    <button id="refreshBtn" class="btn btn-sm nav-refresh-btn" type="button" aria-label="Refresh intraday chart" title="Fetch minute prices and update the intraday chart">
+                        <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                        <span class="refresh-label">Refresh</span>
+                    </button>
+                    <label class="nav-live-control" for="liveRefreshSwitch" title="Automatically refresh every minute; turns off after 3 hours">
+                        <span>Live</span>
+                        <input id="liveRefreshSwitch" type="checkbox" role="switch" aria-label="Live refresh every minute" aria-description="Automatically turns off 3 hours after enabling, including across page reloads.">
+                    </label>
+                </div>
             </div>
         </div>
     </nav>
@@ -226,6 +232,11 @@
                 <span>Refresh prices</span>
             </div>
         </header>
+        <div id="transactionUpdateNotice" class="transaction-update-notice d-none" role="status" aria-live="polite">
+            <span class="value-spinner" aria-hidden="true"></span>
+            <span id="transactionUpdateMessage"></span>
+            <button id="transactionUpdateRetry" type="button" class="btn btn-sm btn-outline-primary d-none">Retry update</button>
+        </div>
         <!-- Portfolio Summary toggle + condensed strip -->
         <div class="d-flex align-items-center gap-2 mb-2 summary-command-bar">
             <button class="btn btn-sm btn-outline-secondary" type="button" id="summaryToggleBtn" aria-expanded="false" aria-controls="summaryCardsCollapse">
@@ -711,7 +722,7 @@
         <!-- Holdings Table -->
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
-                <div><h5 class="mb-0"><i class="bi bi-briefcase me-2"></i>Holdings</h5><div id="holdingsDataStatus" class="dashboard-data-status" role="status"></div></div>
+                <div><h5 class="mb-0"><i class="bi bi-briefcase me-2"></i>Holdings</h5><div id="holdingsTodayStatus" class="dashboard-data-status" role="status"></div><div id="holdingsDataStatus" class="dashboard-data-status" role="status"></div></div>
                 <div class="d-flex gap-2 align-items-center">
                     <div class="btn-group btn-group-sm" role="group">
                         <button class="btn btn-outline-secondary holdings-view-btn" data-view="flat">All</button>
@@ -1151,7 +1162,9 @@
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/js/trade-preview.js?v=1"></script>
-    <script src="/static/js/app.js?v=134"></script>
+    <script src="/static/js/today-pnl.js?v=1"></script>
+    <script src="/static/js/transaction-updates.js?v=1"></script>
+    <script src="/static/js/app.js?v=139"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

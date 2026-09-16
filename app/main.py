@@ -125,6 +125,68 @@ _market_refresh_lock = threading.Lock()
 _market_refresh_task: Optional[asyncio.Task] = None
 _today_refresh_task: Optional[asyncio.Task] = None
 _today_snapshot_stamp: Optional[tuple[Portfolio, int, datetime, dict]] = None
+_ledger_reload_task: Optional[asyncio.Task] = None
+_ledger_write_tasks: set[asyncio.Task] = set()
+
+
+def _start_ledger_reload() -> asyncio.Task:
+    """Share one ledger rebuild; a newer write supersedes an unfinished rebuild."""
+    global _ledger_reload_task
+    if _ledger_reload_task is None or _ledger_reload_task.done():
+        async def rebuild():
+            global portfolio
+            while True:
+                generation = _portfolio_generation
+                loaded = await asyncio.to_thread(_read_portfolio)
+                with _api_cache_lock:
+                    if generation != _portfolio_generation:
+                        continue
+                    portfolio = loaded
+                return loaded
+
+        _ledger_reload_task = asyncio.create_task(rebuild(), name="reload-ledger")
+        def finished(task):
+            if not task.cancelled() and task.exception() is not None:
+                logger.error("Saved ledger could not be reloaded: %s", task.exception())
+        _ledger_reload_task.add_done_callback(finished)
+    return _ledger_reload_task
+
+
+async def _ensure_portfolio_ready() -> None:
+    """Readers wait for the committed ledger, never for market/history refreshes."""
+    while portfolio is None:
+        try:
+            await asyncio.shield(_start_ledger_reload())
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Transactions are saved; portfolio update failed. Retry refresh.") from exc
+
+
+def _queue_ledger_reload() -> None:
+    global portfolio, _portfolio_generation
+    # Invalidate before yielding so no post-commit request can serve the old ledger.
+    with _api_cache_lock:
+        portfolio = None
+        _portfolio_generation += 1
+    _clear_api_cache()
+    _start_ledger_reload()
+
+
+async def _commit_ledger_write(writer, *args, **kwargs):
+    """Finish commit + invalidation even if the requesting browser disconnects."""
+    async def commit():
+        result = await asyncio.to_thread(writer, *args, **kwargs)
+        if result is not False:
+            _queue_ledger_reload()
+        return result
+
+    task = asyncio.create_task(commit(), name="commit-ledger")
+    _ledger_write_tasks.add(task)
+    def finished(done):
+        _ledger_write_tasks.discard(done)
+        if not done.cancelled() and done.exception() is not None:
+            logger.error("Ledger write failed: %s", done.exception())
+    task.add_done_callback(finished)
+    return await asyncio.shield(task)
 
 
 def _configured_refresh_interval() -> int:
@@ -201,6 +263,7 @@ class _DashboardSuperseded(Exception):
 async def _dashboard_response(key: str, builder, wait_for_fresh: bool = False) -> dict:
     """Reuse snapshots and share one refresh, without publishing pre-write data."""
     while True:
+        await _ensure_portfolio_ready()
         cached = _get_api_cache(key)
         if cached is not None:
             return cached
@@ -265,8 +328,7 @@ def _build_positions_response(active_portfolio: Portfolio) -> dict:
 
 @app.get("/api/positions")
 async def get_positions():
-    if portfolio is None:
-        await asyncio.to_thread(load_portfolio)
+    await _ensure_portfolio_ready()
     return await _dashboard_response(
         f"positions_{market_today().isoformat()}", _build_positions_response
     )
@@ -540,9 +602,6 @@ def _build_today_snapshot() -> dict:
     intraday = active_portfolio.get_intraday_values(
         "1m", refresh_prices=True, use_live_quotes=False, refresh_metadata=metadata
     )
-    if (generation != _portfolio_generation or active_portfolio is not portfolio
-            or today != market_today()):
-        return {"status": "superseded"}
     result = {
         "intraday": intraday,
         "date": today.isoformat(),
@@ -550,8 +609,12 @@ def _build_today_snapshot() -> dict:
         "computed_at": datetime.now(MARKET_TZ).isoformat(),
         **metadata,
     }
-    _set_api_cache(f"intraday_{today.isoformat()}_1m", result)
-    _today_snapshot_stamp = (active_portfolio, generation, started_at, result)
+    with _api_cache_lock:
+        if (generation != _portfolio_generation or active_portfolio is not portfolio
+                or today != market_today()):
+            return {"status": "superseded"}
+        _api_cache[f"intraday_{today.isoformat()}_1m"] = (result, datetime.now())
+        _today_snapshot_stamp = (active_portfolio, generation, started_at, result)
     logger.info(
         "Today snapshot refreshed: %s points in %.2fs",
         len(intraday), (datetime.now(MARKET_TZ) - started_at).total_seconds(),
@@ -587,6 +650,7 @@ async def _refresh_today_snapshot() -> dict:
     """Share a running fetch between timer/manual requests, even on disconnect."""
     global _today_refresh_task
     for _ in range(2):
+        await _ensure_portfolio_ready()
         if _today_refresh_task is None or _today_refresh_task.done():
             cached = _reusable_today_snapshot()
             if cached is not None:
@@ -628,9 +692,8 @@ async def _market_refresh_loop() -> None:
                 next_refresh_at += MARKET_REFRESH_INTERVAL_SECONDS
 
 
-def load_portfolio() -> Portfolio:
-    """Load portfolio from all transactions stored in Postgres."""
-    global portfolio, _portfolio_generation
+def _read_portfolio() -> Portfolio:
+    """Build a ledger without exposing partially replayed transactions."""
     loaded = Portfolio()
 
     transactions = repository.get_all_transactions()
@@ -639,7 +702,13 @@ def load_portfolio() -> Portfolio:
         logger.info(f"Loaded {len(transactions)} transactions from database")
     else:
         logger.info("No transactions found in database")
+    return loaded
 
+
+def load_portfolio() -> Portfolio:
+    """Load portfolio from all transactions stored in Postgres."""
+    global portfolio, _portfolio_generation
+    loaded = _read_portfolio()
     portfolio = loaded
     _portfolio_generation += 1
     _clear_api_cache()
@@ -671,6 +740,10 @@ async def startup_event():
 async def shutdown_event():
     """Stop the scheduled refresh cleanly during deploys and local restarts."""
     global _market_refresh_task
+    if _ledger_write_tasks:
+        await asyncio.gather(*list(_ledger_write_tasks), return_exceptions=True)
+    if _ledger_reload_task is not None:
+        await asyncio.gather(_ledger_reload_task, return_exceptions=True)
     if _dashboard_tasks:
         await asyncio.gather(*list(_dashboard_tasks.values()), return_exceptions=True)
     if _market_refresh_task is None:
@@ -702,8 +775,7 @@ async def get_holdings(wait_for_fresh: bool = False):
 
 @app.get("/api/summary")
 async def get_summary(wait_for_fresh: bool = False):
-    if portfolio is None:
-        await asyncio.to_thread(load_portfolio)
+    await _ensure_portfolio_ready()
     try:
         return await _dashboard_response("summary", _build_summary_response, wait_for_fresh)
     except Exception as e:
@@ -718,8 +790,7 @@ async def get_performance(
     wait_for_fresh: bool = False,
 ):
     """All chart ranges share one history calculation and slice it in memory."""
-    if portfolio is None:
-        await asyncio.to_thread(load_portfolio)
+    await _ensure_portfolio_ready()
     try:
         start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
         end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
@@ -741,8 +812,7 @@ async def get_performance(
 @app.get("/api/daily-pnl")
 async def get_daily_pnl(num_days: int = 42, wait_for_fresh: bool = False):
     """Short and monthly panels share the same computed daily series."""
-    if portfolio is None:
-        await asyncio.to_thread(load_portfolio)
+    await _ensure_portfolio_ready()
     if num_days < 1 or num_days > 3660:
         raise HTTPException(status_code=400, detail="num_days must be between 1 and 3660")
     window = max(400, num_days)
@@ -763,8 +833,7 @@ async def get_daily_pnl(num_days: int = 42, wait_for_fresh: bool = False):
 @app.get("/api/dividends")
 async def get_dividends():
     """Get dividend summary and history."""
-    if portfolio is None:
-        load_portfolio()
+    await _ensure_portfolio_ready()
 
     cached = _get_api_cache("dividends")
     if cached is not None:
@@ -795,27 +864,13 @@ async def get_dividends():
 @app.get("/api/sold")
 async def get_sold_assets():
     """Get summary of sold assets with realized P&L."""
-    if portfolio is None:
-        load_portfolio()
-
-    cached = _get_api_cache("sold")
-    if cached is not None:
-        return cached
+    await _ensure_portfolio_ready()
 
     try:
-        result = await asyncio.to_thread(_build_sold_response, portfolio)
-        _set_api_cache("sold", result)
-        return result
+        return await _dashboard_response("sold", _build_sold_response)
     except Exception as e:
         logger.error(f"Error fetching sold assets: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-def _refresh_after_write() -> dict:
-    """Reload transactions and leave a complete fresh dashboard snapshot."""
-    load_portfolio()
-    _clear_api_cache()
-    return _refresh_market_snapshot(force_prices=False, wait_for_lock=True)
 
 
 class TransactionCreate(BaseModel):
@@ -858,18 +913,26 @@ async def create_transaction(txn_in: TransactionCreate):
         raise HTTPException(status_code=400, detail=msgs)
 
     try:
-        new_id = repository.insert_transaction(txn, broker=txn_in.broker)
-        await asyncio.to_thread(_refresh_after_write)
-        return {
-            "id": new_id,
-            "message": (
-                f"Added {txn.action.value} {txn.asset} on "
-                f"{txn.effective_executed_at.strftime('%Y-%m-%d %H:%M')} ET"
-            ),
-        }
+        new_id = await _commit_ledger_write(repository.insert_transaction, txn, broker=txn_in.broker)
     except Exception as e:
         logger.error(f"Error adding transaction: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "id": new_id,
+        "message": (
+            f"Added {txn.action.value} {txn.asset} on "
+            f"{txn.effective_executed_at.strftime('%Y-%m-%d %H:%M')} ET"
+        ),
+        "transaction": {
+            **txn.model_dump(mode="json"), "id": new_id, "broker": txn_in.broker,
+            "amount": float(txn.amount) if txn.amount is not None else None,
+            "quantity": float(txn.quantity) if txn.quantity is not None else None,
+            "ave_price": float(txn.ave_price) if txn.ave_price is not None else None,
+            "transaction_time": txn.effective_executed_at.strftime('%H:%M'),
+        },
+        "refresh_pending": True,
+    }
 
 
 @app.post("/api/upload")
@@ -884,9 +947,7 @@ async def upload_csv(file: UploadFile = File(...)):
 
         # Parse + validate, then bulk-insert into Postgres (no file is written).
         transactions = parse_csv_content(content_str)
-        count = repository.insert_transactions(transactions)
-
-        await asyncio.to_thread(_refresh_after_write)
+        count = await _commit_ledger_write(repository.insert_transactions, transactions)
 
         return {
             "message": f"Imported {count} transactions from {file.filename}",
@@ -950,7 +1011,7 @@ async def list_all_transactions():
 async def delete_transaction(txn_id: int):
     """Permanently delete a single transaction by id, then reload the portfolio."""
     try:
-        deleted = repository.delete_transaction(txn_id)
+        deleted = await _commit_ledger_write(repository.delete_transaction, txn_id)
     except Exception as e:
         logger.error(f"Error deleting transaction {txn_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -958,7 +1019,6 @@ async def delete_transaction(txn_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Transaction {txn_id} not found")
 
-    await asyncio.to_thread(_refresh_after_write)
     return {"id": txn_id, "message": f"Deleted transaction {txn_id}"}
 
 
@@ -969,8 +1029,7 @@ async def get_transactions(
     actions: Optional[str] = Query(None, description="Comma-separated action types to filter (e.g. BUY,SELL)"),
 ):
     """Get recent transactions for a specific symbol."""
-    if portfolio is None:
-        load_portfolio()
+    await _ensure_portfolio_ready()
 
     try:
         action_filter = {a.strip().upper() for a in actions.split(",")} if actions else None
@@ -1043,8 +1102,7 @@ async def get_ticker_history(
     period: str = Query("6M", description="1M, 3M, 6M, 1Y, 3Y, 5Y, or ALL"),
 ):
     """Return a ticker price series with BUY/SELL markers from the ledger."""
-    if portfolio is None:
-        load_portfolio()
+    await _ensure_portfolio_ready()
 
     valid_periods = {*_TICKER_HISTORY_PERIOD_DAYS, "ALL"}
     period = period.upper()
@@ -1172,8 +1230,7 @@ async def get_intraday(
     date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (defaults to today)"),
 ):
     """Get intraday portfolio performance for a given date (defaults to today)."""
-    if portfolio is None:
-        load_portfolio()
+    await _ensure_portfolio_ready()
 
     valid_intervals = ["1m", "2m", "5m", "15m", "30m", "60m", "90m"]
     if interval not in valid_intervals:
@@ -1240,8 +1297,7 @@ async def get_intraday_multiday(
     days: int = Query(3, description="Number of days (1-7)"),
 ):
     """Get multi-day intraday portfolio performance."""
-    if portfolio is None:
-        load_portfolio()
+    await _ensure_portfolio_ready()
 
     # Validate interval
     valid_intervals = ["15m", "30m", "60m"]
@@ -1285,8 +1341,7 @@ async def get_investments(
     This endpoint does NOT require yfinance data - it only uses transaction records.
     Much faster and more reliable for showing investment history.
     """
-    if portfolio is None:
-        load_portfolio()
+    await _ensure_portfolio_ready()
 
     try:
         from datetime import datetime
@@ -1426,8 +1481,7 @@ def _generate_and_save_analysis(start_date: date_type, end_date: date_type) -> d
 @app.post("/api/analysis/reports")
 async def create_analysis_report(req: AnalysisReportRequest):
     """Generate a GPT analysis for the requested dates and persist its snapshot."""
-    if portfolio is None:
-        load_portfolio()
+    await _ensure_portfolio_ready()
     if req.start_date > req.end_date:
         raise HTTPException(status_code=400, detail="Start date must be on or before end date")
     if req.end_date > market_today():

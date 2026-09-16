@@ -150,8 +150,13 @@ let currentInterval = '1m';
 let currentIntradayDate = null;
 let intradayLoadRequestId = 0;
 let renderedIntraday = null;
+let latestTodaySnapshot = null;
+let baseHoldingsData = [];
+let observedMarketDate = marketTodayStr();
 let secondaryRefreshTask = null;
 let dashboardLoadRequestId = 0;
+let transactionUpdateState = 'idle';
+let holdingsLedgerKnown = false;
 
 // Anonymous mode
 let anonymousMode = localStorage.getItem('anonymousMode') === 'true';
@@ -353,6 +358,7 @@ async function saveTarget(symbol, pct) {
 // Cache for API responses
 const apiCache = {
     data: {},
+    epoch: 0,
     ttl: 5 * 60 * 1000, // 5 minutes cache TTL
 
     get(key) {
@@ -363,14 +369,16 @@ const apiCache = {
         return null;
     },
 
-    set(key, value) {
+    set(key, value, epoch = this.epoch) {
+        if (epoch !== this.epoch) return;
         this.data[key] = {
             value: value,
             timestamp: Date.now()
         };
     },
 
-    clear() {
+    clear({ invalidatePending = false } = {}) {
+        if (invalidatePending) this.epoch++;
         this.data = {};
     }
 };
@@ -542,6 +550,7 @@ function setupTooltips() {
 
 // API functions
 async function fetchSummary(useCache = true, waitForFresh = false) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'summary';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -552,11 +561,12 @@ async function fetchSummary(useCache = true, waitForFresh = false) {
         const response = await fetch('/api/summary' + (waitForFresh ? '?wait_for_fresh=true' : ''));
         if (!response.ok) throw new Error('Failed to fetch summary');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching summary:', error);
-        showToast('Error loading portfolio data', 'error');
+        if (transactionUpdateState === 'idle') showToast('Error loading portfolio data', 'error');
         return null;
     }
 }
@@ -607,6 +617,7 @@ function getDateRangeForPeriod(period) {
 }
 
 async function fetchPerformance(period = '1Y', useCache = true, waitForFresh = false) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = `performance_${period}`;
     if (useCache && !waitForFresh) {
         const all = apiCache.get("performance_ALL");
@@ -627,7 +638,8 @@ async function fetchPerformance(period = '1Y', useCache = true, waitForFresh = f
         const response = await fetch(url);
         if (!response.ok) throw new Error('Failed to fetch performance');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching performance:', error);
@@ -636,6 +648,7 @@ async function fetchPerformance(period = '1Y', useCache = true, waitForFresh = f
 }
 
 async function fetchDailyPnl(useCache = true, waitForFresh = false) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'daily_pnl';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -645,7 +658,8 @@ async function fetchDailyPnl(useCache = true, waitForFresh = false) {
         const response = await fetch('/api/daily-pnl' + (waitForFresh ? '?wait_for_fresh=true' : ''));
         if (!response.ok) throw new Error('Failed to fetch daily P&L');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching daily P&L:', error);
@@ -654,6 +668,7 @@ async function fetchDailyPnl(useCache = true, waitForFresh = false) {
 }
 
 async function fetchMonthlyPnlData(useCache = true, waitForFresh = false) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'monthly_pnl_data';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -663,7 +678,8 @@ async function fetchMonthlyPnlData(useCache = true, waitForFresh = false) {
         const response = await fetch('/api/daily-pnl?num_days=400' + (waitForFresh ? '&wait_for_fresh=true' : ''));
         if (!response.ok) throw new Error('Failed to fetch monthly P&L data');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching monthly P&L data:', error);
@@ -672,6 +688,7 @@ async function fetchMonthlyPnlData(useCache = true, waitForFresh = false) {
 }
 
 async function fetchDividends(useCache = true) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'dividends';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -682,7 +699,8 @@ async function fetchDividends(useCache = true) {
         const response = await fetch('/api/dividends');
         if (!response.ok) throw new Error('Failed to fetch dividends');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching dividends:', error);
@@ -691,6 +709,7 @@ async function fetchDividends(useCache = true) {
 }
 
 async function fetchSoldAssets(useCache = true) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'sold';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -701,7 +720,8 @@ async function fetchSoldAssets(useCache = true) {
         const response = await fetch('/api/sold');
         if (!response.ok) throw new Error('Failed to fetch sold assets');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching sold assets:', error);
@@ -962,7 +982,8 @@ async function loadTickerHistory(force = false) {
 }
 
 async function fetchIntraday(interval = '5m', date = null, useCache = true) {
-    const cacheKey = `intraday_${date || 'today'}_${interval}`;
+    const cacheEpoch = apiCache.epoch;
+    const cacheKey = `intraday_${date || marketTodayStr()}_${interval}`;
     if (useCache) {
         const cached = apiCache.get(cacheKey);
         if (cached) return cached;
@@ -974,7 +995,8 @@ async function fetchIntraday(interval = '5m', date = null, useCache = true) {
         const response = await fetch(url);
         if (!response.ok) throw new Error('Failed to fetch intraday data');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching intraday data:', error);
@@ -983,6 +1005,7 @@ async function fetchIntraday(interval = '5m', date = null, useCache = true) {
 }
 
 async function fetchIntradayMultiday(interval = '15m', days = 3, useCache = true) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = `intraday_multiday_${interval}_${days}`;
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -993,7 +1016,8 @@ async function fetchIntradayMultiday(interval = '15m', days = 3, useCache = true
         const response = await fetch(`/api/intraday-multiday?interval=${interval}&days=${days}`);
         if (!response.ok) throw new Error('Failed to fetch multi-day intraday data');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching multi-day intraday data:', error);
@@ -1023,6 +1047,8 @@ async function uploadFile(file) {
 
 // UI Update functions
 function updateSummaryCards(summary) {
+    document.getElementById('summaryStrip')?.classList.remove('is-updating');
+    document.getElementById('summaryCardsCollapse')?.classList.remove('is-updating');
     document.getElementById('totalValue').textContent = formatCurrency(summary.total_market_value);
     document.getElementById('costBasis').textContent = formatCurrency(summary.total_cost_basis);
 
@@ -1162,6 +1188,16 @@ function updateSortIndicators() {
 }
 
 function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
+    if (h.today_only) {
+        const amount = h.daily_change_amount;
+        const label = h.quantity === 0 ? 'Closed today' : 'Today activity';
+        const columns = [0, 1, 2, 4, 5, 17, 18, 3, 6, 7, 8, 9, 10, 11, 14, 15, 16, 12, 13];
+        return `<tr>${columns.map(col => {
+            if (col === 0) return `<td data-col="0"><strong>${escapeHtml(displaySymbol(h.symbol))}</strong><div class="text-muted small">${label}</div></td>`;
+            if (col === 5) return `<td data-col="5" class="${amount >= 0 ? 'text-success' : 'text-danger'}">${amount >= 0 ? '+' : ''}${formatCurrencyAlways(amount)}</td>`;
+            return `<td data-col="${col}" class="text-muted">—</td>`;
+        }).join('')}</tr>`;
+    }
     const dailyChangePct = h.daily_change_percent;
     const dailyChangeAmt = h.daily_change_amount;
     const dailyChangePctHtml = dailyChangePct !== null && dailyChangePct !== undefined
@@ -1484,11 +1520,28 @@ function renderHoldingsTable(holdings) {
     rows += buildTotalRowHtml(holdings, totalInvValue);
     tbody.innerHTML = rows;
     if (holdings.some(holding => holding.prices_pending)) {
-        const marketColumns = [4, 5, 6, 7, 9, 10, 11, 12, 13, 15, 16, 17, 18];
+        const marketColumns = [4, 6, 7, 9, 10, 11, 12, 13, 15, 16, 17, 18];
         tbody.querySelectorAll(marketColumns.map(col => `[data-col="${col}"]`).join(',')).forEach(cell => {
-            cell.textContent = '--';
+            cell.innerHTML = pendingValueHtml();
             cell.className = 'text-muted';
             cell.removeAttribute('title');
+        });
+    }
+    if (holdings.some(holding => holding.today_pending)) {
+        tbody.querySelectorAll('[data-col="5"]').forEach(cell => {
+            cell.innerHTML = pendingValueHtml();
+            cell.className = 'text-muted';
+        });
+    }
+    if (holdings.some(holding => holding.ledger_pending)) {
+        tbody.querySelectorAll('tr').forEach(row => {
+            const holding = holdings.find(h => h.symbol === row.dataset.symbol);
+            if (holding && !holding.ledger_pending) return;
+            for (const col of [2, 3, 14]) {
+                const cell = row.querySelector(`[data-col="${col}"]`);
+                if (cell) cell.innerHTML = pendingValueHtml();
+            }
+            if (holding?.quantity_pending) row.querySelector('[data-col="1"]').innerHTML = pendingValueHtml();
         });
     }
     updateSortIndicators();
@@ -1616,21 +1669,36 @@ async function toggleTransactionDetail(holdingRow) {
 }
 
 function updateHoldingsTable(holdings) {
-    // Store holdings data for re-sorting
-    holdingsData = holdings || [];
+    baseHoldingsData = holdings || [];
+    holdingsData = TodayPnl.project(baseHoldingsData, latestTodaySnapshot, marketTodayStr());
+    const point = TodayPnl.latest(latestTodaySnapshot, marketTodayStr());
+    setDashboardStatus('holdingsTodayStatus', point
+        ? `Today ${latestTodaySnapshot.date} ${point.time} ET · Same snapshot as Intraday P&L${latestTodaySnapshot.stale_symbols?.length ? ' · Some prices are cached' : ''}`
+        : 'Today P&L updating…');
     renderHoldingsTable(holdingsData);
     // Also update category table
     updateCategoryTable(holdingsData);
     if (holdingsData.some(holding => holding.prices_pending)) {
         document.querySelectorAll('#categoryBody tr').forEach(row => {
-            [2, 3, 4, 5].forEach(index => {
+            [3, 4, 5].forEach(index => {
                 const cell = row.children[index];
-                if (cell) { cell.textContent = '--'; cell.className = 'text-muted'; }
+                if (cell) { cell.innerHTML = pendingValueHtml(); cell.className = 'text-muted'; }
             });
             row.querySelector('td:first-child .text-muted')?.remove();
         });
     } else {
         renderTopMoversDefault();
+    }
+    if (!point) {
+        document.querySelectorAll('#categoryBody tr').forEach(row => {
+            const cell = row.children[2];
+            if (cell) { cell.innerHTML = pendingValueHtml(); cell.className = 'text-muted'; }
+        });
+    }
+    if (holdingsData.some(holding => holding.ledger_pending)) {
+        document.querySelectorAll('#categoryBody tr').forEach(row => {
+            if (row.children[1]) row.children[1].innerHTML = pendingValueHtml();
+        });
     }
 }
 
@@ -2228,8 +2296,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         todayDailyPnlPct = lastPoint.daily_pnl_percent;
     }
 
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const todayStr = marketTodayStr();
 
     // Build days list from the /api/daily-pnl response (need ~35 days for 5 weeks)
     const rawDays = (dailyPnlData && dailyPnlData.daily_pnl) ? [...dailyPnlData.daily_pnl].reverse() : [];
@@ -3153,11 +3220,15 @@ function updateIntradaySpotlight(intraday) {
 
 function updateIntradayChart(intraday, interval = '5m') {
     renderedIntraday = intraday;
+    if (intraday?.date === marketTodayStr() && TodayPnl.latest(intraday, marketTodayStr())) {
+        latestTodaySnapshot = intraday;
+        updateHoldingsTable(baseHoldingsData);
+    }
     updateIntradaySpotlight(intraday);
     const updated = document.getElementById('intradayUpdatedAt');
     if (updated) {
         updated.textContent = intraday?.computed_at
-            ? `Chart updated ${new Date(intraday.computed_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'})}${intraday.stale_symbols?.length ? ' · Some prices are cached' : ''}`
+            ? `Chart updated ${intraday.date} ${new Date(intraday.computed_at).toLocaleTimeString([], {timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit'})} ET${intraday.stale_symbols?.length ? ' · Some prices are cached' : ''}`
             : '';
     }
     const ctx = document.getElementById('intradayChart').getContext('2d');
@@ -3944,19 +4015,27 @@ async function fetchIntradayAutoInterval(date = null, useCache = true) {
 
 // Load intraday data for a given date, auto-selecting the finest available interval
 async function loadIntradayData(date = undefined, useCache = true) {
+    syncMarketDay();
     if (date !== undefined) currentIntradayDate = date;
+    updateIntradayDateNavigation();
+    const requestedMarketDate = marketTodayStr();
+    const selectedDate = currentIntradayDate;
     const requestId = ++intradayLoadRequestId;
 
     // Show blocking overlay only when the user explicitly switches date
     const overlay = document.getElementById('intradayLoadingOverlay');
-    if (date !== undefined && overlay) overlay.style.display = 'flex';
+    if ((date !== undefined || transactionUpdateState === 'updating') && overlay) overlay.style.display = 'flex';
 
     try {
-        const { data, interval } = await fetchIntradayAutoInterval(currentIntradayDate, useCache);
-        if (requestId !== intradayLoadRequestId) return;
+        const { data, interval } = await fetchIntradayAutoInterval(selectedDate, useCache);
+        if (requestId !== intradayLoadRequestId || requestedMarketDate !== marketTodayStr()) return;
+        if (data && data.date !== (selectedDate || requestedMarketDate)) return;
+        // Keep an already visible snapshot on a transient fetch failure.
+        if (!data && renderedIntraday?.date === (selectedDate || requestedMarketDate)) return false;
         currentInterval = interval;
         updateIntradayIntervalBadge(interval);
         updateIntradayChart(data, interval);
+        return !!data;
     } finally {
         if (requestId === intradayLoadRequestId && overlay) overlay.style.display = 'none';
     }
@@ -3983,6 +4062,20 @@ function offsetIsoDate(dateStr, dayOffset) {
     return shifted.toISOString().slice(0, 10);
 }
 
+function syncMarketDay() {
+    const today = marketTodayStr();
+    if (observedMarketDate === today) return false;
+    observedMarketDate = today;
+    apiCache.clear({ invalidatePending: true });
+    latestTodaySnapshot = null;
+    dashboardLoadRequestId++;
+    intradayLoadRequestId++;
+    updateIntradayDateNavigation();
+    if (currentIntradayDate === null) updateIntradayChart(null, currentInterval);
+    updateHoldingsTable(baseHoldingsData);
+    return true;
+}
+
 function updateIntradayDateNavigation() {
     const datePicker = document.getElementById('intradayDatePicker');
     const previousButton = document.getElementById('intradayPrevDate');
@@ -3991,6 +4084,7 @@ function updateIntradayDateNavigation() {
 
     const todayStr = marketTodayStr();
     datePicker.max = todayStr;
+    datePicker.value = currentIntradayDate || todayStr;
     if (previousButton) previousButton.disabled = !datePicker.value;
     if (nextButton) nextButton.disabled = !datePicker.value || datePicker.value >= todayStr;
 }
@@ -4001,7 +4095,7 @@ function selectIntradayDate(dateStr) {
 
     const todayStr = marketTodayStr();
     const selectedDate = !dateStr || dateStr > todayStr ? todayStr : dateStr;
-    datePicker.value = selectedDate;
+    currentIntradayDate = selectedDate === todayStr ? null : selectedDate;
     updateIntradayDateNavigation();
 
     // null means today (uses the live endpoint without a date parameter).
@@ -4028,6 +4122,7 @@ function marketTimeStr() {
 // Full transaction browser with per-row delete, so mistaken records can be removed.
 let allTransactions = [];          // last-fetched full list
 let transactionsLoaded = false;    // lazy-load guard (fetched on first tab open)
+let transactionsLoadRequestId = 0;
 
 const TXN_ACTION_BADGE = {
     BUY: 'bg-success', SELL: 'bg-danger', DIV: 'bg-info text-dark',
@@ -4046,13 +4141,17 @@ async function loadTransactions(force = false) {
     if (transactionsLoaded && !force) return;
     const body = document.getElementById('txnBody');
     if (!body) return;
+    const requestId = ++transactionsLoadRequestId;
     body.innerHTML = `<tr><td colspan="10" class="text-center text-muted py-4">
         <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading transactions...</td></tr>`;
     try {
-        allTransactions = await fetchAllTransactions();
+        const transactions = await fetchAllTransactions();
+        if (requestId !== transactionsLoadRequestId) return;
+        allTransactions = transactions;
         transactionsLoaded = true;
         renderTransactions();
     } catch (e) {
+        if (requestId !== transactionsLoadRequestId) return;
         body.innerHTML = `<tr><td colspan="10" class="text-center text-danger py-4">
             Failed to load transactions: ${escapeHtml(e.message)}</td></tr>`;
     }
@@ -4135,7 +4234,8 @@ async function deleteTransaction(txnId, btn) {
         // Drop locally and re-render immediately, then refresh portfolio-wide numbers.
         allTransactions = allTransactions.filter(t => String(t.id) !== String(txnId));
         renderTransactions();
-        loadAllData();
+        applySavedTransaction();
+        refreshAfterTransaction();
     } catch (e) {
         alert(`Failed to delete: ${e.message}`);
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-trash"></i>'; }
@@ -4164,7 +4264,7 @@ function initTransactionsTab() {
 }
 
 // ---- Today's Top Movers -----------------------------------------------------
-// Per-holding daily P&L: top 10 gainers (left) and top 10 losers (right).
+// Per-holding daily P&L: top 10 overall by absolute P&L, split into gainers/losers.
 // Replaces the old news panel under the Intraday P&L chart.
 const TOP_MOVERS_LIMIT = 10;
 
@@ -4186,8 +4286,11 @@ function _fillMoverTables(items) {
     };
     const empty = '<tr><td colspan="4" class="text-center text-muted py-3">None.</td></tr>';
 
-    const gainers = items.filter(i => i.amt > 0).sort((a, b) => b.amt - a.amt).slice(0, TOP_MOVERS_LIMIT);
-    const losers = items.filter(i => i.amt < 0).sort((a, b) => a.amt - b.amt).slice(0, TOP_MOVERS_LIMIT);
+    const topMovers = [...items]
+        .sort((a, b) => Math.abs(b.amt) - Math.abs(a.amt))
+        .slice(0, TOP_MOVERS_LIMIT);
+    const gainers = topMovers.filter(i => i.amt > 0).sort((a, b) => b.amt - a.amt);
+    const losers = topMovers.filter(i => i.amt < 0).sort((a, b) => a.amt - b.amt);
     gainersBody.innerHTML = gainers.length ? gainers.map(row).join('') : empty;
     losersBody.innerHTML = losers.length ? losers.map(row).join('') : empty;
 }
@@ -4254,6 +4357,66 @@ function setDashboardStatus(id, text) {
     if (element) element.textContent = text;
 }
 
+function pendingValueHtml() {
+    return transactionUpdateState === 'updating'
+        ? '<span title="Updating"><span class="value-spinner" aria-hidden="true"></span><span class="visually-hidden">Updating</span></span>'
+        : '--';
+}
+
+function setTransactionUpdateState(state) {
+    transactionUpdateState = state;
+    const notice = document.getElementById('transactionUpdateNotice');
+    if (!notice) return;
+    notice.classList.toggle('d-none', state === 'idle');
+    notice.classList.toggle('is-error', state === 'error');
+    document.getElementById('transactionUpdateMessage').textContent = state === 'error'
+        ? 'Changes saved. Some values could not update. Retry the update without submitting again.'
+        : 'Changes saved. Updating portfolio values…';
+    document.getElementById('transactionUpdateRetry').classList.toggle('d-none', state !== 'error');
+}
+
+function applySavedTransaction(result = {}) {
+    apiCache.clear({ invalidatePending: true });
+    dashboardLoadRequestId++;
+    intradayLoadRequestId++;
+    transactionsLoadRequestId++;
+    tickerHistoryRequestId++;
+    tickerHistoryInitialized = false;
+    Object.keys(transactionCache).forEach(key => delete transactionCache[key]);
+    latestTodaySnapshot = null;
+    setTransactionUpdateState('updating');
+    const projected = TransactionUpdates.project(baseHoldingsData, result.transaction, marketTodayStr(), holdingsLedgerKnown);
+    updateIntradayChart(null, currentInterval);
+    updateHoldingsTable(projected);
+    ['summaryStrip', 'summaryCardsCollapse'].forEach(id => document.getElementById(id)?.classList.add('is-updating'));
+    ['summaryDataStatus', 'holdingsDataStatus', 'performanceDataStatus', 'dailyPnlDataStatus', 'monthlyPnlDataStatus']
+        .forEach(id => setDashboardStatus(id, 'Updating after saved transaction…'));
+    if (result.transaction && transactionsLoaded) {
+        const txn = result.transaction;
+        allTransactions = [txn, ...allTransactions.filter(item => item.id !== txn.id)]
+            .sort((a, b) => new Date(b.executed_at || b.date) - new Date(a.executed_at || a.date) || b.id - a.id);
+        renderTransactions();
+    } else {
+        transactionsLoaded = false;
+    }
+}
+
+function refreshAfterTransaction() {
+    setTransactionUpdateState('updating');
+    const pending = loadAllData({ prioritizeIntraday: false });
+    const requestId = dashboardLoadRequestId;
+    pending.then(() => {
+        if (requestId === dashboardLoadRequestId) loadTickerHistory(true);
+    }).catch(error => {
+        console.error('Post-save update failed:', error);
+        if (requestId !== dashboardLoadRequestId) return;
+        setTransactionUpdateState('error');
+        updateHoldingsTable(baseHoldingsData);
+    });
+    if (document.getElementById('trackerTransactions')?.classList.contains('active')) loadTransactions(true);
+    return pending;
+}
+
 function snapshotStatus(data, label) {
     const time = data?.computed_at
         ? new Date(data.computed_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})
@@ -4273,12 +4436,17 @@ async function fetchPositions() {
 }
 
 // Main data loading function: each panel paints as soon as its data arrives.
-async function loadAllData({ skipIntraday = false } = {}) {
+async function loadAllData({ skipIntraday = false, prioritizeIntraday = true } = {}) {
+    if (syncMarketDay()) skipIntraday = false;
     const requestId = ++dashboardLoadRequestId;
-    const isCurrent = () => requestId === dashboardLoadRequestId;
+    const requestedMarketDate = marketTodayStr();
+    const isCurrent = () => requestId === dashboardLoadRequestId && requestedMarketDate === marketTodayStr();
+    const failedPanels = [];
     let pricedHoldingsRendered = false;
     const positionsTask = fetchPositions().then(data => {
-        if (!data || !isCurrent() || pricedHoldingsRendered) return;
+        if (!isCurrent() || pricedHoldingsRendered) return;
+        if (!data) { failedPanels.push('Positions'); return; }
+        holdingsLedgerKnown = true;
         const sameLedger = holdingsData.length === data.holdings.length && data.holdings.every(position =>
             holdingsData.some(holding => !holding.prices_pending && holding.symbol === position.symbol &&
                 holding.quantity === position.quantity && holding.cost_basis === position.cost_basis));
@@ -4287,8 +4455,21 @@ async function loadAllData({ skipIntraday = false } = {}) {
         setDashboardStatus('holdingsDataStatus', 'Positions ready · Updating prices…');
     });
 
-    // Ledger reads are cheap; live and historical work still gives Today priority.
-    if (!skipIntraday) await loadIntradayData();
+    // After a save, panels start independently so slow Today/history cannot delay
+    // the confirmed ledger or live summary. Ordinary page loads prioritize Today.
+    const intradayTask = (async () => {
+        if (!skipIntraday && await loadIntradayData() === false) failedPanels.push('Today P&L');
+        if (!isCurrent()) return;
+        if (currentIntradayDate !== null && !TodayPnl.latest(latestTodaySnapshot, marketTodayStr())) {
+            const { data } = await fetchIntradayAutoInterval(null, false);
+            if (!isCurrent()) return;
+            if (TodayPnl.latest(data, marketTodayStr())) {
+                latestTodaySnapshot = data;
+                updateHoldingsTable(baseHoldingsData);
+            } else failedPanels.push('Today P&L');
+        }
+    })();
+    if (prioritizeIntraday) await intradayTask;
     if (!isCurrent()) return;
 
     async function paint(fetcher, render, statusId, label) {
@@ -4307,6 +4488,7 @@ async function loadAllData({ skipIntraday = false } = {}) {
             }
         } catch (error) {
             console.error('Dashboard panel failed:', error);
+            failedPanels.push(label || 'Data');
             if (isCurrent() && statusId) {
                 setDashboardStatus(statusId, `${label} update failed · Refresh to retry`);
                 if (statusId === 'summaryDataStatus') setDashboardStatus('holdingsDataStatus', 'Price update failed · Refresh to retry');
@@ -4318,6 +4500,7 @@ async function loadAllData({ skipIntraday = false } = {}) {
         fresh => fetchSummary(!fresh, fresh),
         summary => {
             pricedHoldingsRendered = true;
+            holdingsLedgerKnown = true;
             updateSummaryCards(summary);
             updateHoldingsTable(summary.holdings);
             updateAllocationChart(summary.holdings, allocationView);
@@ -4357,11 +4540,21 @@ async function loadAllData({ skipIntraday = false } = {}) {
         fresh => fetchMonthlyPnlData(!fresh, fresh), updateMonthlyPnlList,
         'monthlyPnlDataStatus', 'Monthly P&L'
     );
-    await Promise.allSettled([positionsTask, summaryTask, targetsTask, investmentsTask,
+    const results = await Promise.allSettled([intradayTask, positionsTask, summaryTask, targetsTask, investmentsTask,
         soldTask, dividendsTask, shortTask, performanceTask, dailyTask, monthlyTask]);
+    if (!isCurrent()) return;
+    if (results.some(result => result.status === 'rejected')) failedPanels.push('Data');
+    if (transactionUpdateState !== 'idle') {
+        setTransactionUpdateState(failedPanels.length ? 'error' : 'idle');
+        updateHoldingsTable(baseHoldingsData);
+    }
+    return { failedPanels };
 }
 
 async function refreshData() {
+    syncMarketDay();
+    updateIntradayDateNavigation();
+    const requestedMarketDate = marketTodayStr();
     const snapshotDate = currentIntradayDate;
     const requestId = ++intradayLoadRequestId;
     let data;
@@ -4376,9 +4569,11 @@ async function refreshData() {
         if (!data) throw new Error('Intraday data could not be loaded');
     }
     // A newer refresh or date navigation owns both the chart and its cache.
-    if (requestId !== intradayLoadRequestId || currentIntradayDate !== snapshotDate) return null;
+    if (requestId !== intradayLoadRequestId || currentIntradayDate !== snapshotDate
+            || requestedMarketDate !== marketTodayStr()) return null;
+    if (data.date !== (snapshotDate || requestedMarketDate)) throw new Error('Intraday date changed; refresh to retry');
     if (data.refresh_skipped) {
-        apiCache.set(`intraday_${snapshotDate || 'today'}_${interval}`, data);
+        apiCache.set(`intraday_${snapshotDate || requestedMarketDate}_${interval}`, data);
         // A new page still needs to draw the server's cached chart. A repeated
         // click on an already-rendered snapshot needs neither redraw nor a
         // second round of slower dashboard requests.
@@ -4392,7 +4587,7 @@ async function refreshData() {
     }
     // Invalidate other browser caches, but do not wait for other pages.
     apiCache.clear();
-    apiCache.set(`intraday_${snapshotDate || 'today'}_${interval}`, data);
+    apiCache.set(`intraday_${snapshotDate || requestedMarketDate}_${interval}`, data);
     Object.keys(transactionCache).forEach(k => delete transactionCache[k]);
     currentInterval = interval;
     updateIntradayIntervalBadge(interval);
@@ -4409,9 +4604,45 @@ async function refreshData() {
 }
 
 // Event handlers
-let manualRefreshInProgress = false;
+let refreshInProgress = false;
+let lastRefreshStartedAt = 0;
+let liveRefreshTimer = null;
+let liveRefreshExpiryTimer = null;
+let liveRefreshExpiresAt = 0;
+const LIVE_REFRESH_INTERVAL_MS = 60000;
+const LIVE_REFRESH_DURATION_MS = 3 * 60 * 60 * 1000;
+const LIVE_REFRESH_STORAGE_KEY = 'liveRefreshEnabled';
+const LIVE_REFRESH_EXPIRY_KEY = 'liveRefreshExpiresAt';
 
-function setManualRefreshState(isRefreshing) {
+function clearLiveRefreshTimers() {
+    clearInterval(liveRefreshTimer);
+    clearTimeout(liveRefreshExpiryTimer);
+    liveRefreshTimer = liveRefreshExpiryTimer = null;
+}
+
+function stopLiveRefresh({ expired = false, persist = true } = {}) {
+    clearLiveRefreshTimers();
+    liveRefreshExpiresAt = 0;
+    document.getElementById('liveRefreshSwitch').checked = false;
+    try {
+        if (persist) {
+            localStorage.setItem(LIVE_REFRESH_STORAGE_KEY, 'false');
+            localStorage.removeItem(LIVE_REFRESH_EXPIRY_KEY);
+        }
+    } catch (_) { /* The current tab still stops when storage is unavailable. */ }
+    if (expired) showToast('Live turned off after 3 hours.', 'info');
+}
+
+function isLiveRefreshActive() {
+    if (!document.getElementById('liveRefreshSwitch').checked) return false;
+    if (!liveRefreshExpiresAt || Date.now() >= liveRefreshExpiresAt) {
+        stopLiveRefresh({ expired: true });
+        return false;
+    }
+    return true;
+}
+
+function setRefreshState(isRefreshing) {
     const btn = document.getElementById('refreshBtn');
     const card = document.getElementById('portfolioRefreshCard');
 
@@ -4429,27 +4660,86 @@ function setManualRefreshState(isRefreshing) {
     card.setAttribute('title', isRefreshing ? 'Updating intraday chart' : 'Click to update the intraday chart');
 }
 
-async function runManualRefresh() {
-    if (manualRefreshInProgress) return;
+async function runRefresh({ automatic = false } = {}) {
+    // Check the wall-clock deadline before any request, including after sleep.
+    if (automatic && !isLiveRefreshActive()) return;
+    if (refreshInProgress) return;
 
-    manualRefreshInProgress = true;
-    setManualRefreshState(true);
+    refreshInProgress = true;
+    lastRefreshStartedAt = Date.now();
+    setRefreshState(true);
 
     try {
         const data = await refreshData();
-        if (!data) return;
+        if (!data || automatic) return;
         showToast(data.refresh_skipped ? 'Already checked this minute' : data.stale_symbols?.length
             ? `Chart updated; cached prices used for ${data.stale_symbols.join(', ')}`
             : 'Intraday chart updated', data.stale_symbols?.length ? 'warning' : 'success');
     } catch (error) {
-        showToast('Error refreshing data', 'error');
+        if (automatic) console.error('Live refresh failed:', error);
+        else showToast('Error refreshing data', 'error');
     } finally {
-        manualRefreshInProgress = false;
-        setManualRefreshState(false);
+        refreshInProgress = false;
+        setRefreshState(false);
     }
 }
 
+function runManualRefresh() {
+    return runRefresh();
+}
+
+function initLiveRefresh() {
+    const toggle = document.getElementById('liveRefreshSwitch');
+    const updateTimer = () => {
+        clearLiveRefreshTimers();
+        if (isLiveRefreshActive()) {
+            lastRefreshStartedAt = Date.now();
+            liveRefreshTimer = setInterval(() => runRefresh({ automatic: true }), LIVE_REFRESH_INTERVAL_MS);
+            liveRefreshExpiryTimer = setTimeout(() => stopLiveRefresh({ expired: true }), liveRefreshExpiresAt - Date.now());
+        }
+    };
+    const restore = () => {
+        let enabled = false, expiresAt = 0;
+        try {
+            enabled = localStorage.getItem(LIVE_REFRESH_STORAGE_KEY) === 'true';
+            expiresAt = Number(localStorage.getItem(LIVE_REFRESH_EXPIRY_KEY));
+        } catch (_) { /* Default off if the saved deadline cannot be read. */ }
+        // Old preferences without a deadline must not resume indefinitely.
+        if (!enabled || !Number.isFinite(expiresAt) || expiresAt <= Date.now()
+                || expiresAt > Date.now() + LIVE_REFRESH_DURATION_MS) {
+            stopLiveRefresh({ persist: false });
+            return;
+        }
+        toggle.checked = true;
+        liveRefreshExpiresAt = expiresAt;
+        updateTimer();
+    };
+    toggle.addEventListener('change', () => {
+        if (!toggle.checked) {
+            stopLiveRefresh();
+            return;
+        }
+        liveRefreshExpiresAt = Date.now() + LIVE_REFRESH_DURATION_MS;
+        try {
+            localStorage.setItem(LIVE_REFRESH_EXPIRY_KEY, String(liveRefreshExpiresAt));
+            localStorage.setItem(LIVE_REFRESH_STORAGE_KEY, 'true');
+        } catch (_) { /* Keep the current session working without persistence. */ }
+        updateTimer();
+    });
+    // Synchronize the same deadline across tabs, never extending it on reload.
+    window.addEventListener('storage', event => {
+        if (event.key === null || event.key === LIVE_REFRESH_STORAGE_KEY || event.key === LIVE_REFRESH_EXPIRY_KEY) restore();
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && isLiveRefreshActive() && Date.now() - lastRefreshStartedAt >= LIVE_REFRESH_INTERVAL_MS) {
+            runRefresh({ automatic: true });
+        }
+    });
+    restore();
+}
+
 document.getElementById('refreshBtn').addEventListener('click', runManualRefresh);
+document.getElementById('transactionUpdateRetry').addEventListener('click', refreshAfterTransaction);
 
 const portfolioRefreshCard = document.getElementById('portfolioRefreshCard');
 portfolioRefreshCard.addEventListener('click', runManualRefresh);
@@ -4467,7 +4757,8 @@ document.getElementById('fileInput').addEventListener('change', async (event) =>
     try {
         const result = await uploadFile(file);
         showToast(`Uploaded ${result.transactions_count} transactions`, 'success');
-        await loadAllData();
+        applySavedTransaction();
+        refreshAfterTransaction();
     } catch (error) {
         showToast(error.message || 'Error uploading file', 'error');
     }
@@ -4889,6 +5180,7 @@ async function addTransaction(payload) {
 
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (submitBtn.disabled) return;
         errBox.classList.add('d-none');
         if (transactionMode === 'preview') {
             renderTradePreview();
@@ -4936,19 +5228,28 @@ async function addTransaction(payload) {
         };
 
         submitBtn.disabled = true;
-        submitBtn.textContent = 'Adding…';
+        submitBtn.textContent = 'Saving…';
+        let result;
         try {
-            const result = await addTransaction(payload);
-            bootstrap.Modal.getInstance(modalEl).hide();
-            form.reset();
-            showToast(result.message || 'Transaction added', 'success');
-            await loadAllData();
+            result = await addTransaction(payload);
         } catch (error) {
             errBox.textContent = error.message || 'Error adding transaction';
             errBox.classList.remove('d-none');
+            return;
         } finally {
             submitBtn.disabled = false;
             submitBtn.textContent = 'Add';
+        }
+        bootstrap.Modal.getInstance(modalEl).hide();
+        form.reset();
+        showToast(result.message || 'Transaction saved', 'success');
+        // Errors after this point are update failures, never save failures.
+        try {
+            applySavedTransaction(result);
+            refreshAfterTransaction();
+        } catch (error) {
+            console.error('Post-save rendering failed:', error);
+            setTransactionUpdateState('error');
         }
     });
 })();
@@ -4973,6 +5274,7 @@ function resizeTrackerCharts() {
 
 // Initial load and event handlers setup
 document.addEventListener('DOMContentLoaded', () => {
+    initLiveRefresh();
     const storedTrackerTab = localStorage.getItem('trackerActiveTab');
     const savedTrackerTab = storedTrackerTab === '#trackerIncome'
         ? '#trackerPerformance'
@@ -5032,6 +5334,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+
+    const resumeMarketDay = () => {
+        if (!document.hidden && syncMarketDay()) loadAllData();
+    };
+    window.addEventListener('focus', resumeMarketDay);
+    document.addEventListener('visibilitychange', resumeMarketDay);
+    setInterval(resumeMarketDay, 60000);
 
     // Date picker for intraday chart
     const datePicker = document.getElementById('intradayDatePicker');
