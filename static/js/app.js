@@ -1187,13 +1187,31 @@ function updateSortIndicators() {
     });
 }
 
+function buildTradeActivityHtml(row) {
+    const activity = TodayPnl.activity(row);
+    if (!activity) return '';
+    const trade = activity.trade;
+    const details = anonymousMode ? 'Trades through this point on the selected day'
+        : `Trades through this point: bought ${formatNumber(trade.bought_quantity, 4)}, sold ${formatNumber(trade.sold_quantity, 4)}. Net change is relative to the opening quantity (${formatNumber(trade.opening_quantity, 4)}).`;
+    return `<div class="trade-activity"><span class="trade-activity-badge trade-activity-${activity.kind}" title="${escapeHtml(details)}">${escapeHtml(activity.label)}</span></div>`;
+}
+
+function buildPositionPriceHtml(row) {
+    const price = TodayPnl.displayPrice(row);
+    const value = price != null ? formatPrice(row.symbol, price, true) : '--';
+    if (!row.trade_activity?.is_closed) return value;
+    const time = row.trade_activity.last_sell_time;
+    return `${value}<div class="trade-price-caption">Last sale${time ? ` · ${escapeHtml(time)} ET` : ''}</div>`;
+}
+
 function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
     if (h.today_only) {
         const amount = h.daily_change_amount;
         const label = h.quantity === 0 ? 'Closed today' : 'Today activity';
         const columns = [0, 1, 2, 4, 5, 17, 18, 3, 6, 7, 8, 9, 10, 11, 14, 15, 16, 12, 13];
         return `<tr>${columns.map(col => {
-            if (col === 0) return `<td data-col="0"><strong>${escapeHtml(displaySymbol(h.symbol))}</strong><div class="text-muted small">${label}</div></td>`;
+            if (col === 0) return `<td data-col="0"><strong>${escapeHtml(displaySymbol(h.symbol))}</strong>${buildTradeActivityHtml(h) || `<div class="text-muted small">${label}</div>`}</td>`;
+            if (col === 4 && h.trade_activity?.is_closed) return `<td data-col="4">${buildPositionPriceHtml(h)}</td>`;
             if (col === 5) return `<td data-col="5" class="${amount >= 0 ? 'text-success' : 'text-danger'}">${amount >= 0 ? '+' : ''}${formatCurrencyAlways(amount)}</td>`;
             return `<td data-col="${col}" class="text-muted">—</td>`;
         }).join('')}</tr>`;
@@ -1273,7 +1291,7 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
 
     return `
     <tr class="holding-row" data-symbol="${h.symbol}" style="cursor:pointer;">
-        <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong></td>
+        <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong>${buildTradeActivityHtml(h)}</td>
         <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)}</div><div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</div>` : ''}</td>
         <td data-col="2">${formatPrice(h.symbol, h.avg_cost)}</td>
         <td data-col="4">${formatPrice(h.symbol, h.current_price, true)} ${dailyChangePctHtml}</td>
@@ -4278,8 +4296,8 @@ function _fillMoverTables(items) {
         const cls = it.amt >= 0 ? 'text-success' : 'text-danger';
         const sign = it.amt >= 0 ? '+' : '';
         return `<tr>
-            <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong></td>
-            <td class="text-end">${it.price != null ? formatPrice(it.symbol, it.price, true) : '--'}</td>
+            <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong>${buildTradeActivityHtml(it)}</td>
+            <td class="text-end">${buildPositionPriceHtml(it)}</td>
             <td class="text-end ${cls}">${sign}${formatCurrencyAlways(it.amt)}</td>
             <td class="text-end ${cls}">${it.pct != null ? formatPercent(it.pct) : '--'}</td>
         </tr>`;
@@ -4312,7 +4330,7 @@ function _setTopMoversHeader(amt, pct, timeLabel) {
 function renderTopMovers(holdings) {
     const items = (holdings || [])
         .filter(h => h.symbol !== 'CASH' && h.daily_change_amount != null && h.daily_change_amount !== 0)
-        .map(h => ({ symbol: h.symbol, amt: h.daily_change_amount, pct: h.daily_change_percent, price: h.current_price }));
+        .map(h => ({ ...h, amt: h.daily_change_amount, pct: h.daily_change_percent }));
 
     // % is vs the start-of-day value (market value minus today's change).
     const totalDaily = (holdings || []).reduce((s, h) => s + (h.daily_change_amount || 0), 0);
@@ -4326,7 +4344,7 @@ function renderTopMovers(holdings) {
 function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges) {
     const items = (assetChanges || [])
         .filter(a => a.symbol !== 'CASH' && a.pnl != null && Math.abs(a.pnl) >= 0.01)
-        .map(a => ({ symbol: a.symbol, amt: a.pnl, pct: a.pnl_percent, price: a.current_price }));
+        .map(a => ({ ...a, amt: a.pnl, pct: a.pnl_percent }));
     _setTopMoversHeader(pnl || 0, pnlPercent != null ? pnlPercent : null, timeLabel);
     _fillMoverTables(items);
 }

@@ -7,7 +7,10 @@ const source = fs.readFileSync(require('node:path').join(__dirname, '../static/j
 const date = '2026-09-08';
 const snapshot = { date, intraday: [{ time: '12:00', holdings_complete: true, daily_pnl: 12.03,
     asset_changes: [{ symbol: 'AAPL', quantity: 2, pnl: 10.02, pnl_percent: 5 },
-        { symbol: 'SOLD', quantity: 0, pnl: 2.01, pnl_percent: 2 }] }] };
+        { symbol: 'SOLD', quantity: 0, pnl: 2.01, pnl_percent: 2, current_price: 999,
+            trade_activity: { opening_quantity: 1, bought_quantity: 0, sold_quantity: 1,
+                net_quantity: -1, change_percent: -100, is_closed: true,
+                last_sell_price: 24.99, last_sell_time: '10:22' } }] }] };
 const holdings = [{ symbol: 'AAPL', quantity: 2, cost_basis: 100, market_value: 200, daily_change_amount: 999 },
     { symbol: 'CASH', quantity: 1, cost_basis: 50, market_value: 50 }];
 const cents = rows => rows.reduce((sum, row) => sum + Math.round((row.daily_change_amount || 0) * 100), 0);
@@ -106,7 +109,9 @@ test('the rendered Holdings row, total and category amounts use the displayed sn
     vm.runInContext(source.slice(source.indexOf('function updateHoldingsTable('), source.indexOf('function updateDividendsTable(')), context);
     for (const prices_pending of [true, false]) {
         context.updateHoldingsTable(holdings.map(h => ({ ...h, prices_pending, daily_change_amount: -900 })));
-        assert.match(tbody.innerHTML, /Closed today/);
+        assert.match(tbody.innerHTML, /trade-activity-closed/);
+        assert.match(tbody.innerHTML, /24\.99/);
+        assert.match(tbody.innerHTML, /Last sale · 10:22 ET/);
         assert.match(tbody.innerHTML, /\+\$10\.02/);
         assert.match(tbody.innerHTML, /\+\$2\.01/);
         assert.match(tbody.innerHTML, /<strong>\+\$12\.03<\/strong>/);

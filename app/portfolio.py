@@ -305,6 +305,40 @@ class Portfolio:
             if sum(lot.quantity for lot in lots) > 0
         }
 
+    @staticmethod
+    def _record_intraday_trade(activity: dict, txn: Transaction,
+                               quantity: Decimal, execution_price: Decimal) -> None:
+        """Track only executed buys/sells, independently of transfers and P&L."""
+        if txn.action not in (ActionType.BUY, ActionType.SELL):
+            return
+        state = activity.setdefault(txn.asset, {
+            "bought_quantity": Decimal("0"), "sold_quantity": Decimal("0"),
+            "last_sell_price": None, "last_sell_time": None,
+        })
+        if txn.action == ActionType.BUY:
+            state["bought_quantity"] += quantity
+        else:
+            state["sold_quantity"] += quantity
+            state["last_sell_price"] = execution_price
+            state["last_sell_time"] = txn.effective_executed_at.strftime("%H:%M")
+
+    @staticmethod
+    def _intraday_trade_details(activity: dict, symbol: str,
+                                opening_quantity: Decimal, quantity: Decimal) -> Optional[dict]:
+        state = activity.get(symbol)
+        if state is None:
+            return None
+        net = state["bought_quantity"] - state["sold_quantity"]
+        # Copy each point so later trades cannot change earlier hover snapshots.
+        return {
+            **{key: float(value) if isinstance(value, Decimal) else value
+               for key, value in state.items()},
+            "opening_quantity": float(opening_quantity),
+            "net_quantity": float(net),
+            "change_percent": float(net / opening_quantity * 100) if opening_quantity > 0 else None,
+            "is_closed": quantity == 0 and state["sold_quantity"] > 0,
+        }
+
     def _apply_transaction_aware_daily_changes(
         self,
         holdings: list[Holding],
@@ -1782,6 +1816,7 @@ class Portfolio:
         }
         net_trade_cash = defaultdict(Decimal)
         added_capital = defaultdict(Decimal)
+        trade_activity = {}
         event_index = 0
 
         # Use baseline_value (previous close) as the zero point for daily P&L
@@ -1832,6 +1867,7 @@ class Portfolio:
                     txn, qty, execution_price, market_price,
                     quantities, net_trade_cash, added_capital,
                 )
+                self._record_intraday_trade(trade_activity, txn, qty, execution_price)
                 event_index += 1
 
             # Revalue after applying transactions at this timestamp.
@@ -1868,6 +1904,9 @@ class Portfolio:
                         asset_changes.append({
                             "symbol": symbol,
                             "quantity": float(quantities[symbol]),
+                            "trade_activity": self._intraday_trade_details(
+                                trade_activity, symbol, opening_quantities.get(symbol, Decimal("0")),
+                                quantities[symbol]),
                             "pnl": float(asset_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
                             "pnl_percent": float(asset_pnl_percent),
                             "prev_price": float(prev_price) if prev_price is not None else None,
@@ -1987,6 +2026,7 @@ class Portfolio:
             ))
         net_trade_cash = defaultdict(Decimal)
         added_capital = defaultdict(Decimal)
+        trade_activity = {}
         event_index = 0
 
         for time_str in sorted_times:
@@ -2014,6 +2054,7 @@ class Portfolio:
                     txn, qty, execution_price, market_price,
                     quantities, net_trade_cash, added_capital,
                 )
+                self._record_intraday_trade(trade_activity, txn, qty, execution_price)
                 event_index += 1
 
             total_value = sum(
@@ -2046,6 +2087,10 @@ class Portfolio:
                         )
                         asset_changes.append({
                             "symbol": symbol,
+                            "quantity": float(quantities[symbol]),
+                            "trade_activity": self._intraday_trade_details(
+                                trade_activity, symbol, opening_quantities.get(symbol, Decimal("0")),
+                                quantities[symbol]),
                             "pnl": float(asset_pnl),
                             "pnl_percent": float(asset_pnl_pct),
                             "prev_price": float(prev_price) if prev_price is not None else None,

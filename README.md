@@ -36,6 +36,16 @@ A Python-based portfolio tracking application that reads transaction data from C
 
 ## Live snapshot refresh
 
+Today's Top Movers and Holdings mark executed trades with labeled colors:
+closed positions are red, new positions or net additions of at least 25% are
+green, net reductions of at least 50% are yellow, and smaller reductions are
+light green. Percentages use the day's opening quantity; small additions have
+a pale green "Added" label and offsetting trades show "Traded · net 0".
+Transfers and quantity corrections do not count as buys or sells. Chart hover
+uses only trades executed by the selected minute. Closed positions display the
+last sell execution price and time; open positions retain market prices.
+Daily P&L still includes the closed position's contribution through its sale.
+
 The **Live** switch beside Refresh is off by default. When enabled, the browser
 runs the same refresh every minute and automatically turns off after **3 hours**.
 The expiry time is shared across tabs and survives reloads without restarting the

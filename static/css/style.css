@@ -2637,6 +2637,26 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .weekly-pnl-grid, .monthly-pnl-grid { border-radius: 10px; }
 #holdingsTable, #txnTable { font-variant-numeric: tabular-nums; }
 #holdingsTable th:first-child, #holdingsTable td:first-child { min-width: 140px; white-space: nowrap; }
+/* Trade colors describe position changes; P&L colors still describe gains/losses. */
+.trade-activity { margin-top: 4px; line-height: 1.3; }
+.trade-activity-badge {
+    display: inline-block;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+    letter-spacing: 0;
+}
+.trade-activity-closed { background: #fee2e2; border-color: #f3b4b4; color: #a51d2d; }
+.trade-activity-bought { background: #137447; border-color: #137447; color: #fff; }
+.trade-activity-reduced { background: #fff2bd; border-color: #e8cd68; color: #715000; }
+.trade-activity-trimmed { background: #e4f5dc; border-color: #b7d6a8; color: #3b602b; }
+.trade-activity-added { background: #daf2e6; border-color: #acd7c2; color: #18593e; }
+.trade-activity-traded { background: #edf0f4; border-color: #d4dce5; color: #475569; }
+.trade-price-caption { color: var(--slate-600); font-size: 10px; line-height: 1.4; white-space: nowrap; }
+.trade-activity-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 14px; color: var(--slate-600); font-size: 11px; }
 @media (min-width: 992px) {
     #simulatorPage > .row > div:first-child { flex: 0 0 330px; width: 330px; }
     #simulatorPage > .row > div:last-child { flex: 1; min-width: 0; }
