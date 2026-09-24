@@ -9,7 +9,7 @@
       <stop offset="1" stop-color="#8de4cb"/>
     </linearGradient>
   </defs>
-  <rect rx="112" width="512" height="512" fill="url(#navy)"/>
+  <rect width="512" height="512" fill="url(#navy)"/>
   <path fill="#f5f8fa" fill-rule="evenodd" d="M150 380V132H259C325 132 366 169 366 227C366 285 325 322 259 322H212V380ZM212 190V264H256C287 264 305 251 305 227C305 203 287 190 256 190Z"/>
   <path d="M252 376L287 341L315 354L365 302" fill="none" stroke="url(#mint)" stroke-width="23" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

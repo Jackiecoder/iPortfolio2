@@ -1924,8 +1924,7 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 }
 .brand-mark {
     align-items: center;
-    background: #35577f;
-    border: 1px solid #527197;
+    background: transparent;
     border-radius: 13px;
     color: #bcd4ff;
     display: inline-flex;
@@ -1934,8 +1933,7 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     justify-content: center;
     width: 39px;
 }
-.brand-mark svg { height: 29px; width: 29px; }
-.brand-mark circle { fill: #fff; }
+.brand-mark img { display: block; height: 100%; width: 100%; }
 .brand-copy { display: grid; line-height: 1.2; }
 .brand-name { font-family: var(--display-font); font-size: 24px; font-weight: 500; letter-spacing: -0.045em; }
 .brand-tagline { color: #aec1dc; font-size: 9px; font-weight: 500; margin-top: 4px; }
