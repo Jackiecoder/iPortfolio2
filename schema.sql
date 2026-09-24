@@ -52,6 +52,17 @@ CREATE TABLE IF NOT EXISTS historical_prices (
 CREATE INDEX IF NOT EXISTS idx_historical_prices_symbol ON historical_prices (symbol);
 CREATE INDEX IF NOT EXISTS idx_historical_prices_date   ON historical_prices (date);
 
+-- Daily price-only SMA/chart snapshots. Separate from dividend-adjusted price
+-- caches; only the latest day per ticker/calculation version is retained.
+CREATE TABLE IF NOT EXISTS ticker_technical_snapshots (
+    symbol              TEXT NOT NULL,
+    calculation_version TEXT NOT NULL,
+    cache_date          DATE NOT NULL,
+    snapshot            JSONB NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (symbol, calculation_version)
+);
+
 CREATE TABLE IF NOT EXISTS portfolio_values (
     date             DATE PRIMARY KEY,
     total_value      NUMERIC NOT NULL,

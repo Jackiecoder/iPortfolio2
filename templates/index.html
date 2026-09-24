@@ -22,7 +22,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=46">
+    <link rel="stylesheet" href="/static/css/style.css?v=52">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -382,6 +382,7 @@
                 <span class="small"><span id="topMoversTime" class="text-muted"></span>Daily P&amp;L: <span id="topMoversDailyTotal" class="fw-semibold">--</span></span>
             </div>
             <div class="card-body">
+                <p class="small text-muted mb-2"><i class="bi bi-cursor me-1" aria-hidden="true"></i>Click any row for the latest price vs. 50 / 200-day moving averages.</p>
                 <div class="trade-activity-legend" aria-label="Trade activity color legend">
                     <span>Net trading vs. opening position:</span>
                     <span class="trade-activity-badge trade-activity-closed">Closed</span>
@@ -1146,6 +1147,32 @@
         </div>
     </footer>
 
+    <div class="modal fade" id="tickerTechnicalsModal" tabindex="-1" aria-labelledby="tickerTechnicalsTitle" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="tickerTechnicalsTitle">Moving averages</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="tickerTechnicalsLoading" class="text-center py-5" role="status"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Loading moving averages…</div>
+                    <div id="tickerTechnicalsError" class="alert alert-warning d-none" role="alert"><span id="tickerTechnicalsErrorMessage"></span> <button id="tickerTechnicalsRetry" class="btn btn-sm btn-outline-secondary" type="button">Retry</button></div>
+                    <div id="tickerTechnicalsContent" class="d-none" aria-live="polite">
+                        <div class="ticker-ma-quote"><span>Latest market price</span><strong id="tickerTechnicalsPrice">--</strong><small id="tickerTechnicalsQuoteTime"></small></div>
+                        <p id="tickerTechnicalsSummary" class="fw-semibold mt-3 mb-3"></p>
+                        <div class="ticker-ma-grid">
+                            <div class="ticker-ma-card"><h6><span class="ticker-ma-key is-50"></span>50-day SMA</h6><strong id="tickerSma50">--</strong><div id="tickerSma50Comparison" class="ticker-ma-comparison"></div></div>
+                            <div class="ticker-ma-card"><h6><span class="ticker-ma-key is-200"></span>200-day SMA</h6><strong id="tickerSma200">--</strong><div id="tickerSma200Comparison" class="ticker-ma-comparison"></div></div>
+                        </div>
+                        <div id="tickerTechnicalsChartWrap" class="ticker-ma-chart"><canvas id="tickerTechnicalsChart" role="img" aria-label="Last six months of daily closes and 50-day and 200-day moving averages"></canvas></div>
+                        <p id="tickerTechnicalsBasis" class="small text-muted mt-3 mb-2"></p>
+                        <p class="small text-muted mb-0">Above / below measures distance from each average, not today's gain or loss. Source: Yahoo Finance.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast notification -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3">
         <div id="toast" class="toast align-items-center border-0" role="alert">
@@ -1171,7 +1198,8 @@
     <script src="/static/js/trade-preview.js?v=1"></script>
     <script src="/static/js/today-pnl.js?v=2"></script>
     <script src="/static/js/transaction-updates.js?v=1"></script>
-    <script src="/static/js/app.js?v=140"></script>
+    <script src="/static/js/ticker-technicals.js?v=1"></script>
+    <script src="/static/js/app.js?v=148"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

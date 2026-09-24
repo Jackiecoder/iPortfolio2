@@ -133,6 +133,7 @@ date,asset,action,amount,quantity,ave_price,source,comment
 
 ## API Endpoints
 
+- `GET /api/ticker-technicals?symbol=MU` - Latest timestamped market price, 50/200-day simple moving averages, dollar/percentage distances, and six months of daily chart data
 - `GET /api/holdings` - Current positions with live prices
 - `GET /api/summary` - Complete portfolio summary
 - `GET /api/performance` - Historical portfolio value
@@ -140,6 +141,32 @@ date,asset,action,amount,quantity,ave_price,source,comment
 - `POST /api/upload` - Upload CSV file
 - `POST /api/reload` - Reload portfolio from CSV files
 - `GET /api/files` - List CSV files in data directory
+
+### Top Movers moving averages
+
+Click any Top Movers row (or focus it and press Enter/Space) to compare its latest
+market quote with the 50-day and 200-day SMA. The popup also shows the daily close
+and both moving averages over the last six months. It always requests a market
+quote, including for fully sold positions or when viewing a historical intraday
+date; it does not reuse the row's last sale price or historical hover price.
+
+SMA windows use valid daily closes strictly before the current day: New York
+trading sessions for stocks and UTC calendar days for crypto. Today's daily bar
+is excluded even after the market closes. Yahoo `Close` prices are split-adjusted
+without dividend adjustment (`auto_adjust=False`), fetched independently of the
+portfolio's historical-price cache. Full 50/200-observation windows are required;
+short histories and unavailable quotes are labeled explicitly. Quote timestamps
+and the final daily-close date remain visible; quotes may include extended hours
+and may be delayed. Daily averages and chart data are calculated lazily on the
+first request for each ticker/day, then stored in Postgres and reused for that
+entire day, including after service restarts. The daily key follows New York
+dates for stocks and UTC dates for crypto. Concurrent cache misses share a
+database lock; failed history fetches are not cached and can be retried. Only
+the latest daily snapshot per ticker/calculation version is retained. Current
+quotes use an independent 60-second memory cache; distances are recalculated
+against those quotes without fetching or recomputing daily history. Normal
+dashboard refreshes do not invalidate daily snapshots. Above/below describes
+distance from an average, not daily P&L.
 
 ## Project Structure
 

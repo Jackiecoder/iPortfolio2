@@ -4295,8 +4295,8 @@ function _fillMoverTables(items) {
     const row = (it) => {
         const cls = it.amt >= 0 ? 'text-success' : 'text-danger';
         const sign = it.amt >= 0 ? '+' : '';
-        return `<tr>
-            <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong>${buildTradeActivityHtml(it)}</td>
+        return `<tr class="mover-detail-row" data-mover-symbol="${escapeHtml(it.symbol)}" tabindex="0" role="button" aria-haspopup="dialog" aria-controls="tickerTechnicalsModal" aria-label="View ${escapeHtml(displaySymbol(it.symbol))} moving averages">
+            <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong><i class="bi bi-graph-up mover-detail-icon" aria-hidden="true"></i>${buildTradeActivityHtml(it)}</td>
             <td class="text-end">${buildPositionPriceHtml(it)}</td>
             <td class="text-end ${cls}">${sign}${formatCurrencyAlways(it.amt)}</td>
             <td class="text-end ${cls}">${it.pct != null ? formatPercent(it.pct) : '--'}</td>
@@ -5319,6 +5319,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     initTransactionsTab();
+    window.TickerTechnicalsUI.init();
     document.getElementById('tickerHistorySymbol')?.addEventListener('change', () => {
         tickerHistoryInitialized = false;
         loadTickerHistory(true);

@@ -34,6 +34,7 @@ from .portfolio import Portfolio
 from .price_service import price_service
 from .split_service import split_service
 from .simulator import run_simulation
+from .ticker_technicals import ticker_technicals
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1094,6 +1095,20 @@ def _sample_ticker_prices(
         {"date": price_date.isoformat(), "close": float(close)}
         for price_date, close in sampled
     ]
+
+
+@app.get("/api/ticker-technicals")
+async def get_ticker_technicals(symbol: str = Query(..., min_length=1, max_length=32)):
+    """Latest market quote versus 50/200 completed daily closing prices."""
+    await _ensure_portfolio_ready()
+    symbol = symbol.strip().upper()
+    if symbol == "CASH" or symbol not in {t.asset for t in portfolio._transactions}:
+        raise HTTPException(status_code=404, detail="Ticker is not in the portfolio ledger")
+    try:
+        return await asyncio.to_thread(ticker_technicals.get, symbol)
+    except Exception:
+        logger.exception("Unable to load moving averages for %s", symbol)
+        raise HTTPException(status_code=503, detail="Price history is temporarily unavailable. Please try again.")
 
 
 @app.get("/api/ticker-history")
