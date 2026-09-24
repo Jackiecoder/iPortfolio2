@@ -50,13 +50,15 @@ test('Holdings projection preserves trade metadata, market totals and P&L and cl
 
 function renderingContext() {
     const elements = Object.fromEntries(['topGainersBody', 'topLosersBody', 'topMoversTime', 'topMoversDailyTotal'].map(id => [id, {}]));
-    const context = { TodayPnl, anonymousMode: false,
+    const context = { TodayPnl, anonymousMode: false, renderedIntraday: null,
         document: {getElementById: id => elements[id]},
         displaySymbol: s => s, escapeHtml: s => String(s), formatNumber: n => String(n),
         formatPrice: (_s, n) => '$' + n.toFixed(2), formatPercent: n => n.toFixed(2) + '%',
         formatCurrencyAlways: n => '$' + n.toFixed(2),
     };
     vm.createContext(context);
+    const spotlightStart = source.indexOf('function updateIntradaySpotlight(');
+    vm.runInContext(source.slice(spotlightStart, source.indexOf('\nfunction ', spotlightStart)), context);
     vm.runInContext(source.slice(source.indexOf('function buildTradeActivityHtml('), source.indexOf('function buildHoldingRowHtml(')), context);
     vm.runInContext(source.slice(source.indexOf('const TOP_MOVERS_LIMIT'), source.indexOf('function slicePerformance(')), context);
     return {context, elements};

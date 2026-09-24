@@ -2141,6 +2141,11 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .mover-detail-row { cursor: pointer; }
 .mover-detail-row:focus-visible { outline: 2px solid var(--mint); outline-offset: -2px; }
 .mover-detail-icon { margin-left: 6px; font-size: 0.75rem; color: #64748b; }
+#tickerTechnicalsModal { padding-top: max(12px, env(safe-area-inset-top, 0px)); padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
+#tickerTechnicalsModal .modal-dialog { width: calc(100% - 24px); height: 100%; min-height: 100%; margin: 0 auto; }
+#tickerTechnicalsModal .modal-header .btn-close { flex-shrink: 0; width: 48px; height: 48px; padding: 14px; margin: -8px -8px -8px 12px; box-sizing: border-box; opacity: 0.8; }
+#tickerTechnicalsModal .modal-footer { padding: 12px 18px; }
+#tickerTechnicalsModal .ticker-ma-close { min-height: 48px; font-size: 16px; }
 .ticker-ma-quote { display: flex; flex-direction: column; gap: 4px; }
 .ticker-ma-quote > span, .ticker-ma-quote small { color: #64748b; font-size: 0.8rem; }
 .ticker-ma-quote > strong { font-size: 2rem; font-variant-numeric: tabular-nums; }

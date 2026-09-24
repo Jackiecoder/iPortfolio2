@@ -22,7 +22,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=52">
+    <link rel="stylesheet" href="/static/css/style.css?v=53">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -360,7 +360,7 @@
             <div class="card-body">
                 <div class="intraday-spotlight" aria-live="polite">
                     <div class="intraday-headline">
-                        <span class="spotlight-label">Latest daily P&amp;L</span>
+                        <span class="spotlight-label" id="intradayPnlLabel">Latest daily P&amp;L</span>
                         <strong id="intradayLatestPnl">--</strong>
                     </div>
                     <div class="intraday-return">
@@ -1169,6 +1169,9 @@
                         <p class="small text-muted mb-0">Above / below measures distance from each average, not today's gain or loss. Source: Yahoo Finance.</p>
                     </div>
                 </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary w-100 ticker-ma-close" data-bs-dismiss="modal">Close</button>
+                </div>
             </div>
         </div>
     </div>
@@ -1199,7 +1202,7 @@
     <script src="/static/js/today-pnl.js?v=2"></script>
     <script src="/static/js/transaction-updates.js?v=1"></script>
     <script src="/static/js/ticker-technicals.js?v=1"></script>
-    <script src="/static/js/app.js?v=148"></script>
+    <script src="/static/js/app.js?v=149"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

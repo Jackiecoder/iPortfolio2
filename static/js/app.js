@@ -3222,11 +3222,13 @@ function generateFullDayLabels(interval) {
     return labels;
 }
 
-function updateIntradaySpotlight(intraday) {
+function updateIntradaySpotlight(intraday, selectedPoint = null) {
     const points = intraday?.intraday || [];
-    const latest = [...points].reverse().find(point => point.daily_pnl != null);
+    const latest = selectedPoint || [...points].reverse().find(point => point.daily_pnl != null);
     const value = document.getElementById('intradayLatestPnl');
     const percent = document.getElementById('intradayLatestReturn');
+    const label = document.getElementById('intradayPnlLabel');
+    if (label) label.textContent = selectedPoint ? `Daily P&L · ${selectedPoint.time} ET` : 'Latest daily P&L';
     if (!value || !percent) return;
     value.textContent = latest ? `${latest.daily_pnl >= 0 && !anonymousMode ? '+' : ''}${formatCurrency(latest.daily_pnl)}` : '--';
     percent.textContent = latest ? formatPercent(latest.daily_pnl_percent) : '--';
@@ -3347,8 +3349,8 @@ function updateIntradayChart(intraday, interval = '5m') {
                 intersect: false,
                 mode: 'index'
             },
-            // Hovering the chart drives the "Today's Top Movers" card below:
-            // it shows that time point's daily P&L and movers instead of a popup.
+            // Mouse and touch exploration share one point across the headline
+            // and Top Movers, so their amounts and returns always agree.
             onHover: (event, activeElements, chart) => {
                 const ds = chart.data.datasets[0];
                 if (activeElements && activeElements.length > 0) {
@@ -3407,8 +3409,9 @@ function updateIntradayChart(intraday, interval = '5m') {
         plugins: [marketHoursPlugin, hoverLinePlugin]
     });
 
-    // Leaving the chart restores the latest intraday point in the Top Movers card.
+    // Leaving or cancelling exploration restores both panels to the latest point.
     ctx.canvas.onmouseleave = () => renderTopMoversDefault();
+    ctx.canvas.ontouchcancel = () => renderTopMoversDefault();
 
     // Show the latest point immediately once the chart (re)builds.
     renderTopMoversDefault();
@@ -4341,7 +4344,9 @@ function renderTopMovers(holdings) {
 }
 
 // Hover view: movers as of a specific intraday time point.
-function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges) {
+function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges, selected = true) {
+    const point = {time: timeLabel, daily_pnl: pnl, daily_pnl_percent: pnlPercent};
+    updateIntradaySpotlight({intraday: [point]}, selected ? point : null);
     const items = (assetChanges || [])
         .filter(a => a.symbol !== 'CASH' && a.pnl != null && Math.abs(a.pnl) >= 0.01)
         .map(a => ({ ...a, amt: a.pnl, pct: a.pnl_percent }));
@@ -4358,8 +4363,9 @@ function renderTopMoversDefault() {
         && ds.assetChangesData && ds.assetChangesData[ds.lastDataIndex]) {
         const i = ds.lastDataIndex;
         renderTopMoversAtTime(intradayChart.data.labels[i], ds.data[i],
-            ds.pnlPercentData ? ds.pnlPercentData[i] : null, ds.assetChangesData[i]);
+            ds.pnlPercentData ? ds.pnlPercentData[i] : null, ds.assetChangesData[i], false);
     } else {
+        updateIntradaySpotlight(renderedIntraday);
         renderTopMovers(holdingsData);
     }
 }
