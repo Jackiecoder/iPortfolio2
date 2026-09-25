@@ -4034,6 +4034,15 @@ async function fetchIntradayAutoInterval(date = null, useCache = true) {
     return { data: null, interval: '1m' };
 }
 
+// Every replacement/invalidation must take ownership of the overlay as well as
+// the response. Live refresh never blocks the page, even if it replaces a date load.
+function beginIntradayRequest(showOverlay = false) {
+    const requestId = ++intradayLoadRequestId;
+    const overlay = document.getElementById('intradayLoadingOverlay');
+    if (overlay) overlay.style.display = showOverlay ? 'flex' : 'none';
+    return requestId;
+}
+
 // Load intraday data for a given date, auto-selecting the finest available interval
 async function loadIntradayData(date = undefined, useCache = true) {
     syncMarketDay();
@@ -4041,11 +4050,9 @@ async function loadIntradayData(date = undefined, useCache = true) {
     updateIntradayDateNavigation();
     const requestedMarketDate = marketTodayStr();
     const selectedDate = currentIntradayDate;
-    const requestId = ++intradayLoadRequestId;
+    const requestId = beginIntradayRequest(date !== undefined || transactionUpdateState === 'updating');
 
-    // Show blocking overlay only when the user explicitly switches date
     const overlay = document.getElementById('intradayLoadingOverlay');
-    if ((date !== undefined || transactionUpdateState === 'updating') && overlay) overlay.style.display = 'flex';
 
     try {
         const { data, interval } = await fetchIntradayAutoInterval(selectedDate, useCache);
@@ -4090,7 +4097,7 @@ function syncMarketDay() {
     apiCache.clear({ invalidatePending: true });
     latestTodaySnapshot = null;
     dashboardLoadRequestId++;
-    intradayLoadRequestId++;
+    beginIntradayRequest();
     updateIntradayDateNavigation();
     if (currentIntradayDate === null) updateIntradayChart(null, currentInterval);
     updateHoldingsTable(baseHoldingsData);
@@ -4402,7 +4409,7 @@ function setTransactionUpdateState(state) {
 function applySavedTransaction(result = {}) {
     apiCache.clear({ invalidatePending: true });
     dashboardLoadRequestId++;
-    intradayLoadRequestId++;
+    beginIntradayRequest();
     transactionsLoadRequestId++;
     tickerHistoryRequestId++;
     tickerHistoryInitialized = false;
@@ -4580,7 +4587,7 @@ async function refreshData() {
     updateIntradayDateNavigation();
     const requestedMarketDate = marketTodayStr();
     const snapshotDate = currentIntradayDate;
-    const requestId = ++intradayLoadRequestId;
+    const requestId = beginIntradayRequest();
     let data;
     let interval = '1m';
     if (snapshotDate === null) {

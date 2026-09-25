@@ -54,6 +54,7 @@ function navigationContext() {
         updateHoldingsTable: data => events.push(['holdings', data]),
     };
     vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function beginIntradayRequest('), source.indexOf('// Load intraday data for a given date')), context);
     vm.runInContext(source.slice(source.indexOf('function syncMarketDay()'), source.indexOf('function selectIntradayDate(')), context);
     return { context, picker, next, events };
 }

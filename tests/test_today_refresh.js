@@ -30,6 +30,7 @@ function setup() {
         updateSoldTable() {}, updateDividendsTable() {}, updateAnnualTable() {},
         updatePnlChart() {}, updateDailyPnlList() {}, updateMonthlyPnlList() {},
         transactionCache: {}, apiCache: {clear() {}, set() {}}, console, setTimeout,
+        document: { getElementById: () => null },
         fetch: async (url, options) => {
             events.push(['fetch', url, options.method]);
             return {ok: true, json: async () => ({date: '2026-09-07', intraday: [{time: '10:01'}]})};
@@ -39,6 +40,7 @@ function setup() {
         loadAllData(options) { events.push(['secondary', options.skipIntraday]); return secondary.promise; },
     };
     vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function beginIntradayRequest('), source.indexOf('// Load intraday data for a given date')), context);
     vm.runInContext(refreshSource, context);
     return { context, events, secondary };
 }
