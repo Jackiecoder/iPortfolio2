@@ -18,11 +18,11 @@ class RefreshContractTests(unittest.TestCase):
         self.assertNotIn("auto-refresh-option", template)
         self.assertNotIn("refreshCountdown", template)
 
-    def test_cloud_run_uses_one_instance_for_in_memory_snapshot(self):
+    def test_cloud_run_scales_to_zero_and_retains_single_instance_limit(self):
         deploy_script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
 
         self.assertIn(
-            "--min-instances 1 --max-instances 1 --no-cpu-throttling",
+            "--min 0 --max 1 --min-instances 0 --max-instances 1 --cpu-throttling",
             deploy_script,
         )
 

@@ -24,7 +24,7 @@ function setup(saved = null, { expiresAt = THREE_HOURS, start = 0, storageUnavai
     const checkStorage = () => { if (storageUnavailable) throw new Error('Storage unavailable'); };
     const context = vm.createContext({
         document, window, Date: { now: () => now }, console: { error() {} },
-        localStorage: {
+        portfolioStorage: {
             getItem: key => { checkStorage(); return storage.get(key); },
             setItem: (key, value) => { checkStorage(); storage.set(key, value); },
             removeItem: key => { checkStorage(); storage.delete(key); },

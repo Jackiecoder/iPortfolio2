@@ -142,6 +142,20 @@ class TransactionSaveTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(main._ledger_reload_task)
         self.assertEqual(len(self.ledger), 1)
 
+    async def test_request_billed_save_defers_reload_until_next_active_reader(self):
+        with patch.object(main, 'MARKET_REFRESH_MODE', 'scheduler'), \
+             patch.object(main.repository, 'insert_transaction', side_effect=self.insert), \
+             patch.object(main, '_read_portfolio', side_effect=self.build) as reload:
+            receipt = await main.create_transaction(self.request())
+            self.assertEqual(receipt['id'], 2)
+            self.assertEqual(len(self.ledger), 2)
+            self.assertIsNone(main.portfolio)
+            self.assertIsNone(main._ledger_reload_task)
+            reload.assert_not_called()
+            holding = (await main.get_positions())['holdings'][0]
+            self.assertEqual(holding['quantity'], 6)
+            reload.assert_called_once()
+
     async def test_disconnect_during_commit_still_invalidates_and_reloads_the_saved_ledger(self):
         release = self.block()
         started = threading.Event()

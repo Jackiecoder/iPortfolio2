@@ -1,8 +1,32 @@
 // Portfolio Tracker Frontend Application
 
+// Check the URL too: an older offline shell must never load personal data at /demo.
+const isDemoPortfolio = window.location.pathname.replace(/\/$/, '') === '/demo'
+    || document.body.dataset.portfolioMode === 'demo';
+const portfolioStorage = isDemoPortfolio ? (() => {
+    const values = new Map([
+        ['trackerActiveTab', '#trackerHoldings'], ['summaryCardsExpanded', '1'],
+        ['holdingsHiddenCols', JSON.stringify([3, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18])],
+    ]);
+    return {
+        getItem: key => values.get(key) ?? null,
+        setItem: (key, value) => values.set(key, String(value)),
+        removeItem: key => values.delete(key),
+    };
+})() : window.localStorage;
+
 // --- Access token: attached to every API request as a Bearer header. ---
 // Stored in localStorage; shown as an in-page prompt on the first 401.
 (function setupAuth() {
+    if (isDemoPortfolio) {
+        window.getAccessToken = () => '';
+        window.clearAccessToken = () => {};
+        // Deliberately no native-fetch fallback, including when the demo script fails.
+        window.fetch = window.DemoPortfolio
+            ? window.DemoPortfolio.create().fetch
+            : async () => { throw new Error('Demo unavailable. Reconnect and reload /demo.'); };
+        return;
+    }
     const TOKEN_KEY = 'iportfolio_token';
     let promptVisible = false;
 
@@ -45,7 +69,8 @@
                     placeholder="Paste token, API_TOKEN=..., or Bearer ..."
                     style="width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:6px;padding:12px 14px;font-size:16px;">
                 <div id="accessTokenHint" style="min-height:20px;margin-top:8px;font-size:13px;color:#64748b;"></div>
-                <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+                <div style="display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:10px;margin-top:18px;">
+                    <a href="/demo" style="margin-right:auto;color:#205b4d;">Try demo portfolio</a>
                     <button id="accessTokenClear" type="button" style="border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:9px 14px;cursor:pointer;">Clear</button>
                     <button id="accessTokenSave" type="button" style="border:0;background:#0d6efd;color:#fff;border-radius:6px;padding:9px 16px;cursor:pointer;">Save & reload</button>
                 </div>
@@ -159,7 +184,7 @@ let transactionUpdateState = 'idle';
 let holdingsLedgerKnown = false;
 
 // Anonymous mode
-let anonymousMode = localStorage.getItem('anonymousMode') === 'true';
+let anonymousMode = portfolioStorage.getItem('anonymousMode') === 'true';
 
 // Transaction detail cache (symbol -> array of transactions)
 const transactionCache = {};
@@ -249,6 +274,7 @@ const symbolToCategory = {
     'VOO': 'Index',
     'QQQM': 'Index',
     'QQQ': 'Index',
+    'SOXX': 'Index',
     'BRK-B': 'Index',
     'SPY': 'Index',
     'VTI': 'Index',
@@ -465,7 +491,7 @@ function formatPercent(value) {
 
 function toggleAnonymousMode() {
     anonymousMode = !anonymousMode;
-    localStorage.setItem('anonymousMode', anonymousMode);
+    portfolioStorage.setItem('anonymousMode', anonymousMode);
     updateAnonymousButton();
     updateIntradaySpotlight(renderedIntraday);
     // Reload all data to apply the mode
@@ -3238,6 +3264,28 @@ function updateIntradaySpotlight(intraday, selectedPoint = null) {
     }
 }
 
+function updateIntradayTimestamp() {
+    const updated = document.getElementById('intradayUpdatedAt');
+    const badge = document.getElementById('intradayFreshnessBadge');
+    if (!updated || !badge) return;
+    const timestamp = new Date(renderedIntraday?.computed_at);
+    if (!renderedIntraday?.computed_at || !Number.isFinite(timestamp.getTime())) {
+        updated.textContent = '';
+        badge.textContent = '--';
+        badge.title = 'Last chart update';
+        badge.setAttribute('aria-label', 'Last update time unavailable');
+        return;
+    }
+    const minutes = Math.max(0, Math.floor((Date.now() - timestamp.getTime()) / 60000));
+    const age = minutes === 0 ? 'Just now' : minutes === 1 ? '1 minute ago' : `${minutes.toLocaleString('en-US')} minutes ago`;
+    const date = timestamp.toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+    const time = timestamp.toLocaleTimeString([], {timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit'});
+    badge.textContent = age;
+    badge.title = `Last updated ${date} ${time} ET`;
+    badge.setAttribute('aria-label', `Last updated: ${age}`);
+    updated.textContent = `Chart updated ${date} ${time} ET${renderedIntraday.stale_symbols?.length ? ' · Some prices are cached' : ''}`;
+}
+
 function updateIntradayChart(intraday, interval = '5m') {
     renderedIntraday = intraday;
     if (intraday?.date === marketTodayStr() && TodayPnl.latest(intraday, marketTodayStr())) {
@@ -3245,12 +3293,7 @@ function updateIntradayChart(intraday, interval = '5m') {
         updateHoldingsTable(baseHoldingsData);
     }
     updateIntradaySpotlight(intraday);
-    const updated = document.getElementById('intradayUpdatedAt');
-    if (updated) {
-        updated.textContent = intraday?.computed_at
-            ? `Chart updated ${intraday.date} ${new Date(intraday.computed_at).toLocaleTimeString([], {timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit'})} ET${intraday.stale_symbols?.length ? ' · Some prices are cached' : ''}`
-            : '';
-    }
+    updateIntradayTimestamp();
     const ctx = document.getElementById('intradayChart').getContext('2d');
 
     if (intradayChart) {
@@ -4016,12 +4059,6 @@ async function loadPerformanceData(period) {
     }
 }
 
-// Update the read-only interval badge in the Intraday card header
-function updateIntradayIntervalBadge(interval) {
-    const badge = document.getElementById('intradayIntervalBadge');
-    if (badge) badge.textContent = interval || '--';
-}
-
 // Try intervals in order (finest first) and return the first that has data
 async function fetchIntradayAutoInterval(date = null, useCache = true) {
     const intervals = ['1m', '5m', '15m', '30m'];
@@ -4061,7 +4098,6 @@ async function loadIntradayData(date = undefined, useCache = true) {
         // Keep an already visible snapshot on a transient fetch failure.
         if (!data && renderedIntraday?.date === (selectedDate || requestedMarketDate)) return false;
         currentInterval = interval;
-        updateIntradayIntervalBadge(interval);
         updateIntradayChart(data, interval);
         return !!data;
     } finally {
@@ -4611,7 +4647,6 @@ async function refreshData() {
         if (renderedIntraday?.computed_at !== data.computed_at
                 || renderedIntraday?.date !== data.date || currentInterval !== interval) {
             currentInterval = interval;
-            updateIntradayIntervalBadge(interval);
             updateIntradayChart(data, interval);
         }
         return data;
@@ -4621,7 +4656,6 @@ async function refreshData() {
     apiCache.set(`intraday_${snapshotDate || requestedMarketDate}_${interval}`, data);
     Object.keys(transactionCache).forEach(k => delete transactionCache[k]);
     currentInterval = interval;
-    updateIntradayIntervalBadge(interval);
     updateIntradayChart(data, interval);
     // Coalesce slower refreshes when the button is clicked repeatedly.
     if (!secondaryRefreshTask) {
@@ -4657,8 +4691,8 @@ function stopLiveRefresh({ expired = false, persist = true } = {}) {
     document.getElementById('liveRefreshSwitch').checked = false;
     try {
         if (persist) {
-            localStorage.setItem(LIVE_REFRESH_STORAGE_KEY, 'false');
-            localStorage.removeItem(LIVE_REFRESH_EXPIRY_KEY);
+            portfolioStorage.setItem(LIVE_REFRESH_STORAGE_KEY, 'false');
+            portfolioStorage.removeItem(LIVE_REFRESH_EXPIRY_KEY);
         }
     } catch (_) { /* The current tab still stops when storage is unavailable. */ }
     if (expired) showToast('Live turned off after 3 hours.', 'info');
@@ -4674,15 +4708,18 @@ function isLiveRefreshActive() {
 }
 
 function setRefreshState(isRefreshing) {
-    const btn = document.getElementById('refreshBtn');
+    const buttons = ['refreshBtn', 'intradayRefreshBtn'].map(id => document.getElementById(id)).filter(Boolean);
     const card = document.getElementById('portfolioRefreshCard');
 
-    btn.disabled = isRefreshing;
-    btn.setAttribute('aria-label', isRefreshing ? 'Updating intraday chart' : 'Refresh intraday chart');
-    btn.setAttribute('title', isRefreshing ? 'Updating intraday chart' : 'Fetch minute prices and update the intraday chart');
-    btn.innerHTML = isRefreshing
-        ? '<i class="bi bi-arrow-clockwise spin" aria-hidden="true"></i><span class="refresh-label">Refreshing</span>'
-        : '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>';
+    for (const btn of buttons) {
+        btn.disabled = isRefreshing;
+        btn.setAttribute('aria-busy', String(isRefreshing));
+        btn.setAttribute('aria-label', isRefreshing ? 'Updating intraday chart' : 'Refresh intraday chart');
+        btn.setAttribute('title', isRefreshing ? 'Updating intraday chart' : 'Fetch minute prices and update the intraday chart');
+        btn.innerHTML = isRefreshing
+            ? '<i class="bi bi-arrow-clockwise spin" aria-hidden="true"></i><span class="refresh-label">Refreshing</span>'
+            : '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>';
+    }
 
     card.classList.toggle('is-refreshing', isRefreshing);
     card.setAttribute('aria-busy', isRefreshing ? 'true' : 'false');
@@ -4732,8 +4769,8 @@ function initLiveRefresh() {
     const restore = () => {
         let enabled = false, expiresAt = 0;
         try {
-            enabled = localStorage.getItem(LIVE_REFRESH_STORAGE_KEY) === 'true';
-            expiresAt = Number(localStorage.getItem(LIVE_REFRESH_EXPIRY_KEY));
+            enabled = portfolioStorage.getItem(LIVE_REFRESH_STORAGE_KEY) === 'true';
+            expiresAt = Number(portfolioStorage.getItem(LIVE_REFRESH_EXPIRY_KEY));
         } catch (_) { /* Default off if the saved deadline cannot be read. */ }
         // Old preferences without a deadline must not resume indefinitely.
         if (!enabled || !Number.isFinite(expiresAt) || expiresAt <= Date.now()
@@ -4752,8 +4789,8 @@ function initLiveRefresh() {
         }
         liveRefreshExpiresAt = Date.now() + LIVE_REFRESH_DURATION_MS;
         try {
-            localStorage.setItem(LIVE_REFRESH_EXPIRY_KEY, String(liveRefreshExpiresAt));
-            localStorage.setItem(LIVE_REFRESH_STORAGE_KEY, 'true');
+            portfolioStorage.setItem(LIVE_REFRESH_EXPIRY_KEY, String(liveRefreshExpiresAt));
+            portfolioStorage.setItem(LIVE_REFRESH_STORAGE_KEY, 'true');
         } catch (_) { /* Keep the current session working without persistence. */ }
         updateTimer();
     });
@@ -4770,6 +4807,7 @@ function initLiveRefresh() {
 }
 
 document.getElementById('refreshBtn').addEventListener('click', runManualRefresh);
+document.getElementById('intradayRefreshBtn').addEventListener('click', runManualRefresh);
 document.getElementById('transactionUpdateRetry').addEventListener('click', refreshAfterTransaction);
 
 const portfolioRefreshCard = document.getElementById('portfolioRefreshCard');
@@ -5114,7 +5152,7 @@ async function addTransaction(payload) {
     }
 
     function setTransactionMode(mode) {
-        transactionMode = mode === 'preview' ? 'preview' : 'record';
+        transactionMode = isDemoPortfolio || mode === 'preview' ? 'preview' : 'record';
         const isPreview = transactionMode === 'preview';
 
         recordModeBtn.classList.toggle('btn-primary', !isPreview);
@@ -5131,7 +5169,7 @@ async function addTransaction(payload) {
         showField('tradePreviewNotice', isPreview);
         previewPanel.classList.toggle('d-none', !isPreview);
         submitBtn.classList.toggle('d-none', isPreview);
-        previewContinueBtn.classList.toggle('d-none', !isPreview);
+        previewContinueBtn.classList.toggle('d-none', !isPreview || isDemoPortfolio);
         cancelBtn.textContent = isPreview ? 'Close' : 'Cancel';
         modalTitle.innerHTML = isPreview
             ? '<i class="bi bi-calculator me-1"></i>Trade Preview'
@@ -5306,12 +5344,12 @@ function resizeTrackerCharts() {
 // Initial load and event handlers setup
 document.addEventListener('DOMContentLoaded', () => {
     initLiveRefresh();
-    const storedTrackerTab = localStorage.getItem('trackerActiveTab');
+    const storedTrackerTab = portfolioStorage.getItem('trackerActiveTab');
     const savedTrackerTab = storedTrackerTab === '#trackerIncome'
         ? '#trackerPerformance'
         : storedTrackerTab;
     if (storedTrackerTab === '#trackerIncome') {
-        localStorage.setItem('trackerActiveTab', savedTrackerTab);
+        portfolioStorage.setItem('trackerActiveTab', savedTrackerTab);
     }
     if (savedTrackerTab) {
         const tabButton = document.querySelector(`[data-bs-target="${savedTrackerTab}"]`);
@@ -5323,7 +5361,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('#trackerTabs [data-bs-toggle="pill"]').forEach(btn => {
         btn.addEventListener('shown.bs.tab', (event) => {
             const target = event.target.dataset.bsTarget;
-            localStorage.setItem('trackerActiveTab', target);
+            portfolioStorage.setItem('trackerActiveTab', target);
             requestAnimationFrame(resizeTrackerCharts);
             // Lazy-load the transactions list the first time its tab is opened.
             if (target === '#trackerTransactions') loadTransactions();
@@ -5350,11 +5388,11 @@ document.addEventListener('DOMContentLoaded', () => {
             loadTickerHistory(true);
         });
     });
-    if (localStorage.getItem('trackerActiveTab') === '#trackerPerformance') {
+    if (portfolioStorage.getItem('trackerActiveTab') === '#trackerPerformance') {
         loadTickerHistory();
     }
     // If the transactions tab was the last-active tab (restored above), load it now.
-    if (localStorage.getItem('trackerActiveTab') === '#trackerTransactions') {
+    if (portfolioStorage.getItem('trackerActiveTab') === '#trackerTransactions') {
         loadTransactions();
     }
 
@@ -5368,8 +5406,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     const resumeMarketDay = () => {
-        if (!document.hidden && syncMarketDay()) loadAllData();
+        if (document.hidden) return;
+        updateIntradayTimestamp();
+        if (syncMarketDay()) loadAllData();
     };
+    // Keep the age label current without fetching prices or enabling Live.
+    setInterval(() => {
+        if (!document.hidden) updateIntradayTimestamp();
+    }, 15000);
     window.addEventListener('focus', resumeMarketDay);
     document.addEventListener('visibilitychange', resumeMarketDay);
     setInterval(resumeMarketDay, 60000);
@@ -5642,7 +5686,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     // Load saved prefs (default: all visible)
-    let hiddenCols = JSON.parse(localStorage.getItem('holdingsHiddenCols') || '[]');
+    let hiddenCols = JSON.parse(portfolioStorage.getItem('holdingsHiddenCols') || '[]');
 
     function applyColumnVisibility() {
         const style = document.getElementById('col-visibility-style') || (() => {
@@ -5674,7 +5718,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 hiddenCols.push(def.col);
             }
-            localStorage.setItem('holdingsHiddenCols', JSON.stringify(hiddenCols));
+            portfolioStorage.setItem('holdingsHiddenCols', JSON.stringify(hiddenCols));
             applyColumnVisibility();
         });
         label.appendChild(cb);
@@ -5695,7 +5739,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const target = document.getElementById(targetId);
             if (!target) return;
             const STORAGE_KEY = `cardCollapsed:${targetId}`;
-            const savedState = localStorage.getItem(STORAGE_KEY);
+            const savedState = portfolioStorage.getItem(STORAGE_KEY);
             const collapsed = savedState === null ? btn.dataset.defaultCollapsed === 'true' : savedState === '1';
 
             function applyState(isCollapsed) {
@@ -5717,7 +5761,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ev.stopPropagation();
                 const willCollapse = target.style.display !== 'none';
                 applyState(willCollapse);
-                localStorage.setItem(STORAGE_KEY, willCollapse ? '1' : '0');
+                portfolioStorage.setItem(STORAGE_KEY, willCollapse ? '1' : '0');
                 if (targetId === 'tickerHistoryBody' && !willCollapse) loadTickerHistory();
                 // Charts inside collapsed panels should resize when re-shown
                 if (!willCollapse && window.Chart) {
@@ -5740,7 +5784,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const label = document.getElementById('summaryToggleLabel');
         if (!btn || !panel) return;
         const STORAGE_KEY = 'summaryCardsExpanded';
-        const expanded = localStorage.getItem(STORAGE_KEY) === '1';
+        const expanded = portfolioStorage.getItem(STORAGE_KEY) === '1';
 
         function applyState(isOpen) {
             panel.classList.toggle('show', isOpen);
@@ -5756,7 +5800,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.addEventListener('click', () => {
             const nowOpen = !panel.classList.contains('show');
             applyState(nowOpen);
-            localStorage.setItem(STORAGE_KEY, nowOpen ? '1' : '0');
+            portfolioStorage.setItem(STORAGE_KEY, nowOpen ? '1' : '0');
         });
     })();
 
@@ -5764,10 +5808,11 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAllData();
 
     // -----------------------------------------------------------------------
-    // Simulator event listeners
+    // Only initialize tools currently exposed by the page.
     // -----------------------------------------------------------------------
-    initSimulator();
-    initAnalysis();
+    document.getElementById('pageTrackerBtn').addEventListener('click', () => switchPage('tracker'));
+    if (!document.getElementById('simulatorPage').hidden) initSimulator();
+    if (!document.getElementById('analysisPage').hidden) initAnalysis();
 });
 
 
@@ -5847,7 +5892,6 @@ function initSimulator() {
     document.getElementById('simRunBtn').addEventListener('click', runSimulation);
 
     // Page toggle
-    document.getElementById('pageTrackerBtn').addEventListener('click', () => switchPage('tracker'));
     document.getElementById('pageSimulatorBtn').addEventListener('click', () => switchPage('simulator'));
 }
 
@@ -5862,6 +5906,9 @@ function switchPage(page) {
         simulator: document.getElementById('pageSimulatorBtn'),
         analysis: document.getElementById('pageAnalysisBtn'),
     };
+
+    // A paused tool must not become visible through an older navigation callback.
+    if (!pageElements[page] || pageElements[page].hidden) page = 'tracker';
 
     Object.entries(pageElements).forEach(([name, element]) => {
         element.style.display = name === page ? '' : 'none';
@@ -6028,6 +6075,10 @@ async function loadAnalysisReport(reportId) {
 }
 
 async function createAnalysisReport() {
+    if (isDemoPortfolio) {
+        await loadAnalysisHistory(true);
+        return;
+    }
     const button = document.getElementById('generateAnalysisBtn');
     const label = button.querySelector('span');
     const errorElement = document.getElementById('analysisGenerateError');

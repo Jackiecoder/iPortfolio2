@@ -55,12 +55,41 @@ Manual and automatic refreshes share an in-flight guard. Automatic updates do
 not show repeated toasts; a suspended tab checks expiry before catching up when
 it becomes visible. Manual refresh remains available after Live expires.
 
-The server collects **1-minute bars every 5 minutes** by default, incrementally
-upserts new or changed bars into Postgres, and rebuilds only the Today chart.
-Override the collection cadence with `MARKET_REFRESH_INTERVAL_SECONDS` (minimum
-15 seconds); this does not change the 1-minute resolution. Each fetch also saves
+Cloud Scheduler collects **1-minute bars every 5 minutes**, even with the browser
+closed, by calling `POST /api/internal/refresh`. The request waits for the new or
+changed bars to be upserted into Postgres and the Today chart to finish rebuilding.
+Cloud Run uses request-based billing, zero minimum instances at both service and
+revision levels, and at most one instance for process-local cache consistency.
+The service URL stays available; a reclaimed instance starts on the next request.
+
+`deploy.sh` sets `MARKET_REFRESH_MODE=scheduler` and creates/updates the
+`iportfolio-market-refresh` Scheduler job (`*/5 * * * *`, UTC). Its dedicated
+service account uses short-lived Google-signed OIDC tokens, checked for signature,
+expiry, issuer, audience and verified account email. This identity can only
+trigger refresh; it receives no holdings or transaction data and cannot call
+the normal user APIs. Existing app-token authentication stays in place.
+
+In scheduler mode there is no in-process timer and startup warms minute caches
+from Postgres without fetching live prices. Cache misses/expired snapshots are
+computed within an active request rather than relying on CPU after a response.
+Transaction saves still return after commit; the next reader reloads the ledger.
+Long-idle visits may incur a cold start and cache rebuild. Database, storage and
+network costs remain separate from Cloud Run compute.
+
+Local development defaults to `MARKET_REFRESH_MODE=background`; its in-process
+cadence uses `MARKET_REFRESH_INTERVAL_SECONDS` (default 300, minimum 15). In
+production change the Scheduler schedule to adjust cadence. Both modes preserve
+1-minute resolution. Each fetch also saves
 the previous day's returned bars to fill the gap around midnight. Coverage still
 depends on the upstream provider; this is not a guarantee of gap-free tick data.
+
+After deployment, verify a Scheduler execution returns HTTP 200, its next timed
+execution succeeds, and the new revision has CPU throttling enabled and both
+minimum instance settings at zero. The scheduler retries a failed attempt once;
+partial upstream results return HTTP 503 instead of silently reporting success.
+When rolling back to a revision from before the Scheduler migration, that revision
+restores its own background timer; pause `iportfolio-market-refresh` to avoid
+requests to an endpoint the old revision does not support.
 
 Manual refresh calls `POST /api/intraday/refresh`. If a successful Today check
 started in the current minute for the same portfolio, the server reuses it and
@@ -78,24 +107,21 @@ shows a warning. `computed_at` is the chart computation time, not a market quote
 timestamp. Requests that lose a race with a transaction write or midnight retry
 against the new portfolio/date before publishing.
 
-Startup prepares Today first; other dashboard responses compute on demand.
+Startup restores the ledger and persisted bars; dashboard responses compute on demand.
 The browser renders Today before fetching the rest of the dashboard. After a
 manual refresh, other pages update separately without delaying the chart or
 overwriting it. Transaction writes return as soon as Postgres commits. A shared
-background job rebuilds the ledger; readers wait for that ledger without waiting
+reload rebuilds the ledger within the next reading request; readers wait without waiting
 for prices or history. After saving, the modal closes, today's share count updates
 from the saved receipt, and pending values show a spinner. Confirmed quantities
 and FIFO costs arrive from `/api/positions`; each remaining panel updates independently.
 Historical quantities wait for the server's split adjustments. Update failures
 are shown separately from save failures, with a retry that never resubmits the trade.
 
-On Cloud Run, the included `deploy.sh` keeps exactly one instance alive and
-disables CPU throttling so the in-process portfolio, response cache, and refresh
-loop stay consistent while there are no requests. This uses always-on Cloud Run
-resources and therefore has a higher baseline cost than scaling to zero.
-Reducing collection frequency alone does **not** reduce this fixed compute bill.
-Request-based billing would require replacing the unattended in-process timer
-with an external authenticated scheduler; this change does not alter billing.
+On Cloud Run, `deploy.sh` enables CPU throttling and allows the instance count to
+fall to zero. The external authenticated scheduler supplies the five-minute
+cadence, so idle time no longer needs a continuously billed CPU. The maximum
+remains one instance; restarting it recovers the ledger and bars from Postgres.
 
 ## CSV Format
 
@@ -196,3 +222,16 @@ iPortfolio2/
 - **Frontend**: HTML/CSS/JavaScript with Chart.js
 - **Market Data**: yfinance
 - **Data Processing**: Pandas, Pydantic
+
+## Demo portfolio and visible tools
+
+Use the **Demo** button beside Anonymous Mode to switch to the sample portfolio;
+press it again to return to the personal portfolio. The active button is green.
+The public `/demo` route holds 1 TSLA, 3 VOO, 3 QQQM, 3 SOXX, 1 MU and 1 ETH.
+Prices, performance and transactions are synthetic. Demo requests and settings
+stay in the browser and never read the personal access token or account data.
+
+Simulator and Analysis are temporarily hidden in both modes. Their implementation
+and saved reports remain available for a future restoration. To restore the UI,
+set `secondary_tools_enabled = true` at the top of `templates/index.html`, bump
+the frontend/service-worker versions, validate, and deploy.

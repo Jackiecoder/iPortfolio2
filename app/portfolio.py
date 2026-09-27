@@ -1568,6 +1568,7 @@ class Portfolio:
             symbol_to_category = {
                 'BTC-USD': 'Crypto', 'ETH-USD': 'Crypto', 'MSTR': 'Crypto', 'CRCL': 'Crypto', 'IBIT': 'Crypto',
                 'VOO': 'Index', 'QQQM': 'Index', 'QQQ': 'Index', 'BRK-B': 'Index',
+                'SOXX': 'Index',
                 'CASH': 'Cash',
             }
             if symbol in symbol_to_category:

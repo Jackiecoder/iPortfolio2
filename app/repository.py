@@ -8,6 +8,7 @@ returns the same ``Transaction`` objects the CSV loader used to produce, so
 import json
 from typing import Any, Optional
 
+from .brokers import normalize_broker
 from .db import get_pool
 from .models import ActionType, MARKET_TZ, Transaction
 
@@ -91,6 +92,7 @@ def delete_transaction(txn_id: int) -> bool:
 
 def insert_transaction(txn: Transaction, broker: Optional[str] = None) -> int:
     """Insert one transaction; returns its new id."""
+    broker = normalize_broker(broker)
     with get_pool().connection() as conn:
         row = conn.execute(
             """INSERT INTO transactions
@@ -119,6 +121,7 @@ def insert_transactions(transactions: list[Transaction], broker: Optional[str] =
     """Bulk-insert transactions (used by CSV upload and the migration script)."""
     if not transactions:
         return 0
+    broker = normalize_broker(broker)
     params = [
         (
             t.date, t.asset, t.action.value, t.amount, t.quantity,

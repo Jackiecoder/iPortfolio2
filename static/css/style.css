@@ -1990,7 +1990,12 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     white-space: nowrap;
 }
 .nav-actions .btn:hover { background: #3a5c87; border-color: #8da6c7; color: #fff; }
-.nav-actions #addTxnBtn { grid-column: 2; }
+.nav-actions #addTxnBtn { grid-column: 1 / -1; }
+.portfolio-mode-control { display: flex; grid-column: 2; margin: 0; min-width: 0; }
+.nav-actions #demoPortfolioBtn { gap: 7px; width: 100%; }
+.nav-actions #demoPortfolioBtn[aria-pressed="true"] { background: #b7ee62; border-color: #b7ee62; color: #123d2c; }
+.nav-actions #demoPortfolioBtn[aria-pressed="true"]:hover { background: #c8f48c; border-color: #c8f48c; }
+.nav-actions #demoPortfolioBtn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
 .nav-actions #anonymousBtn { grid-column: 1; }
 .nav-actions #installAppBtn { grid-column: 1 / -1; }
 .nav-refresh-controls { display: flex; gap: 8px; grid-column: 1 / -1; min-width: 0; }
@@ -2110,6 +2115,7 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .intraday-focus-card { border-color: #d6dfef !important; }
 .intraday-focus-card .card-header { border-bottom: 0 !important; }
 .intraday-focus-card .card-body { padding-top: 0; }
+.intraday-refresh-btn { align-items: center; border-radius: 8px; display: inline-flex; font-size: 12px; font-weight: 600; gap: 6px; min-height: 38px; padding: 7px 12px; }
 .intraday-spotlight { align-items: center; display: flex; flex-wrap: wrap; gap: 18px 32px; margin-bottom: 22px; padding-top: 6px; }
 .intraday-headline, .intraday-return { display: flex; flex-direction: column; gap: 7px; }
 .spotlight-label { color: var(--slate-600); font-size: 11px; }
@@ -2124,7 +2130,7 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .intraday-date-nav { background: #f5f7fb; border: 1px solid var(--slate-200); border-radius: 9px; padding: 2px; }
 .intraday-date-nav .btn, .intraday-date-nav .form-control { background: transparent; border: 0; min-height: 32px; }
 #intradayDatePicker { flex-basis: 135px; font-size: 11px; width: 135px; }
-#intradayIntervalBadge { background: #edf1fb !important; color: #607393; font-size: 10px !important; font-weight: 600; }
+#intradayFreshnessBadge { background: var(--cobalt-soft); border: 1px solid #dce3fa; border-radius: 7px; color: var(--cobalt-dark); font-size: 11px; font-weight: 600; padding: 6px 9px; white-space: nowrap; }
 #intradayUpdatedAt { flex-basis: 100%; font-size: 10px; text-align: right; }
 .movers-card .card-header { border-bottom: 0 !important; }
 .movers-card .card-body { padding-top: 2px; }
@@ -2721,7 +2727,9 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     .brand-tagline { display: none; }
     .app-navbar .nav-actions { border: 0; display: flex !important; gap: 8px !important; grid-column: 2; grid-row: 1; margin: 0; padding: 0; width: auto; }
     .nav-actions .btn { min-height: 36px; }
-    .nav-actions #anonymousBtn, .nav-actions #addTxnBtn { height: 36px; justify-content: center; padding: 0; width: 36px; }
+    .nav-actions #anonymousBtn, .nav-actions #addTxnBtn, .nav-actions #demoPortfolioBtn { height: 36px; justify-content: center; padding: 0; width: 36px; }
+    .portfolio-mode-control { flex: 0 0 36px; width: 36px; }
+    .nav-actions #demoPortfolioBtn i { display: none; }
     .nav-actions .nav-label, .nav-actions #installAppBtn { display: none !important; }
     .nav-actions #addTxnBtn i { margin: 0 !important; }
     .nav-actions #refreshBtn { font-size: 11px; min-height: 36px; padding: 6px 12px; }
@@ -2742,7 +2750,8 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     .app-navbar .container-fluid { padding: 0 !important; }
     .app-navbar .container-fluid > .d-flex.gap-2.align-items-center.nav-actions { display: flex !important; flex-wrap: nowrap; width: auto !important; }
     .app-navbar .nav-actions { gap: 6px !important; }
-    .nav-actions #anonymousBtn, .nav-actions #addTxnBtn, .nav-actions #refreshBtn { flex: 0 0 40px; height: 40px; min-height: 40px; min-width: 40px; padding: 0; width: 40px; }
+    .nav-actions #anonymousBtn, .nav-actions #addTxnBtn, .nav-actions #refreshBtn, .nav-actions #demoPortfolioBtn { flex: 0 0 40px; height: 40px; min-height: 40px; min-width: 40px; padding: 0; width: 40px; }
+    .portfolio-mode-control { flex-basis: 40px; width: 40px; }
     .nav-actions .refresh-label { display: none; }
     .app-shell { padding: 22px 16px !important; }
     .portfolio-brief, .workspace-heading { gap: 12px; margin-bottom: 22px !important; min-height: 58px; }
@@ -2814,7 +2823,7 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     .summary-strip { gap: 6px; }
     .summary-strip-item { font-size: 11px; }
 }
-@media (max-width: 420px) {
+@media (max-width: 480px) {
     .brand-copy { display: none; }
     .nav-refresh-controls { gap: 6px; }
 }
@@ -2830,3 +2839,41 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .value-spinner { animation: spin 0.8s linear infinite; border: 2px solid #b6c7df; border-radius: 50%; border-top-color: #35577f; display: inline-block; flex-shrink: 0; height: 12px; vertical-align: middle; width: 12px; }
 .is-updating { opacity: 0.55; }
 .card-header .dashboard-data-status { margin-bottom: 0; }
+
+/* Demo stays visually distinct on every page without hiding the normal product. */
+.demo-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    border: 1px solid #c4ded5;
+    border-radius: 18px;
+    background: #edf7f3;
+    color: #205b4d;
+}
+.demo-banner-icon { font-size: 25px; }
+.demo-banner-copy { flex: 1; min-width: 0; }
+.demo-banner-copy strong { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 16px; }
+.demo-banner-copy p { margin: 5px 0 0; font-size: 13px; line-height: 1.6; }
+.demo-sample-label { font-size: 9px; letter-spacing: .1em; border: 1px solid #b5d7c9; padding: 4px 7px; border-radius: 5px; }
+.demo-action-note { font-size: 13px; color: #205b4d; padding: 12px 16px; background: #edf7f3; border-radius: 10px; margin-bottom: 16px; }
+[data-portfolio-mode="demo"] #installAppBtn { display: none !important; }
+[data-portfolio-mode="demo"] #txnRecordModeBtn,
+[data-portfolio-mode="demo"] .import-csv-btn,
+[data-portfolio-mode="demo"] .txn-delete-btn { display: none !important; }
+@media (max-width: 767px) {
+    .app-navbar .page-switcher .btn { padding-inline: 3px !important; font-size: 11px !important; min-height: 39px; }
+    .page-switcher i { display: none; }
+    .demo-banner { gap: 10px; padding: 14px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 20px; }
+    .demo-banner-icon { font-size: 21px; }
+    .demo-banner-copy { flex-basis: calc(100% - 40px); }
+}
+
+/* Preserve paused tools in the template without exposing buttons or content. */
+[data-secondary-tool][hidden] { display: none !important; }
+@media (max-width: 767.98px) {
+    [data-secondary-tools="hidden"] .navbar .container-fluid > .page-switcher {
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
+}

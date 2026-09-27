@@ -165,5 +165,90 @@ class PreviousCloseTests(unittest.TestCase):
         self.assertEqual(result["MRVL"], Decimal("216.62"))
 
 
+class CryptoPreviousCloseTests(unittest.TestCase):
+    def setUp(self):
+        self.service = PriceService()
+        self.today = date(2026, 9, 19)
+        self.bars = pd.DataFrame(
+            {"Open": [81276.06, 81105.05], "Close": [81105.03, 81001.68]},
+            index=pd.to_datetime(["2026-09-19 03:00Z", "2026-09-19 04:00Z"]),
+        )
+
+    def fetch(self, bars, target_date=None):
+        with (
+            patch("app.price_service._market_today", return_value=target_date or self.today),
+            patch("app.price_service.yf.Ticker") as ticker,
+        ):
+            ticker.return_value.history.return_value = bars
+            return self.service.get_previous_close_batch(["BTC-USD"])["BTC-USD"]
+
+    def test_midnight_uses_completed_hour_not_first_hour_of_new_day(self):
+        self.assertEqual(self.fetch(self.bars), Decimal("81105.03"))
+
+    def test_fresh_yesterday_cache_cannot_be_locked_as_todays_baseline(self):
+        yesterday = self.bars.copy()
+        yesterday.index -= pd.Timedelta(days=1)
+        yesterday["Close"] = [77496.26, 77520.0]
+        self.assertEqual(self.fetch(yesterday, date(2026, 9, 18)), Decimal("77496.26"))
+        stocks = grouped_closes({"MU": [1015.8]}, ["2026-09-18"])
+        with (
+            patch("app.price_service._market_today", return_value=self.today),
+            patch("app.price_service.yf.Ticker") as ticker,
+            patch("app.price_service.yf.download", return_value=stocks),
+            patch.object(self.service, "_get_previous_market_session", return_value=date(2026, 9, 18)),
+        ):
+            ticker.return_value.history.return_value = self.bars
+            first = self.service.get_previous_close_batch(["BTC-USD", "MU"])
+            # A later fetch in the same day must retain the verified baseline.
+            ticker.return_value.history.return_value = pd.DataFrame()
+            second = self.service.get_previous_close_batch(["MU", "BTC-USD"])
+        self.assertEqual(first["BTC-USD"], Decimal("81105.03"))
+        self.assertEqual(first, second)
+        self.assertEqual(ticker.return_value.history.call_count, 1)
+
+    def test_midnight_open_is_allowed_if_completed_hour_is_missing(self):
+        self.assertEqual(self.fetch(self.bars.iloc[1:]), Decimal("81105.05"))
+
+    def test_missing_boundary_never_uses_older_or_future_close(self):
+        for timestamp in ["2026-09-18 04:00Z", "2026-09-19 02:00Z", "2026-09-19 05:00Z"]:
+            with self.subTest(timestamp=timestamp):
+                self.service = PriceService()
+                bars = pd.DataFrame({"Close": [77496.26]}, index=pd.to_datetime([timestamp]))
+                self.assertIsNone(self.fetch(bars))
+
+    def test_invalid_boundary_prices_are_unavailable(self):
+        for value in [float("nan"), float("inf"), 0, -1]:
+            with self.subTest(value=value):
+                self.service = PriceService()
+                bars = self.bars.iloc[:1].copy()
+                bars["Close"] = value
+                self.assertIsNone(self.fetch(bars))
+
+    def test_midnight_follows_new_york_offset_including_dst_changes(self):
+        for day, utc_hour in [
+            (date(2026, 1, 19), 4),
+            (date(2026, 3, 8), 4),
+            (date(2026, 3, 9), 3),
+            (date(2026, 11, 1), 3),
+            (date(2026, 11, 2), 4),
+        ]:
+            with self.subTest(day=day):
+                self.service = PriceService()
+                bars = pd.DataFrame(
+                    {"Close": [81105.03, 81001.68]},
+                    index=pd.date_range(f"{day} {utc_hour:02d}:00", periods=2, freq="h", tz="UTC"),
+                )
+                self.assertEqual(self.fetch(bars, day), Decimal("81105.03"))
+
+    def test_clear_cache_removes_crypto_day_metadata(self):
+        self.fetch(self.bars)
+        self.service.clear_cache()
+        with patch("app.price_service.yf.Ticker") as ticker:
+            ticker.return_value.history.return_value = pd.DataFrame()
+            with patch("app.price_service._market_today", return_value=self.today):
+                self.assertIsNone(self.service.get_previous_close("BTC-USD"))
+        ticker.return_value.history.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

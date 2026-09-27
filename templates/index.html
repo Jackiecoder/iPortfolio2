@@ -1,14 +1,16 @@
+{# Temporarily pause secondary tools; flip this flag to restore both tools. #}
+{% set secondary_tools_enabled = false %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>iPortfolio · Personal Capital Desk</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=2">
+    <title>iPortfolio · {{ 'Demo Portfolio' if demo_mode else 'Personal Capital Desk' }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=3">
     <!-- PWA: installable as an app -->
-    <link rel="manifest" href="/static/manifest.webmanifest?v=2">
+    <link rel="manifest" href="/static/{{ 'manifest-demo.webmanifest?v=2' if demo_mode else 'manifest.webmanifest?v=3' }}">
     <meta name="theme-color" content="#19365a">
-    <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png?v=2">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png?v=3">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -22,19 +24,19 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=54">
+    <link rel="stylesheet" href="/static/css/style.css?v=57">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 </head>
-<body>
+<body data-portfolio-mode="{{ 'demo' if demo_mode else 'personal' }}" data-secondary-tools="{{ 'visible' if secondary_tools_enabled else 'hidden' }}">
     <!-- Navbar -->
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-top app-navbar" aria-label="Workspace">
         <div class="container-fluid">
             <a class="navbar-brand" href="#" aria-label="iPortfolio home">
                 <span class="brand-mark" aria-hidden="true">
-                    <img src="/static/favicon.svg?v=2" alt="" width="39" height="39">
+                    <img src="/static/favicon.svg?v=3" alt="" width="39" height="39">
                 </span>
                 <span class="brand-copy">
                     <span class="brand-name">iPortfolio</span>
@@ -46,10 +48,10 @@
                 <button id="pageTrackerBtn" class="btn btn-light btn-sm px-3">
                     <i class="bi bi-briefcase me-1"></i>Tracker
                 </button>
-                <button id="pageSimulatorBtn" class="btn btn-outline-light btn-sm px-3">
+                <button id="pageSimulatorBtn" data-secondary-tool {{ '' if secondary_tools_enabled else 'hidden' }} class="btn btn-outline-light btn-sm px-3">
                     <i class="bi bi-play-circle me-1"></i>Simulator
                 </button>
-                <button id="pageAnalysisBtn" class="btn btn-outline-light btn-sm px-3">
+                <button id="pageAnalysisBtn" data-secondary-tool {{ '' if secondary_tools_enabled else 'hidden' }} class="btn btn-outline-light btn-sm px-3">
                     <i class="bi bi-clipboard-data me-1"></i>Analysis
                 </button>
             </div>
@@ -60,6 +62,13 @@
                 <button id="anonymousBtn" class="btn btn-outline-light btn-sm" title="Toggle Anonymous Mode">
                     <i class="bi bi-eye"></i>
                 </button>
+                <form class="portfolio-mode-control" action="{{ '/' if demo_mode else '/demo' }}" method="get">
+                    <button id="demoPortfolioBtn" type="submit" class="btn btn-outline-light btn-sm"
+                            aria-label="Demo portfolio" aria-pressed="{{ 'true' if demo_mode else 'false' }}"
+                            title="{{ 'Switch back to my portfolio' if demo_mode else 'Switch to demo portfolio' }}">
+                        <i class="bi {{ 'bi-check2' if demo_mode else 'bi-easel2' }}" aria-hidden="true"></i><span>Demo</span>
+                    </button>
+                </form>
                 <button id="addTxnBtn" class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTxnModal" aria-label="Add transaction" title="Add transaction">
                     <i class="bi bi-plus-lg me-1"></i><span class="nav-label">Add Transaction</span>
                 </button>
@@ -87,6 +96,7 @@
               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
+              {% if demo_mode %}<div class="demo-action-note">Try a trade with the sample holdings. This demo is read-only; nothing is saved to an account.</div>{% endif %}
               <div class="btn-group txn-mode-switch" role="group" aria-label="Transaction mode">
                 <button type="button" class="btn btn-primary active" id="txnRecordModeBtn" aria-pressed="true">
                   <i class="bi bi-pencil-square me-1"></i>Record Trade
@@ -134,7 +144,7 @@
                     <option value="" selected>None</option>
                     <option value="__other__">Other…</option>
                   </select>
-                  <input type="text" id="brokerOther" class="form-control mt-2 d-none" placeholder="Enter broker (e.g. fidelity)">
+                  <input type="text" id="brokerOther" class="form-control mt-2 d-none" placeholder="Enter broker (e.g. Fidelity, OKX)">
                 </div>
                 <div class="col-4" id="fldQuantity">
                   <label class="form-label" for="txnQuantityInput">
@@ -216,13 +226,22 @@
     </div>
 
     <main class="container-fluid py-4 app-shell">
+    {% if demo_mode %}
+    <aside class="demo-banner" aria-label="Demo portfolio">
+        <div class="demo-banner-icon" aria-hidden="true"><i class="bi bi-shield-check"></i></div>
+        <div class="demo-banner-copy">
+            <strong>Demo portfolio <span class="demo-sample-label">SAMPLE DATA</span></strong>
+            <p>Showing sample holdings. Your personal portfolio stays private.</p>
+        </div>
+    </aside>
+    {% endif %}
 
     <!-- ============================================================ TRACKER PAGE -->
     <div id="trackerPage">
         <header id="portfolioRefreshCard" class="portfolio-brief mb-3" role="button" tabindex="0" aria-label="Refresh intraday chart" title="Click to update the intraday chart">
             <div class="portfolio-brief-copy">
-                <h1>Portfolio overview</h1>
-                <p>Your positions, performance and activity, in one place.</p>
+                <h1>{{ 'Demo portfolio' if demo_mode else 'Portfolio overview' }}</h1>
+                <p>{{ 'Six holdings. A complete view of how iPortfolio works.' if demo_mode else 'Your positions, performance and activity, in one place.' }}</p>
             </div>
             <div class="brief-refresh-cue" aria-hidden="true">
                 <i class="bi bi-arrow-clockwise"></i>
@@ -339,7 +358,12 @@
         <!-- Intraday P&L Chart -->
         <div class="card border-0 shadow-sm mb-4 intraday-focus-card">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Intraday P&L</h5>
+                <div class="d-flex align-items-center flex-wrap gap-2">
+                    <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Intraday P&L</h5>
+                    <button id="intradayRefreshBtn" class="btn btn-sm btn-primary intraday-refresh-btn" type="button" aria-label="Refresh intraday chart" title="Fetch minute prices and update the intraday chart">
+                        <i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>
+                    </button>
+                </div>
                 <div class="intraday-date-controls d-flex align-items-center gap-2 flex-wrap">
                     <div class="input-group input-group-sm intraday-date-nav" role="group" aria-label="Intraday date navigation">
                         <button type="button" id="intradayPrevDate" class="btn btn-outline-secondary" title="Previous day" aria-label="Previous day">
@@ -350,7 +374,7 @@
                             <i class="bi bi-chevron-right" aria-hidden="true"></i>
                         </button>
                     </div>
-                    <span id="intradayIntervalBadge" class="badge bg-secondary px-2 py-1" style="font-size:0.8rem;">--</span>
+                    <span id="intradayFreshnessBadge" class="badge" role="status" aria-label="Last update time unavailable" title="Last chart update">--</span>
                     <span id="intradayUpdatedAt" class="small text-muted" role="status"></span>
                 </div>
             </div>
@@ -825,7 +849,7 @@
                         <option value="30">Past month</option>
                         <option value="90">Past 3 months</option>
                         <option value="365">Past year</option>
-                        <option value="0">All time</option>
+                        <option value="0" {{ 'selected' if demo_mode else '' }}>All time</option>
                     </select>
                     <input type="search" id="txnSearch" class="form-control form-control-sm" placeholder="Filter by symbol…" style="width:160px;">
                     <select id="txnActionFilter" class="form-select form-select-sm" style="width:130px;">
@@ -878,7 +902,8 @@
     </div><!-- /#trackerPage -->
 
     <!-- ============================================================ SIMULATOR PAGE -->
-    <div id="simulatorPage" style="display:none">
+    <div id="simulatorPage" data-secondary-tool {{ '' if secondary_tools_enabled else 'hidden' }} style="display:none">
+        {% if demo_mode %}<div class="demo-action-note">Illustrative simulation · Prices and returns are generated sample data, not historical market results.</div>{% endif %}
         <header class="workspace-heading">
             <h1>Portfolio simulator</h1>
             <p>Explore allocations and compare how a strategy would have performed.</p>
@@ -1073,7 +1098,8 @@
     </div><!-- /#simulatorPage -->
 
     <!-- ============================================================ ANALYSIS PAGE -->
-    <div id="analysisPage" style="display:none">
+    <div id="analysisPage" data-secondary-tool {{ '' if secondary_tools_enabled else 'hidden' }} style="display:none">
+        {% if demo_mode %}<div class="demo-action-note">Sample report · Explore the report layout. Live market analysis and AI generation are disabled in this demo.</div>{% endif %}
         <div class="analysis-toolbar mb-4">
             <div>
                 <h4 class="mb-1"><i class="bi bi-clipboard-data me-2"></i>Investment Analysis</h4>
@@ -1099,7 +1125,7 @@
                         <button class="btn btn-outline-secondary analysis-period-btn" data-period="1y">1Y</button>
                     </div>
                     <button id="generateAnalysisBtn" class="btn btn-success btn-sm">
-                        <i class="bi bi-stars me-1"></i><span>Generate Report</span>
+                        <i class="bi bi-stars me-1"></i><span>{{ 'Open Sample Report' if demo_mode else 'Generate Report' }}</span>
                     </button>
                 </div>
             </div>
@@ -1155,7 +1181,7 @@
                     <div id="tickerTechnicalsLoading" class="text-center py-5" role="status"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Loading moving averages…</div>
                     <div id="tickerTechnicalsError" class="alert alert-warning d-none" role="alert"><span id="tickerTechnicalsErrorMessage"></span> <button id="tickerTechnicalsRetry" class="btn btn-sm btn-outline-secondary" type="button">Retry</button></div>
                     <div id="tickerTechnicalsContent" class="d-none" aria-live="polite">
-                        <div class="ticker-ma-quote"><span>Latest market price</span><strong id="tickerTechnicalsPrice">--</strong><small id="tickerTechnicalsQuoteTime"></small></div>
+                        <div class="ticker-ma-quote"><span>{{ 'Simulated price' if demo_mode else 'Latest market price' }}</span><strong id="tickerTechnicalsPrice">--</strong><small id="tickerTechnicalsQuoteTime"></small></div>
                         <p id="tickerTechnicalsSummary" class="fw-semibold mt-3 mb-3"></p>
                         <div class="ticker-ma-grid">
                             <div class="ticker-ma-card"><h6><span class="ticker-ma-key is-50"></span>50-day SMA</h6><strong id="tickerSma50">--</strong><div id="tickerSma50Comparison" class="ticker-ma-comparison"></div></div>
@@ -1163,7 +1189,7 @@
                         </div>
                         <div id="tickerTechnicalsChartWrap" class="ticker-ma-chart"><canvas id="tickerTechnicalsChart" role="img" aria-label="Last six months of daily closes and 50-day and 200-day moving averages"></canvas></div>
                         <p id="tickerTechnicalsBasis" class="small text-muted mt-3 mb-2"></p>
-                        <p class="small text-muted mb-0">Above / below measures distance from each average, not today's gain or loss. Source: Yahoo Finance.</p>
+                        <p class="small text-muted mb-0">Above / below measures distance from each average, not today's gain or loss. {{ 'Source: generated demo data.' if demo_mode else 'Source: Yahoo Finance.' }}</p>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -1198,8 +1224,9 @@
     <script src="/static/js/trade-preview.js?v=1"></script>
     <script src="/static/js/today-pnl.js?v=2"></script>
     <script src="/static/js/transaction-updates.js?v=1"></script>
-    <script src="/static/js/ticker-technicals.js?v=1"></script>
-    <script src="/static/js/app.js?v=150"></script>
+    <script src="/static/js/ticker-technicals.js?v=2"></script>
+    {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=1"></script>{% endif %}
+    <script src="/static/js/app.js?v=153"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

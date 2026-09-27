@@ -28,6 +28,10 @@ window.TickerTechnicalsUI = (() => {
             comparison.className = 'ticker-ma-comparison ' + (average.position === 'above' ? 'text-success' : average.position === 'below' ? 'text-danger' : 'text-muted');
         }
         el('tickerTechnicalsBasis').textContent = `Simple averages of the last 50 / 200 ${data.day_basis}, through ${data.history_as_of || 'unavailable'}. Today's daily bar is excluded. Prices are split-adjusted, without dividend adjustment.`;
+        if (data.demo) {
+            el('tickerTechnicalsQuoteTime').textContent = 'Simulated quote · For demonstration only';
+            el('tickerTechnicalsBasis').textContent = 'Averages of synthetic daily closes. This sample includes 181 days; 200-day history is unavailable.';
+        }
         const positions = data.averages.map(a => a.position);
         el('tickerTechnicalsSummary').textContent = positions.every(p => p === 'above') ? 'Price is above both moving averages.'
             : positions.every(p => p === 'below') ? 'Price is below both moving averages.'

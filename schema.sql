@@ -32,6 +32,19 @@ CREATE INDEX IF NOT EXISTS idx_transactions_asset ON transactions (asset);
 CREATE INDEX IF NOT EXISTS idx_transactions_date  ON transactions (date);
 CREATE INDEX IF NOT EXISTS idx_transactions_executed_at ON transactions (executed_at);
 
+-- Normalize known broker names on existing rows. Exact-label matching keeps
+-- separately named accounts distinct; no trade values or identifiers change.
+UPDATE transactions AS t
+SET broker = names.canonical
+FROM (VALUES
+    ('fidelity', 'Fidelity'),
+    ('okx', 'OKX'),
+    ('binance.us', 'Binance.US'),
+    ('schwab', 'Schwab')
+) AS names(key, canonical)
+WHERE lower(btrim(t.broker)) = names.key
+  AND t.broker IS DISTINCT FROM names.canonical;
+
 -- Target allocation percentages (replaces data/targets.json).
 CREATE TABLE IF NOT EXISTS targets (
     symbol     TEXT PRIMARY KEY,

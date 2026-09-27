@@ -73,6 +73,7 @@ class PriceService:
         ] = {}
         self._previous_market_session_cache: dict[date, date] = {}
         self._crypto_midnight_cache: dict[str, tuple[dict, datetime]] = {}
+        self._crypto_midnight_cache_market_date: dict[str, date] = {}
         self._intraday_cache: dict[str, tuple[list, datetime]] = {}
         self._stale_intraday_keys: set[str] = set()
 
@@ -409,24 +410,24 @@ class PriceService:
         """Return True if this symbol is a 24/7 crypto asset."""
         return any(symbol.endswith(s) for s in ('-USD', '-USDT', '-BTC', '-ETH'))
 
-    def _get_crypto_est_midnight_price_batch(self, symbols: list[str]) -> dict[str, Optional[Decimal]]:
-        """For crypto, return the price at the most recent EST midnight using 1h data."""
-        import pytz
-        from datetime import datetime as dt
-
+    def _get_crypto_est_midnight_price_batch(
+        self, symbols: list[str], target_date: Optional[date] = None
+    ) -> dict[str, Optional[Decimal]]:
+        """Return the completed close at the start of an Eastern calendar day."""
+        target_date = target_date or _market_today()
         cache_key = str(sorted(symbols))
         if cache_key in self._crypto_midnight_cache:
             data, cached_at = self._crypto_midnight_cache[cache_key]
-            if datetime.now() - cached_at < self.cache_ttl:
+            if (
+                self._crypto_midnight_cache_market_date.get(cache_key) == target_date
+                and datetime.now() - cached_at < self.cache_ttl
+            ):
                 return data
 
-        est = pytz.timezone('US/Eastern')
-        now_est = dt.now(est)
-        # Today's midnight in EST (start of today)
-        midnight_est = est.localize(dt(now_est.year, now_est.month, now_est.day, 0, 0, 0))
-        midnight_utc = midnight_est.astimezone(pytz.utc)
+        midnight_et = datetime.combine(target_date, datetime.min.time(), tzinfo=MARKET_TZ)
+        midnight_utc = midnight_et.astimezone(ZoneInfo("UTC"))
 
-        logger.info(f"Crypto baseline: using EST midnight = {midnight_est} (UTC: {midnight_utc})")
+        logger.info("Crypto baseline: using ET midnight = %s (UTC: %s)", midnight_et, midnight_utc)
 
         results = {}
         for symbol in symbols:
@@ -442,14 +443,24 @@ class PriceService:
                 if history.index.tzinfo is None:
                     history.index = history.index.tz_localize('UTC')
                 else:
-                    history.index = history.index.tz_convert(pytz.utc)
+                    history.index = history.index.tz_convert('UTC')
 
-                # Find the last candle whose open time is <= midnight UTC
-                before = history[history.index <= midnight_utc]
-                if before.empty:
-                    results[symbol] = Decimal(str(history['Close'].iloc[0]))
-                else:
-                    results[symbol] = Decimal(str(before['Close'].iloc[-1]))
+                # Hour bars are labelled by their opening time. The 23:00
+                # bar closes at midnight; the 00:00 Close includes the next
+                # hour's return (and is still changing just after midnight).
+                # Only accept an exact boundary, never an older/future row.
+                results[symbol] = None
+                for timestamp, field in (
+                    (midnight_utc - timedelta(hours=1), "Close"),
+                    (midnight_utc, "Open"),
+                ):
+                    boundary = history[history.index == timestamp]
+                    if boundary.empty or field not in boundary:
+                        continue
+                    price = Decimal(str(boundary[field].iloc[-1]))
+                    if price.is_finite() and price > 0:
+                        results[symbol] = price
+                        break
 
                 logger.info(f"Crypto EST midnight price for {symbol}: {results[symbol]}")
 
@@ -458,6 +469,7 @@ class PriceService:
                 results[symbol] = None
 
         self._crypto_midnight_cache[cache_key] = (results, datetime.now())
+        self._crypto_midnight_cache_market_date[cache_key] = target_date
         return results
 
     def get_historical_prices_est_midnight_batch(
@@ -713,7 +725,7 @@ class PriceService:
 
         # --- Crypto: use EST midnight price ---
         if crypto_symbols:
-            crypto_results = self._get_crypto_est_midnight_price_batch(crypto_symbols)
+            crypto_results = self._get_crypto_est_midnight_price_batch(crypto_symbols, today)
             results.update(crypto_results)
 
         # --- Stocks: use last daily close ---
@@ -1125,6 +1137,7 @@ class PriceService:
         self._locked_prev_close_cache.clear()
         self._previous_market_session_cache.clear()
         self._crypto_midnight_cache.clear()
+        self._crypto_midnight_cache_market_date.clear()
         self._intraday_cache.clear()
         self._stale_intraday_keys.clear()
 

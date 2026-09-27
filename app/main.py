@@ -13,13 +13,14 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 from . import repository
+from .brokers import normalize_broker
 from .analysis_service import (
     AnalysisConfigurationError,
     AnalysisGenerationError,
@@ -34,6 +35,7 @@ from .portfolio import Portfolio
 from .price_service import price_service
 from .split_service import split_service
 from .simulator import run_simulation
+from .scheduler_auth import SCHEDULER_PATH, verify_scheduler_token
 from .ticker_technicals import ticker_technicals
 
 # Configure logging
@@ -77,16 +79,30 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # the health check must carry "Authorization: Bearer <API_TOKEN>". When it's
 # unset (local dev), auth is disabled.
 API_TOKEN = os.environ.get("API_TOKEN")
+MARKET_REFRESH_MODE = os.environ.get("MARKET_REFRESH_MODE", "background")
+if MARKET_REFRESH_MODE not in {"background", "scheduler"}:
+    raise ValueError("MARKET_REFRESH_MODE must be background or scheduler")
 _PUBLIC_PREFIXES = ("/static", "/healthz", "/api/healthz", "/favicon", "/sw.js", "/manifest.webmanifest")
 
 
 @app.middleware("http")
 async def require_token(request: Request, call_next):
+    path = request.url.path
+    header = request.headers.get("Authorization", "")
+    token = header[7:] if header.startswith("Bearer ") else ""
+    if path == SCHEDULER_PATH:
+        # Even local dev must fail closed for this separate machine identity.
+        # An app API token cannot stand in for a Google-signed scheduler token.
+        if request.method != "POST":
+            return JSONResponse({"detail": "Method not allowed"}, status_code=405)
+        try:
+            await asyncio.to_thread(verify_scheduler_token, token)
+        except Exception:
+            # Do not log the bearer token or decoded private claims.
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
     if API_TOKEN:
-        path = request.url.path
-        if path != "/" and not path.startswith(_PUBLIC_PREFIXES):
-            header = request.headers.get("Authorization", "")
-            token = header[7:] if header.startswith("Bearer ") else ""
+        if path not in {"/", "/demo"} and not path.startswith(_PUBLIC_PREFIXES):
             if token != API_TOKEN:
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
@@ -169,7 +185,10 @@ def _queue_ledger_reload() -> None:
         portfolio = None
         _portfolio_generation += 1
     _clear_api_cache()
-    _start_ledger_reload()
+    # A request-billed instance may lose CPU as soon as this save returns.
+    # The next reader rebuilds the committed ledger inside its own request.
+    if MARKET_REFRESH_MODE == "background":
+        _start_ledger_reload()
 
 
 async def _commit_ledger_write(writer, *args, **kwargs):
@@ -303,7 +322,8 @@ async def _dashboard_response(key: str, builder, wait_for_fresh: bool = False) -
             task.add_done_callback(finished)
 
         stale = _get_stale_api_cache(key, timedelta(days=1))
-        if stale is not None and not wait_for_fresh:
+        if (stale is not None and not wait_for_fresh
+                and MARKET_REFRESH_MODE == "background"):
             with _api_cache_lock:
                 cached_at = _api_cache.get(key, ({}, datetime.now()))[1]
             return {**stale, "cache_status": "stale",
@@ -675,6 +695,30 @@ async def refresh_today_intraday():
         raise HTTPException(status_code=503, detail="Today data could not be refreshed. Please retry.")
 
 
+@app.post(SCHEDULER_PATH, include_in_schema=False)
+async def scheduled_market_refresh():
+    """Hold the Scheduler request open until minute bars are persisted.
+
+    Return only operational metadata: this identity cannot read portfolio data
+    or write transactions. Partial upstream results remain persisted, but return
+    a retryable failure instead of reporting a successful scheduled collection.
+    """
+    result = await refresh_today_intraday()
+    if result.get("cache_status") != "fresh" or not result.get("intraday"):
+        logger.warning("Scheduled market refresh incomplete")
+        raise HTTPException(status_code=503, detail="Market data collection incomplete")
+    logger.info(
+        "Scheduled market refresh completed: %s points, computed_at=%s, reused=%s",
+        len(result["intraday"]), result.get("computed_at"),
+        result.get("refresh_skipped", False),
+    )
+    return {
+        "status": "ok", "date": result["date"],
+        "computed_at": result.get("computed_at"),
+        "points": len(result["intraday"]),
+    }
+
+
 async def _market_refresh_loop() -> None:
     """Refresh on a fixed start-to-start cadence, including calculation time."""
     loop = asyncio.get_running_loop()
@@ -731,10 +775,13 @@ async def startup_event():
         if holding.symbol != "CASH"
     ]
     price_service.prime_intraday_cache_from_db(symbols, interval="1m")
-    await _refresh_today_snapshot()
-    _market_refresh_task = asyncio.create_task(
-        _market_refresh_loop(), name="market-snapshot-refresh"
-    )
+    if MARKET_REFRESH_MODE == "background":
+        await _refresh_today_snapshot()
+        _market_refresh_task = asyncio.create_task(
+            _market_refresh_loop(), name="market-snapshot-refresh"
+        )
+    else:
+        logger.info("Market refresh mode: scheduler; in-process timer disabled")
 
 
 @app.on_event("shutdown")
@@ -747,14 +794,13 @@ async def shutdown_event():
         await asyncio.gather(_ledger_reload_task, return_exceptions=True)
     if _dashboard_tasks:
         await asyncio.gather(*list(_dashboard_tasks.values()), return_exceptions=True)
-    if _market_refresh_task is None:
-        return
-    _market_refresh_task.cancel()
-    try:
-        await _market_refresh_task
-    except asyncio.CancelledError:
-        pass
-    _market_refresh_task = None
+    if _market_refresh_task is not None:
+        _market_refresh_task.cancel()
+        try:
+            await _market_refresh_task
+        except asyncio.CancelledError:
+            pass
+        _market_refresh_task = None
     # A shielded collector may still be persisting bars after its caller exits.
     if _today_refresh_task is not None:
         await asyncio.gather(_today_refresh_task, return_exceptions=True)
@@ -764,6 +810,12 @@ async def shutdown_event():
 async def index(request: Request):
     """Serve the main dashboard page."""
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/demo", response_class=HTMLResponse)
+async def demo(request: Request):
+    """Public, synthetic portfolio shell; never read the private portfolio."""
+    return templates.TemplateResponse("index.html", {"request": request, "demo_mode": True})
 
 
 @app.get("/api/holdings")
@@ -886,6 +938,11 @@ class TransactionCreate(BaseModel):
     comment: Optional[str] = None
     broker: Optional[str] = None
     transaction_time: Optional[time_type] = None
+
+    @field_validator("broker")
+    @classmethod
+    def canonical_broker(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_broker(value)
 
 
 @app.post("/api/transactions")
@@ -1274,7 +1331,7 @@ async def get_intraday(
 
     if target_date == today:
         stale = _get_stale_api_cache(cache_key, timedelta(minutes=15))
-        if stale is not None:
+        if stale is not None and MARKET_REFRESH_MODE == "background":
             if interval == "1m":
                 background_tasks.add_task(_refresh_today_snapshot)
             else:
