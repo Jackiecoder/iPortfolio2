@@ -2668,7 +2668,7 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .weekly-pnl-header, .monthly-pnl-header { font-family: var(--body-font); font-size: 11px; font-weight: 700; letter-spacing: 0; }
 .weekly-pnl-grid, .monthly-pnl-grid { border-radius: 10px; }
 #holdingsTable, #txnTable { font-variant-numeric: tabular-nums; }
-#holdingsTable th:first-child, #holdingsTable td:first-child { min-width: 140px; white-space: nowrap; }
+#holdingsTable > :is(thead, tbody) > tr > [data-col="0"] { min-width: 120px; width: 1%; white-space: nowrap; }
 /* Keep position names and column headings visible in the same scroll area. */
 .holdings-table-scroll {
     max-height: 70vh;
@@ -2826,6 +2826,17 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     .table > thead th { font-size: 10px; padding: 12px 10px; }
     .table > tbody td { font-size: 11px; padding: 12px 10px; }
     .table .asset-icon { height: 23px; margin-right: 5px; width: 23px; }
+    /* Leave more of the scrollable data visible beside the frozen symbol. */
+    #holdingsTable > :is(thead, tbody) > tr > [data-col="0"] {
+        min-width: 104px;
+        width: 104px;
+        padding-inline: 8px;
+    }
+    #holdingsTable > tbody > tr > [data-col="0"] .asset-icon { height: 20px; width: 20px; margin-right: 4px; padding: 2px; }
+    #holdingsTable .holding-chevron { margin-right: 3px !important; }
+    #holdingsTable > tbody > tr > [data-col="0"] .trade-activity { max-width: 88px; white-space: normal; }
+    #holdingsTable > tbody > tr > [data-col="0"] .trade-activity-badge { max-width: 100%; white-space: normal; }
+
     .card .btn-group { flex-wrap: wrap; gap: 4px 0; }
     .card .btn-group .btn { font-size: 10px; }
     .ticker-history-header { align-items: stretch; flex-direction: column; }

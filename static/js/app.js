@@ -1433,6 +1433,7 @@ function buildTotalRowHtml(holdings, totalInvValue) {
 function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, categoryTargetSums, totalInvestedCost) {
     const catColors = { 'Crypto': '#f59e0b', 'Index': '#2563eb', 'Individual Stocks': '#8b5cf6', 'Cash': '#087f65' };
     const color = catColors[catName] || '#6b7280';
+    const displayName = catName === 'Individual Stocks' ? 'Stocks' : catName;
     const mv = catHoldings.reduce((s, h) => s + (h.market_value || 0), 0);
     const cost = catHoldings.reduce((s, h) => s + (h.cost_basis || 0), 0);
     const pnl = catHoldings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0);
@@ -1475,7 +1476,7 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
 
     return `
         <tr class="category-header-row" style="background-color: #fef9e7; border-left: 4px solid ${color};">
-            <td data-col="0"><span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px;margin-right:6px;"></span><strong>${catName}</strong> <span class="text-muted">(${catHoldings.length})</span></td>
+            <td data-col="0"><span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px;margin-right:6px;"></span><strong>${displayName}</strong> <span class="text-muted">(${catHoldings.length})</span></td>
             <td data-col="1"></td><td data-col="2"></td>
             <td data-col="4" class="${dailyClass}"><strong>${formatPercent(mv > 0 ? (daily / (mv - daily) * 100) : 0)}</strong></td>
             <td data-col="5" class="${dailyClass}"><strong>${dailySign}${formatCurrencyAlways(daily)}</strong></td>
