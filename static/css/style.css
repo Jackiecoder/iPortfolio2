@@ -2914,8 +2914,53 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 
 /* Preserve paused tools in the template without exposing buttons or content. */
 [data-secondary-tool][hidden] { display: none !important; }
-@media (max-width: 767.98px) {
-    [data-secondary-tools="hidden"] .navbar .container-fluid > .page-switcher {
-        grid-template-columns: minmax(0, 1fr) !important;
+/* A single workspace needs only a compact toolbar, not an empty side rail. */
+body[data-secondary-tools="hidden"] { padding-left: 0; }
+@media (min-width: 992px) {
+    [data-secondary-tools="hidden"] .app-navbar {
+        bottom: auto;
+        height: auto;
+        padding: 12px 0;
+        position: sticky;
+        width: 100%;
     }
+    [data-secondary-tools="hidden"] .app-navbar .container-fluid {
+        align-items: center;
+        flex-direction: row;
+        gap: 24px;
+        height: auto;
+        justify-content: space-between;
+        max-width: 1680px;
+        padding: 0 clamp(20px, 2.5vw, 48px);
+    }
+    [data-secondary-tools="hidden"] .app-navbar .navbar-brand { margin: 0; padding: 0; }
+    [data-secondary-tools="hidden"] .brand-tagline { display: none; }
+    [data-secondary-tools="hidden"] .app-navbar .nav-actions {
+        align-items: center !important;
+        border: 0;
+        display: flex !important;
+        gap: 8px !important;
+        margin: 0;
+        padding: 0;
+        width: auto;
+    }
+    [data-secondary-tools="hidden"] .nav-actions .btn { height: 40px; min-height: 40px; padding-inline: 12px; }
+    [data-secondary-tools="hidden"] .nav-actions #anonymousBtn { padding: 0; width: 40px; }
+    [data-secondary-tools="hidden"] .nav-actions #addTxnBtn { background: #fff; border-color: #fff; color: #19365a; }
+    [data-secondary-tools="hidden"] .nav-actions #addTxnBtn:hover { background: #edf3ff; border-color: #edf3ff; }
+    [data-secondary-tools="hidden"] .nav-refresh-controls {
+        align-items: center;
+        border-left: 1px solid #496281;
+        gap: 10px;
+        margin-left: 4px;
+        padding-left: 14px;
+    }
+    [data-secondary-tools="hidden"] .nav-actions #refreshBtn {
+        flex: 0 0 40px;
+        min-height: 40px;
+        padding: 0;
+        width: 40px;
+    }
+    [data-secondary-tools="hidden"] .nav-actions .refresh-label { display: none; }
+    [data-secondary-tools="hidden"] .app-shell { padding-top: 24px !important; }
 }

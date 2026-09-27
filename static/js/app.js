@@ -5815,7 +5815,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // -----------------------------------------------------------------------
     // Only initialize tools currently exposed by the page.
     // -----------------------------------------------------------------------
-    document.getElementById('pageTrackerBtn').addEventListener('click', () => switchPage('tracker'));
+    document.getElementById('pageTrackerBtn')?.addEventListener('click', () => switchPage('tracker'));
     if (!document.getElementById('simulatorPage').hidden) initSimulator();
     if (!document.getElementById('analysisPage').hidden) initAnalysis();
 });
@@ -5917,9 +5917,11 @@ function switchPage(page) {
 
     Object.entries(pageElements).forEach(([name, element]) => {
         element.style.display = name === page ? '' : 'none';
-        pageButtons[name].className = name === page
-            ? 'btn btn-light btn-sm px-3'
-            : 'btn btn-outline-light btn-sm px-3';
+        if (pageButtons[name]) {
+            pageButtons[name].className = name === page
+                ? 'btn btn-light btn-sm px-3'
+                : 'btn btn-outline-light btn-sm px-3';
+        }
     });
 
     if (page === 'analysis' && !analysisReportsLoaded) {
