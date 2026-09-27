@@ -2130,7 +2130,10 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .intraday-date-nav { background: #f5f7fb; border: 1px solid var(--slate-200); border-radius: 9px; padding: 2px; }
 .intraday-date-nav .btn, .intraday-date-nav .form-control { background: transparent; border: 0; min-height: 32px; }
 #intradayDatePicker { flex-basis: 135px; font-size: 11px; width: 135px; }
-#intradayFreshnessBadge { background: var(--cobalt-soft); border: 1px solid #dce3fa; border-radius: 7px; color: var(--cobalt-dark); font-size: 11px; font-weight: 600; padding: 6px 9px; white-space: nowrap; }
+#intradayFreshnessBadge { background: #f1f4f8; border: 1px solid var(--slate-200); border-radius: 7px; color: var(--slate-600); font-size: 11px; font-weight: 600; padding: 6px 9px; white-space: nowrap; }
+#intradayFreshnessBadge[data-freshness="fresh"] { background: #e8f6ef; border-color: #bfe4ce; color: #167447; }
+#intradayFreshnessBadge[data-freshness="recent"] { background: var(--cobalt-soft); border-color: #dce3fa; color: var(--cobalt-dark); }
+#intradayFreshnessBadge[data-freshness="stale"] { background: #fff4cc; border-color: #efd487; color: #8a6100; }
 #intradayUpdatedAt { flex-basis: 100%; font-size: 10px; text-align: right; }
 .movers-card .card-header { border-bottom: 0 !important; }
 .movers-card .card-body { padding-top: 2px; }
@@ -2666,6 +2669,45 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .weekly-pnl-grid, .monthly-pnl-grid { border-radius: 10px; }
 #holdingsTable, #txnTable { font-variant-numeric: tabular-nums; }
 #holdingsTable th:first-child, #holdingsTable td:first-child { min-width: 140px; white-space: nowrap; }
+/* Keep position names and column headings visible in the same scroll area. */
+.holdings-table-scroll {
+    max-height: 70vh;
+    max-height: 70dvh;
+    overflow: auto;
+    position: relative;
+    isolation: isolate;
+    scroll-padding-top: 3.25rem;
+}
+.holdings-table-scroll:focus-visible {
+    outline: 2px solid var(--cobalt);
+    outline-offset: -2px;
+}
+#holdingsTable > thead > tr > th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    box-shadow: inset 0 -1px var(--slate-200);
+}
+#holdingsTable > tbody > tr > td[data-col="0"] {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background-color: #fff;
+}
+#holdingsTable > tbody > .total-row > td[data-col="0"] {
+    background-color: #f1f4f8;
+}
+#holdingsTable > thead > tr > th[data-col="0"] {
+    left: 0;
+    z-index: 3;
+}
+#holdingsTable > :is(thead, tbody) > tr > [data-col="0"]::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: 1px;
+    background: var(--slate-200);
+}
 /* Trade colors describe position changes; P&L colors still describe gains/losses. */
 .trade-activity { margin-top: 4px; line-height: 1.3; }
 .trade-activity-badge {

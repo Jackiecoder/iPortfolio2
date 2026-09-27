@@ -3273,14 +3273,19 @@ function updateIntradayTimestamp() {
         updated.textContent = '';
         badge.textContent = '--';
         badge.title = 'Last chart update';
+        badge.setAttribute('data-freshness', 'unknown');
         badge.setAttribute('aria-label', 'Last update time unavailable');
         return;
     }
     const minutes = Math.max(0, Math.floor((Date.now() - timestamp.getTime()) / 60000));
-    const age = minutes === 0 ? 'Just now' : minutes === 1 ? '1 minute ago' : `${minutes.toLocaleString('en-US')} minutes ago`;
+    const age = minutes === 0 ? 'Just now'
+        : minutes < 60 ? `${minutes} min ago`
+        : minutes < 1440 ? `${Math.floor(minutes / 60)} h ago`
+        : `${Math.floor(minutes / 1440)} d ago`;
     const date = timestamp.toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
     const time = timestamp.toLocaleTimeString([], {timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit'});
     badge.textContent = age;
+    badge.setAttribute('data-freshness', minutes < 15 ? 'fresh' : minutes < 60 ? 'recent' : 'stale');
     badge.title = `Last updated ${date} ${time} ET`;
     badge.setAttribute('aria-label', `Last updated: ${age}`);
     updated.textContent = `Chart updated ${date} ${time} ET${renderedIntraday.stale_symbols?.length ? ' · Some prices are cached' : ''}`;
