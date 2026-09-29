@@ -1318,7 +1318,7 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
 
     return `
     <tr class="holding-row" data-symbol="${h.symbol}" style="cursor:pointer;">
-        <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong>${buildTradeActivityHtml(h)}</td>
+        <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong>${buildTradeActivityHtml(h)}${h.symbol !== 'CASH' && !h.symbol.endsWith('-USD') ? `<span class="holding-cc-slot" data-cc-symbol="${escapeHtml(h.symbol)}" data-cc-quantity="${Number(h.quantity)}" data-cc-pending="${Boolean(h.ledger_pending || h.quantity_pending)}"></span>` : ''}</td>
         <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)}</div><div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</div>` : ''}</td>
         <td data-col="2">${formatPrice(h.symbol, h.avg_cost)}</td>
         <td data-col="4">${formatPrice(h.symbol, h.current_price, true)} ${dailyChangePctHtml}</td>
@@ -1590,6 +1590,7 @@ function renderHoldingsTable(holdings) {
             if (holding?.quantity_pending) row.querySelector('[data-col="1"]').innerHTML = pendingValueHtml();
         });
     }
+    window.coveredCallsUI?.renderHoldings();
     updateSortIndicators();
 }
 
@@ -5457,6 +5458,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Holdings row expand/collapse transaction detail
     document.getElementById('holdingsBody').addEventListener('click', (e) => {
+        if (e.target.closest('[data-cc-coverage]')) return;
         // Handle target % inline editing
         const targetCell = e.target.closest('.target-pct-cell');
         if (targetCell && !targetCell.querySelector('input')) {

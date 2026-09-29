@@ -24,7 +24,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=63">
+    <link rel="stylesheet" href="/static/css/style.css?v=64">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -347,7 +347,7 @@
             </div>
         </div>
 
-        <p id="ccScopeNote" class="small text-muted d-none">Stock, crypto and cash totals exclude option valuations. See Covered Calls for option cash flows and realized P&amp;L.</p>
+        <p id="ccScopeNote" class="small text-muted d-none">Stock, crypto and cash totals exclude option valuations. See Option for option cash flows and realized P&amp;L.</p>
         </div>
         <div id="transactionUpdateNotice" class="transaction-update-notice d-none" role="status" aria-live="polite">
             <span class="value-spinner" aria-hidden="true"></span>
@@ -378,7 +378,7 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="covered-calls-tab" data-bs-toggle="pill" data-bs-target="#trackerCoveredCalls" type="button" role="tab" aria-controls="trackerCoveredCalls" aria-selected="false"><i class="bi bi-shield-check me-1"></i>Covered Calls</button>
+                <button class="nav-link" id="covered-calls-tab" data-bs-toggle="pill" data-bs-target="#trackerCoveredCalls" type="button" role="tab" aria-controls="trackerCoveredCalls" aria-selected="false"><i class="bi bi-shield-check me-1"></i>Option</button>
             </li>
         </ul>
 
@@ -845,6 +845,8 @@
             </div>
         </div>
 
+        <p class="holding-cc-legend small text-muted">CC = Covered Call. Open = recorded contracts still outstanding; available = additional contracts your free shares can cover, counted separately per account. Tap a CC label for details.</p>
+
         <!-- Category Summary Table -->
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white border-0">
@@ -1268,10 +1270,10 @@
     <script src="/static/js/today-pnl.js?v=2"></script>
     <script src="/static/js/transaction-updates.js?v=1"></script>
     <script src="/static/js/ticker-technicals.js?v=2"></script>
-    {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=2"></script>{% endif %}
+    {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=3"></script>{% endif %}
     <script src="/static/js/holdings-layout.js?v=1"></script>
-    <script src="/static/js/covered-calls.js?v=1"></script>
-    <script src="/static/js/app.js?v=157"></script>
+    <script src="/static/js/covered-calls.js?v=2"></script>
+    <script src="/static/js/app.js?v=158"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

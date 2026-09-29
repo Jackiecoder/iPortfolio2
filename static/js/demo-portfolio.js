@@ -215,7 +215,7 @@
             if (path === '/api/holdings' || path === '/api/positions') return response({ ...stamp(), holdings });
             if (path === '/api/targets') return response({ ...targets });
             if (path === '/api/transactions') return response({ transactions });
-            if (path === '/api/covered-calls') return response({ calls: [], inventory: [], summary: { open_contracts: 0, net_cash_flow: 0, realized_option_pnl: 0, unrealized_option_pnl: null } });
+            if (path === '/api/covered-calls') return response({ calls: [], inventory: holdings.filter(h => h.symbol !== 'CASH' && !h.symbol.endsWith('-USD')).map(h => ({ asset: h.symbol, broker: 'Demo account', shares: h.quantity, reserved_shares: 0, available_shares: h.quantity, available_contracts: Math.floor(h.quantity / 100) })), summary: { open_contracts: 0, net_cash_flow: 0, realized_option_pnl: 0, unrealized_option_pnl: null } });
             if (path.startsWith('/api/transactions/')) {
                 return response({ transactions: transactions.filter(t => t.asset === decodeURIComponent(path.split('/').at(-1))) });
             }

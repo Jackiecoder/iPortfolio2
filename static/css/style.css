@@ -3076,3 +3076,21 @@ body[data-secondary-tools="hidden"] { padding-left: 0; }
   .cc-card { padding:16px; }
   #coveredCallModal .form-label { font-size:.8rem; }
 }
+
+/* Compact coverage markers preserve the frozen Symbol column's width. */
+.holding-cc-slot { display:block; margin-top:5px; white-space:normal; }
+.holding-cc-badge { display:inline-block; max-width:100%; border:1px solid currentColor; border-radius:5px; padding:3px 5px; background:transparent; font-size:10px; line-height:1.35; text-align:left; white-space:normal; font-variant-numeric:tabular-nums; }
+.holding-cc-badge span { display:block; font-weight:400; }
+.holding-cc-badge:focus-visible { outline:2px solid var(--bs-primary); outline-offset:2px; }
+.holding-cc-open { color:#916006; background:#fff8e7; }
+.holding-cc-available { color:#14623e; background:#edf9f2; }
+.holding-cc-muted { color:var(--bs-secondary-color, #64748b); }
+.holding-cc-legend { margin:0 4px 18px; font-size:.75rem; }
+.holding-cc-account { padding:12px 0; border-bottom:1px solid var(--bs-border-color); }
+.holding-cc-account h6, .holding-cc-contracts li { overflow-wrap:anywhere; }
+.holding-cc-account dl { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:12px 0 0; }
+.holding-cc-account dt { font-size:.75rem; font-weight:400; color:var(--bs-secondary-color); }
+.holding-cc-account dd { margin:2px 0 0; font-weight:600; }
+.holding-cc-contracts { padding-left:20px; font-size:.85rem; }
+.holding-cc-contracts li { margin-bottom:8px; }
+.holding-cc-contracts span { color:var(--bs-secondary-color); }

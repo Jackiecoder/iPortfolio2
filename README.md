@@ -168,7 +168,15 @@ use isolated schemas and cover concurrent sales, rollback, deletion and reload.
 
 ## Covered calls
 
-Open **Tracker → Covered Calls → Record sell to open** to record an actual broker
+The **Option** tab supports **Covered Call** only. Holdings shows each stock's
+open covered calls and additional available contracts. Tap its CC label for
+reserved/free shares and account details. Capacity is summed only after rounding
+down within each account (60 shares in each of two accounts still cover no call).
+These indicators use recorded fills, not pending broker orders; an unconfirmed
+expiration continues to reserve shares. Missing, stale or adjusted-contract data
+shows a status instead of an optimistic capacity. Anonymous mode masks quantities.
+
+Open **Tracker → Option → Record sell to open** to record an actual broker
 fill. Select the stock and broker/account, execution date/time (Eastern), expiry,
 strike, integer contract count, premium **per share**, and total fees. One standard
 contract reserves 100 shares in that account. The record does not place a broker

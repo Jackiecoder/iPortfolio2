@@ -94,6 +94,7 @@ test('the rendered Holdings row, total and category amounts use the displayed sn
         baseHoldingsData: [], holdingsData: [], anonymousMode: false,
         targetAllocations: {}, targetGroups: {}, symbolToGroup: {},
         holdingsSortColumn: 'symbol', holdingsSortDirection: 'asc', holdingsViewMode: 'category',
+        window: {},
         document: { getElementById: id => id === 'holdingsBody' ? tbody : category, querySelectorAll: () => [] },
         setDashboardStatus: (id, text) => status[id] = text,
         formatCurrencyAlways: n => '$' + Number(n || 0).toFixed(2),

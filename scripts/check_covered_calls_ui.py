@@ -46,6 +46,7 @@ def run():
             repository.insert_transaction(Transaction(date='2026-01-02', asset='MRVL', action='BUY', quantity=150, ave_price=263, broker='Schwab'))
             env = Environment(loader=FileSystemLoader(ROOT / 'templates'), autoescape=select_autoescape())
             errors, requests = [], []
+            fail_coverage = [False]
             def route_request(route):
                 request = route.request
                 path = urlparse(request.url).path
@@ -61,6 +62,8 @@ def run():
                     body = json.loads(request.post_data or '{}')
                     try:
                         if path == '/api/covered-calls':
+                            if fail_coverage[0] and request.method == 'GET':
+                                raise ValueError('Synthetic coverage outage')
                             result = calls.list_calls() if request.method == 'GET' else {'call': calls.create_call(CallOpen(**body)), 'message': 'Covered call recorded'}
                         elif path.endswith('/events'):
                             result = {'call': calls.record_event(int(path.split('/')[-2]), CallEvent(**body)), 'message': 'Event recorded'}
@@ -80,16 +83,32 @@ def run():
                 context.add_init_script(adapter + """
                   const testNativeFetch = window.fetch.bind(window);
                   const testDemo = window.DemoPortfolio.create();
-                  window.fetch = (input, init) => {
+                  window.fetch = async (input, init) => {
                     const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
                     if (path.startsWith('/api/covered-calls') || path === '/api/transactions/preview-sale') return testNativeFetch(input, init);
+                    if (['/api/positions', '/api/holdings', '/api/summary'].includes(path)) {
+                      const demo = await (await testDemo.fetch(input, init)).json();
+                      const cc = await (await testNativeFetch('/api/covered-calls')).json();
+                      const shares = cc.inventory?.find(p => p.asset === 'MRVL')?.shares ?? 150;
+                      const template = demo.holdings.find(h => h.symbol === 'MU');
+                      demo.holdings.push({ ...template, symbol: 'MRVL', quantity: shares,
+                        cost_basis: shares * 263, avg_cost: 263, current_price: 270,
+                        market_value: shares * 270, unrealized_pnl: shares * 7 });
+                      return new Response(JSON.stringify(demo), { headers: { 'Content-Type': 'application/json' } });
+                    }
                     return testDemo.fetch(input, init);
                   };
                 """)
                 page = context.new_page()
                 page.on('pageerror', lambda err: errors.append(str(err)))
                 page.goto('https://portfolio.test/', wait_until='networkidle')
+                expect(page.locator('#covered-calls-tab')).to_have_text('Option')
+                page.locator('#holdings-tab').click()
+                badge = page.locator('[data-cc-coverage="MRVL"]')
+                expect(badge).to_contain_text('CC 1 available')
+                assert page.locator('[data-cc-coverage="ETH-USD"]').count() == 0
                 page.locator('#covered-calls-tab').click()
+                expect(page.locator('#trackerCoveredCalls h2')).to_have_text('Covered Call')
                 expect(page.locator('#ccList')).to_contain_text('No covered calls')
 
                 def fill_open():
@@ -117,6 +136,46 @@ def run():
                 assert page.locator('#ccList img').count() == 0
                 assert calls.list_calls()['inventory'][0]['shares'] == 150
 
+                page.locator('#holdings-tab').click()
+                expect(badge).to_contain_text('CC 1 open')
+                expect(badge).to_contain_text('0 available')
+                badge.click()
+                expect(page.locator('#ccHoldingDetails')).to_contain_text('Schwab')
+                expect(page.locator('#ccHoldingDetails')).to_contain_text('100')
+                expect(page.locator('#ccHoldingDetails')).to_contain_text('50')
+                assert page.locator('.txn-detail-row').count() == 0, 'Coverage click expanded stock transactions'
+                page.screenshot(path=str(output / 'holdings-coverage-details.png'), full_page=True, animations='disabled')
+                fail_coverage[0] = True
+                page.locator('#ccHoldingReload').click()
+                expect(page.locator('#ccHoldingDetails')).to_contain_text('could not be loaded')
+                expect(badge).to_contain_text('unavailable')
+                fail_coverage[0] = False
+                page.locator('#ccHoldingReload').click()
+                expect(page.locator('#ccHoldingDetails')).to_contain_text('100')
+                page.locator('#holdingCoverageModal .btn-close').click()
+                for width in [320, 390, 430, 1440]:
+                    page.set_viewport_size({'width': width, 'height': 844})
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'Coverage overflow at {width}'
+                    expect(badge).to_be_visible()
+                    page.screenshot(path=str(output / f'holdings-coverage-{width}.png'), full_page=True, animations='disabled')
+                    if width < 768:
+                        page.evaluate('window.scrollBy(0, 350)')
+                        page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().top - document.querySelector('#trackerTabs').getBoundingClientRect().bottom) < 2")
+                        assert page.evaluate('document.querySelector(".holdings-table-scroll").scrollTop === 0'), 'Nested vertical scroll'
+                        page.evaluate('document.querySelector(".holdings-table-scroll").scrollLeft = 180')
+                        page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().left - document.querySelector('#holdingsBody .holding-row td').getBoundingClientRect().left) < 2")
+                        page.evaluate('document.querySelector(".holdings-table-scroll").scrollLeft = 0; window.scrollTo(0, 0)')
+
+                page.set_viewport_size({'width': 390, 'height': 844})
+                page.locator('#anonymousBtn').click()
+                expect(badge).to_have_text('CC ***')
+                assert '100' not in badge.get_attribute('title')
+                badge.click()
+                expect(page.locator('#ccHoldingDetails')).not_to_contain_text('Schwab')
+                expect(page.locator('#ccHoldingDetails')).not_to_contain_text('100')
+                page.locator('#holdingCoverageModal .btn-close').click()
+                page.locator('#anonymousBtn').click()
+                page.locator('#covered-calls-tab').click()
                 fill_open()
                 page.locator('#ccConfirmed').check(); page.locator('#ccSaveBtn').click()
                 expect(page.locator('#ccError')).to_contain_text('Insufficient unreserved')
@@ -136,6 +195,10 @@ def run():
                 expect(page.locator('#ccList .cc-card')).to_have_count(2)
                 assert calls.list_calls()['summary']['open_contracts'] == 1
                 assert calls.list_calls()['inventory'][0]['available_shares'] == 50
+                page.locator('#holdings-tab').click()
+                expect(badge).to_contain_text('CC 1 open')
+                expect(badge).to_contain_text('0 available')
+                page.locator('#covered-calls-tab').click()
 
                 page.locator('[data-cc-manage]').click()
                 page.locator('#ccEventAction').select_option('ASSIGN')
@@ -153,6 +216,13 @@ def run():
                 portfolio = Portfolio(); portfolio.add_transactions(ledger)
                 assert sum(l.quantity for l in portfolio._lots['MRVL']) == 50
                 assert ledger[-1].cost_basis_method.value == 'SPECIFIC'
+                page.locator('#holdings-tab').click()
+                expect(badge).to_have_text('CC 0 available')
+                badge.click()
+                expect(page.locator('#ccHoldingDetails')).to_contain_text('50')
+                expect(page.locator('#ccHoldingDetails')).to_contain_text('No open covered calls')
+                page.locator('#holdingCoverageModal .btn-close').click()
+                page.locator('#covered-calls-tab').click()
 
                 page.set_viewport_size({'width': 1440, 'height': 1050})
                 expect(page.locator('.modal-backdrop')).to_have_count(0)
@@ -172,10 +242,12 @@ def run():
                 page.locator('#covered-calls-tab').click()
                 expect(page.locator('#ccOpenBtn')).to_be_disabled()
                 expect(page.locator('#ccStatus')).to_contain_text('Demo is read-only')
+                page.locator('#holdings-tab').click()
+                expect(page.locator('[data-cc-coverage="MU"]')).to_have_text('CC 0 available')
                 assert not requests, 'Demo contacted a personal-data endpoint'
                 assert not errors, errors
                 browser.close()
-                print('PASS: mobile/desktop open, overcoverage rejection, roll, specified-lot assignment, privacy, demo isolation; screenshots:', output)
+                print('PASS: mobile/desktop open, overcoverage rejection, roll, specified-lot assignment, privacy, demo isolation, Holdings coverage and responsive detail modal; screenshots:', output)
     finally:
         pool.close()
         with psycopg.connect(dsn, autocommit=True) as conn:

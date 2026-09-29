@@ -40,3 +40,16 @@
     </form>
   </div>
 </div>
+
+<div class="modal fade" id="holdingCoverageModal" tabindex="-1" aria-labelledby="ccHoldingTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title" id="ccHoldingTitle">Covered Call</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+      <div class="modal-body">
+        <div id="ccHoldingDetails"></div>
+        <p class="small text-muted mb-0">Based on recorded broker fills. Unfilled orders are not included. Each standard call requires 100 free shares in the same account. Record the broker-confirmed close, expiration or assignment in Option to update reserved shares.</p>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" id="ccHoldingReload">Refresh</button><button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button></div>
+    </div>
+  </div>
+</div>

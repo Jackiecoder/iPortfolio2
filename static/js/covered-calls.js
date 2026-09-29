@@ -8,6 +8,56 @@
         if (action === 'ROLL') return Number(contracts) * 100 * Number(newPremium) - Number(newFees) - gross - Number(fees);
         return (action === 'CLOSE' ? -gross : 0) - Number(fees);
     }
+    // Inventory is account-scoped: never combine odd lots across accounts.
+    function holdingCoverage(data, symbol, quantity, state = 'ready') {
+        if (symbol === 'CASH' || symbol.endsWith('-USD') || Number(quantity) <= 0) return null;
+        if (state !== 'ready') return { state };
+        const accounts = data.inventory.filter(p => p.asset === symbol);
+        const calls = data.calls.filter(c => c.asset === symbol && c.remaining_contracts > 0);
+        const sum = key => accounts.reduce((n, p) => n + Number(p[key]), 0);
+        const shares = sum('shares');
+        if (!accounts.length || !Number.isFinite(Number(quantity)) || Math.abs(shares - Number(quantity)) > 0.0001 ||
+            accounts.some(p => ['shares', 'reserved_shares', 'available_shares', 'available_contracts'].some(k => !Number.isFinite(Number(p[k])) || Number(p[k]) < 0))) {
+            return { state: 'updating' };
+        }
+        const openContracts = calls.reduce((n, c) => n + c.remaining_contracts, 0);
+        if (calls.some(c => c.adjustment_required)) return { state: 'verify', openContracts };
+        return { state: 'ready', accounts, calls, shares, openContracts,
+            reservedShares: sum('reserved_shares'), availableShares: sum('available_shares'),
+            availableContracts: sum('available_contracts') };
+    }
+    function coverageBadgeHtml(coverage, symbol, privateMode = false) {
+        if (!coverage) return '';
+        const messages = { loading: 'CC …', error: 'CC unavailable', updating: 'CC updating', verify: 'CC verify' };
+        const descriptions = { loading: 'Loading covered-call coverage', error: 'Coverage unavailable. Open details to retry.',
+            updating: 'Holdings and option inventory are updating. Refresh details before using capacity.',
+            verify: 'Verify the adjusted contract with your broker before selling another covered call.' };
+        let text, title, style = 'muted';
+        if (coverage.state !== 'ready') {
+            text = messages[coverage.state]; title = descriptions[coverage.state];
+        } else if (privateMode) {
+            text = 'CC ***'; title = 'Covered-call coverage hidden';
+        } else {
+            const c = coverage;
+            text = c.openContracts ? `CC ${c.openContracts} open<span>${c.availableContracts} available</span>` : `CC ${c.availableContracts} available`;
+            title = `${c.openContracts} covered-call contracts open; ${c.reservedShares} shares reserved; ${c.availableShares} shares free; ${c.availableContracts} additional contracts available across separate accounts.`;
+            style = c.openContracts ? 'open' : c.availableContracts > 0 ? 'available' : 'muted';
+        }
+        return `<button type="button" class="holding-cc-badge holding-cc-${style}" data-cc-coverage="${escape(symbol)}" title="${escape(title)}" aria-label="${escape(symbol + ': ' + title)}">${text}</button>`;
+    }
+    function coverageDetailsHtml(c, privateMode = false) {
+        if (!c || c.state !== 'ready') {
+            const messages = { loading: 'Loading coverage…', error: 'Coverage could not be loaded. Refresh to try again.',
+                updating: 'Holdings and option inventory do not yet match. Refresh the portfolio to update both before using capacity.',
+                verify: 'An open call requires a contract adjustment. Confirm its deliverable with your broker; available capacity is not shown until the record is reconciled.' };
+            return `<p role="status">${messages[c?.state] || 'No current stock holding.'}</p>`;
+        }
+        const n = value => privateMode ? '***' : escape(Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 }));
+        return c.accounts.map(p => `<section class="holding-cc-account"><h6>${privateMode ? '***' : escape(p.broker || 'Unassigned account')}</h6>
+            <dl><div><dt>Shares held</dt><dd>${n(p.shares)}</dd></div><div><dt>Shares reserved</dt><dd>${n(p.reserved_shares)}</dd></div>
+            <div><dt>Shares free</dt><dd>${n(p.available_shares)}</dd></div><div><dt>Additional calls available</dt><dd>${n(p.available_contracts)}</dd></div></dl></section>`).join('') +
+            (c.calls.length ? `<h6 class="mt-3">Open covered calls</h6><ul class="holding-cc-contracts">${c.calls.map(call => `<li>${privateMode ? '***' : escape(call.broker || 'Unassigned account')} · ${n(call.remaining_contracts)} contract(s) · $${n(call.strike)} · ${escape(call.expiration)}${call.outcome_pending ? '<br><span>Awaiting broker outcome; shares remain reserved.</span>' : ''}</li>`).join('')}</ul>` : '<p class="small text-muted">No open covered calls recorded.</p>');
+    }
     function init(config) {
         const $ = id => document.getElementById(id);
         const form = $('ccForm');
@@ -15,6 +65,7 @@
         const modal = $('coveredCallModal');
         let data = { calls: [], inventory: [], summary: {} };
         let selectedCall = null, requestId, replacementId, busy = false;
+        let coverageState = 'loading', coverageSymbol = null;
         let loadVersion = 0, previewVersion = 0, timer, allocations = [], lotContext = '';
         const number = value => config.private() ? '***' : String(value);
         const money = value => config.money(Number(value));
@@ -29,7 +80,21 @@
             if (!resp.ok) throw new Error(typeof result.detail === 'string' ? result.detail : (result.detail || []).map(e => e.msg).join('; ') || 'Unable to save');
             return result;
         }
+        function coverageForSlot(slot) {
+            return holdingCoverage(data, slot.dataset.ccSymbol, slot.dataset.ccQuantity,
+                slot.dataset.ccPending === 'true' ? 'updating' : coverageState);
+        }
+        function renderHoldings() {
+            document.querySelectorAll('[data-cc-symbol]').forEach(slot => {
+                slot.innerHTML = coverageBadgeHtml(coverageForSlot(slot), slot.dataset.ccSymbol, config.private());
+            });
+            if (coverageSymbol) {
+                const slot = Array.from(document.querySelectorAll('[data-cc-symbol]')).find(el => el.dataset.ccSymbol === coverageSymbol);
+                $('ccHoldingDetails').innerHTML = coverageDetailsHtml(slot ? coverageForSlot(slot) : null, config.private());
+            }
+        }
         function render() {
+            renderHoldings();
             const summary = data.summary;
             $('ccMetrics').innerHTML = [
                 ['Open contracts', number(summary.open_contracts || 0)],
@@ -53,14 +118,18 @@
         async function load() {
             const version = ++loadVersion;
             $('ccStatus').textContent = 'Loading covered calls…';
+            coverageState = 'loading'; renderHoldings();
             try {
                 const result = await api('/api/covered-calls', null, 'GET');
                 if (version !== loadVersion) return;
-                data = result;
+                data = result; coverageState = 'ready';
                 render();
                 $('ccStatus').textContent = config.demo ? 'Demo is read-only. No personal option records are loaded.' : '';
             } catch (err) {
-                if (version === loadVersion) $('ccStatus').textContent = `Could not refresh covered calls: ${err.message}`;
+                if (version === loadVersion) {
+                    $('ccStatus').textContent = `Could not refresh covered calls: ${err.message}`;
+                    coverageState = 'error'; renderHoldings();
+                }
                 throw err;
             }
         }
@@ -151,6 +220,18 @@
         $('ccReloadBtn').addEventListener('click', () => load().catch(() => {}));
         $('ccFilter').addEventListener('change', render);
         $('covered-calls-tab').addEventListener('shown.bs.tab', () => load().catch(() => {}));
+        $('holdings-tab').addEventListener('shown.bs.tab', () => load().catch(() => {}));
+        $('holdingsBody').addEventListener('click', event => {
+            const button = event.target.closest('[data-cc-coverage]');
+            if (!button) return;
+            event.stopPropagation();
+            coverageSymbol = button.dataset.ccCoverage;
+            $('ccHoldingTitle').textContent = `${coverageSymbol} · Covered Call`;
+            renderHoldings();
+            bootstrap.Modal.getOrCreateInstance($('holdingCoverageModal')).show();
+        });
+        $('ccHoldingReload').addEventListener('click', () => load().catch(() => {}));
+        $('holdingCoverageModal').addEventListener('hidden.bs.modal', () => { coverageSymbol = null; });
         $('ccList').addEventListener('click', async event => {
             const manage = event.target.closest('[data-cc-manage]');
             if (manage) { open(data.calls.find(c => c.id === Number(manage.dataset.ccManage))); return; }
@@ -211,9 +292,9 @@
             refreshAfterSave();
         });
         load().catch(() => {});
-        return { load, render };
+        return { load, render, renderHoldings };
     }
-    const api = { init, cashFlow, escape };
+    const api = { init, cashFlow, escape, holdingCoverage, coverageBadgeHtml, coverageDetailsHtml };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.CoveredCalls = api;
 })(globalThis);
