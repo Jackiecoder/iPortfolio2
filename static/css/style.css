@@ -2975,3 +2975,44 @@ body[data-secondary-tools="hidden"] { padding-left: 0; }
     [data-secondary-tools="hidden"] .nav-actions .refresh-label { display: none; }
     [data-secondary-tools="hidden"] .app-shell { padding-top: 24px !important; }
 }
+
+/* Holdings uses the page for vertical scrolling on phones. */
+.holdings-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#holdingsOverviewToggle { display: none; }
+.holdings-update-details { color: var(--slate-600); font-size: 11px; margin-top: 8px; }
+.holdings-update-details summary { cursor: pointer; width: fit-content; }
+.holdings-update-details[open] summary { margin-bottom: 8px; }
+.holdings-update-details .dashboard-data-status { margin-top: 6px; }
+
+@media (max-width: 767.98px) {
+    #trackerPage.holdings-focused:not(.holdings-overview-open) #portfolioOverview { display: none; }
+    body:has(#trackerPage.holdings-focused) .app-shell { padding-top: 0 !important; }
+    #trackerPage.holdings-overview-open #portfolioOverview { padding-top: 16px; }
+    #trackerPage.holdings-focused .tracker-tabs {
+        position: sticky;
+        top: env(safe-area-inset-top, 0px);
+        z-index: 20;
+        background: var(--bs-body-bg, #f4f7fb);
+        margin-top: 0;
+        margin-bottom: 12px !important;
+    }
+    #trackerHoldings > .card:first-child { border-radius: 12px; }
+    #trackerHoldings .holdings-card-header { padding: 10px 8px; min-height: 0; border-radius: 12px 12px 0 0; }
+    .holdings-heading { display: none; }
+    .holdings-toolbar, .holdings-controls { width: 100%; }
+    .holdings-controls { gap: 6px !important; }
+    #holdingsOverviewToggle { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; order: 1; }
+    #holdingsOverviewToggle, .holdings-controls .btn { min-height: 36px; font-size: 10px; padding: 6px 8px; white-space: nowrap; }
+    #trackerHoldings .holdings-controls .btn-group { flex-wrap: nowrap; flex-shrink: 0; gap: 0; }
+    .holdings-update-details { font-size: 10px; margin-top: 6px; }
+    .holdings-update-details summary { min-height: 28px; padding-block: 6px; }
+    .holdings-table-scroll {
+        max-height: none;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scroll-padding-top: 0;
+    }
+    /* Horizontal overflow captures native sticky positioning. Translate the real
+       headings with page scroll so sorting and column widths stay in one table. */
+    #holdingsTable > thead > tr > th { transform: translateY(var(--holdings-header-offset, 0px)); }
+}

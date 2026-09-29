@@ -24,7 +24,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=61">
+    <link rel="stylesheet" href="/static/css/style.css?v=62">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -240,6 +240,7 @@
 
     <!-- ============================================================ TRACKER PAGE -->
     <div id="trackerPage">
+        <div id="portfolioOverview">
         <header id="portfolioRefreshCard" class="portfolio-brief mb-3" role="button" tabindex="0" aria-label="Refresh intraday chart" title="Click to update the intraday chart">
             <div class="portfolio-brief-copy">
                 <h1>{{ 'Demo portfolio' if demo_mode else 'Portfolio overview' }}</h1>
@@ -250,11 +251,6 @@
                 <span>Refresh prices</span>
             </div>
         </header>
-        <div id="transactionUpdateNotice" class="transaction-update-notice d-none" role="status" aria-live="polite">
-            <span class="value-spinner" aria-hidden="true"></span>
-            <span id="transactionUpdateMessage"></span>
-            <button id="transactionUpdateRetry" type="button" class="btn btn-sm btn-outline-primary d-none">Retry update</button>
-        </div>
         <!-- Portfolio Summary toggle + condensed strip -->
         <div class="d-flex align-items-center gap-2 mb-2 summary-command-bar">
             <button class="btn btn-sm btn-outline-secondary" type="button" id="summaryToggleBtn" aria-expanded="false" aria-controls="summaryCardsCollapse">
@@ -331,6 +327,14 @@
             </div>
         </div>
 
+        </div>
+        <div id="transactionUpdateNotice" class="transaction-update-notice d-none" role="status" aria-live="polite">
+            <span class="value-spinner" aria-hidden="true"></span>
+            <span id="transactionUpdateMessage"></span>
+            <button id="transactionUpdateRetry" type="button" class="btn btn-sm btn-outline-primary d-none">Retry update</button>
+        </div>
+
+        <div id="trackerTabsStart" aria-hidden="true"></div>
         <ul class="nav nav-pills tracker-tabs mb-3" id="trackerTabs" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="today-tab" data-bs-toggle="pill" data-bs-target="#trackerToday" type="button" role="tab" aria-controls="trackerToday" aria-selected="true">
@@ -752,9 +756,13 @@
 
         <!-- Holdings Table -->
         <div class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
-                <div><h5 class="mb-0"><i class="bi bi-briefcase me-2"></i>Holdings</h5><div id="holdingsTodayStatus" class="dashboard-data-status" role="status"></div><div id="holdingsDataStatus" class="dashboard-data-status" role="status"></div></div>
-                <div class="d-flex gap-2 align-items-center">
+            <div class="card-header bg-white border-0 holdings-card-header">
+                <div class="holdings-toolbar">
+                <h5 class="mb-0 holdings-heading"><i class="bi bi-briefcase me-2"></i>Holdings</h5>
+                <div class="d-flex gap-2 align-items-center holdings-controls">
+                    <button id="holdingsOverviewToggle" class="btn btn-sm btn-outline-secondary" type="button" aria-expanded="false" aria-controls="portfolioOverview">
+                        Overview <i class="bi bi-chevron-down" aria-hidden="true"></i>
+                    </button>
                     <div class="btn-group btn-group-sm" role="group">
                         <button class="btn btn-outline-secondary holdings-view-btn" data-view="flat">All</button>
                         <button class="btn btn-primary holdings-view-btn active" data-view="category">Category</button>
@@ -766,6 +774,12 @@
                         <ul class="dropdown-menu dropdown-menu-end" id="colToggleMenu"></ul>
                     </div>
                 </div>
+                </div>
+                <details class="holdings-update-details">
+                    <summary><span id="holdingsUpdateLabel" role="status">Updating…</span><span class="visually-hidden"> — update details</span></summary>
+                    <div id="holdingsTodayStatus" class="dashboard-data-status" role="status"></div>
+                    <div id="holdingsDataStatus" class="dashboard-data-status" role="status"></div>
+                </details>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive holdings-table-scroll" tabindex="0" role="region" aria-label="Holdings table">
@@ -1228,6 +1242,7 @@
     <script src="/static/js/transaction-updates.js?v=1"></script>
     <script src="/static/js/ticker-technicals.js?v=2"></script>
     {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=1"></script>{% endif %}
+    <script src="/static/js/holdings-layout.js?v=1"></script>
     <script src="/static/js/app.js?v=156"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
