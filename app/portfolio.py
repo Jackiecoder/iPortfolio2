@@ -10,11 +10,14 @@ from zoneinfo import ZoneInfo
 
 from .models import (
     ActionType,
+    CostBasisMethod,
+    LotAllocation,
     DividendSummary,
     Holding,
     PortfolioSummary,
     Transaction,
 )
+from .tax_lots import broker_key, is_long_term, select_lots
 from .cache_service import cache_service
 from .price_service import price_service
 from .split_service import split_service
@@ -36,10 +39,13 @@ def _market_now() -> datetime:
 class LotInfo:
     """Represents a lot of shares purchased at a specific price."""
 
-    def __init__(self, quantity: Decimal, cost_per_share: Decimal, purchase_date: date):
+    def __init__(self, quantity: Decimal, cost_per_share: Decimal, purchase_date: date,
+                 lot_id: Optional[int] = None, broker: Optional[str] = None):
         self.quantity = quantity
         self.cost_per_share = cost_per_share
         self.purchase_date = purchase_date
+        self.lot_id = lot_id
+        self.broker = broker
 
     @property
     def total_cost(self) -> Decimal:
@@ -108,6 +114,8 @@ class Portfolio:
                 quantity=adjusted_qty,
                 cost_per_share=adjusted_price,
                 purchase_date=txn.date,
+                lot_id=txn.id,
+                broker=txn.broker,
             )
             self._lots[symbol].append(lot)
 
@@ -115,8 +123,19 @@ class Portfolio:
             # Adjust sell quantity and price for splits
             adjusted_qty = txn.quantity * factor
             adjusted_price = txn.ave_price / factor if factor != 0 else txn.ave_price
-            # Remove shares using FIFO and track cost basis (split LT vs ST)
-            remaining = adjusted_qty
+            # Legacy rows retain pooled FIFO. Explicit sales use their frozen
+            # lot IDs and never silently fall back to another account or lot.
+            eligible = self._lots[symbol]
+            if txn.cost_basis_method is not None:
+                eligible = [lot for lot in eligible if broker_key(lot.broker) == broker_key(txn.broker)]
+                allocations = [LotAllocation(lot_id=a.lot_id, quantity=a.quantity * factor)
+                               for a in txn.lot_allocations]
+                slices = select_lots(eligible, adjusted_qty, adjusted_price, txn.date,
+                                     txn.cost_basis_method, allocations)
+            else:
+                available = sum((lot.quantity for lot in eligible), Decimal(0))
+                slices = select_lots(eligible, min(adjusted_qty, available), adjusted_price,
+                                     txn.date, CostBasisMethod.FIFO) if available > 0 else []
             total_cost_basis = Decimal("0")
             qty_sold = Decimal("0")
             lt_cost_basis = Decimal("0")
@@ -124,33 +143,23 @@ class Portfolio:
             lt_proceeds = Decimal("0")
             st_proceeds = Decimal("0")
             lot_slices = []
-            sale_price = adjusted_price  # per share
+            sale_price = adjusted_price
 
-            while remaining > 0 and self._lots[symbol]:
-                lot = self._lots[symbol][0]
+            for lot, slice_qty in slices:
                 purchase_date = lot.purchase_date
                 cost_per_share = lot.cost_per_share
-                # LT if held >= 365 days at sale date
-                is_lt = (txn.date - purchase_date).days >= 365
-                if lot.quantity <= remaining:
-                    # Sell entire lot
-                    slice_qty = lot.quantity
-                    slice_cost = lot.total_cost
-                    total_cost_basis += slice_cost
-                    qty_sold += slice_qty
-                    remaining -= slice_qty
-                    self._lots[symbol].pop(0)
-                else:
-                    # Partial lot sale
-                    slice_qty = remaining
-                    slice_cost = remaining * lot.cost_per_share
-                    total_cost_basis += slice_cost
-                    qty_sold += slice_qty
-                    lot.quantity -= remaining
-                    remaining = Decimal("0")
+                is_lt = is_long_term(purchase_date, txn.date)
+                slice_cost = slice_qty * cost_per_share
+                total_cost_basis += slice_cost
+                qty_sold += slice_qty
+                lot.quantity -= slice_qty
+                if lot.quantity == 0:
+                    self._lots[symbol].remove(lot)
 
                 slice_proceeds = slice_qty * sale_price
                 lot_slices.append({
+                    "lot_id": lot.lot_id,
+                    "broker": lot.broker,
                     "purchase_date": purchase_date,
                     "quantity": slice_qty,
                     "cost_per_share": cost_per_share,
@@ -168,6 +177,7 @@ class Portfolio:
             if qty_sold > 0:
                 self._sales[symbol].append({
                     "date": txn.date,
+                    "cost_basis_method": txn.cost_basis_method or CostBasisMethod.FIFO,
                     "quantity": qty_sold,
                     "cost_basis": total_cost_basis,
                     "proceeds": qty_sold * sale_price,
@@ -189,6 +199,8 @@ class Portfolio:
                 quantity=adjusted_qty,
                 cost_per_share=Decimal("0"),
                 purchase_date=txn.date,
+                lot_id=txn.id,
+                broker=txn.broker,
             )
             self._lots[symbol].append(lot)
 
@@ -229,6 +241,8 @@ class Portfolio:
                     quantity=missing_qty,
                     cost_per_share=Decimal("0"),
                     purchase_date=txn.date,
+                    lot_id=txn.id,
+                    broker=txn.broker,
                 )
                 self._lots[symbol].append(lot)
             elif target_qty < current_qty:
@@ -256,6 +270,38 @@ class Portfolio:
         quantity = (txn.quantity or Decimal("0")) * factor
         price = (txn.ave_price or Decimal("0")) / factor if factor else Decimal("0")
         return quantity, price
+
+    def transaction_history(self, symbol: str, limit: int = 20, actions=None) -> list[dict]:
+        """Authoritative running position after each event, in today's share units.
+
+        Apply every event before filtering/limiting, including GAS and FIX.
+        Frontend history must not reconstruct a second, FIFO-only cost basis.
+        """
+        replay = Portfolio(adjust_splits=self._adjust_splits)
+        rows = []
+        for txn in self._transactions:
+            if txn.asset != symbol:
+                continue
+            replay._process_transaction(txn)
+            if actions is not None and txn.action.value not in actions:
+                continue
+            lots = replay._lots.get(symbol, [])
+            qty = sum((l.quantity for l in lots), Decimal(0))
+            cost = sum((l.total_cost for l in lots), Decimal(0))
+            rows.append({
+                "id": txn.id, "date": txn.date.isoformat(),
+                "executed_at": txn.effective_executed_at.isoformat(),
+                "transaction_time": txn.effective_executed_at.strftime("%H:%M"),
+                "action": txn.action.value, "broker": txn.broker,
+                "quantity": float(txn.quantity) if txn.quantity is not None else None,
+                "ave_price": float(txn.ave_price) if txn.ave_price is not None else None,
+                "amount": float(txn.amount) if txn.amount is not None else None,
+                "cost_basis_method": txn.cost_basis_method,
+                "lot_allocations": [a.model_dump(mode="json") for a in txn.lot_allocations],
+                "running_quantity": float(qty),
+                "running_avg_cost": float(cost / qty) if qty > 0 else 0,
+            })
+        return list(reversed(rows))[:limit]
 
     @staticmethod
     def _apply_intraday_transaction(
@@ -430,7 +476,7 @@ class Portfolio:
                     slice_ytd = lot_slice["proceeds"] - baseline
                     ytd_pnl += slice_ytd
                     ytd_basis += baseline
-                    if (sale_date - purchase_date).days >= 365:
+                    if is_long_term(purchase_date, sale_date):
                         lt_ytd += slice_ytd
                     else:
                         st_ytd += slice_ytd
@@ -523,11 +569,10 @@ class Portfolio:
                 st_qty = Decimal("0")
                 lt_unreal = Decimal("0")
                 st_unreal = Decimal("0")
-                one_year_ago = today - timedelta(days=365)
                 for lot in self._lots[holding.symbol]:
                     if lot.quantity <= 0:
                         continue
-                    is_lt = lot.purchase_date <= one_year_ago
+                    is_lt = is_long_term(lot.purchase_date, today)
                     if is_lt:
                         lt_qty += lot.quantity
                     else:
@@ -564,7 +609,7 @@ class Portfolio:
                     lot_ytd = (holding.current_price - baseline) * lot.quantity
                     ytd_pnl += lot_ytd
                     ytd_basis += baseline * lot.quantity
-                    if (today - lot.purchase_date).days >= 365:
+                    if is_long_term(lot.purchase_date, today):
                         lt_ytd += lot_ytd
                     else:
                         st_ytd += lot_ytd
@@ -1100,7 +1145,6 @@ class Portfolio:
                 weighted_annualized_return = weighted_sum / total_cost_basis_weight
 
             # Compute LT / ST unrealized P&L from individual lots
-            one_year_ago = today - timedelta(days=365)
             lt_unrealized_pnl = Decimal("0")
             st_unrealized_pnl = Decimal("0")
             for symbol, lots in self._lots.items():
@@ -1113,7 +1157,7 @@ class Portfolio:
                     if lot.quantity <= 0:
                         continue
                     lot_pnl = (current_price - lot.cost_per_share) * lot.quantity
-                    if lot.purchase_date <= one_year_ago:
+                    if is_long_term(lot.purchase_date, today):
                         lt_unrealized_pnl += lot_pnl
                     else:
                         st_unrealized_pnl += lot_pnl
@@ -1236,7 +1280,6 @@ class Portfolio:
                 break
 
         # Compute LT/ST unrealized P&L at target_date
-        one_year_ago = target_date - timedelta(days=365)
         lt_pnl = Decimal("0")
         st_pnl = Decimal("0")
 
@@ -1252,7 +1295,7 @@ class Portfolio:
                 if lot.quantity <= 0:
                     continue
                 lot_pnl = (price - lot.cost_per_share) * lot.quantity
-                if lot.purchase_date <= one_year_ago:
+                if is_long_term(lot.purchase_date, target_date):
                     lt_pnl += lot_pnl
                 else:
                     st_pnl += lot_pnl

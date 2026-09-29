@@ -3016,3 +3016,63 @@ body[data-secondary-tools="hidden"] { padding-left: 0; }
        headings with page scroll so sorting and column widths stay in one table. */
     #holdingsTable > thead > tr > th { transform: translateY(var(--holdings-header-offset, 0px)); }
 }
+
+/* Sale lot selection stays usable on a narrow phone screen. */
+.sale-lots-panel { margin-top: 1.25rem; padding: 1rem; border: 1px solid var(--bs-border-color); border-radius: .75rem; }
+.sale-lots-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.sale-lots-list { max-height: 340px; overflow-y: auto; }
+.sale-lot-row { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .8rem 0; border-bottom: 1px solid var(--bs-border-color); }
+.sale-lot-detail .badge { font-size: .65rem; margin-left: .3rem; }
+.sale-lot-quantity { flex: 0 0 105px; text-align: right; }
+.sale-lot-quantity strong { display: block; }
+.sale-lot-quantity input { text-align: right; }
+.sale-lots-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--bs-border-color); }
+.sale-lots-summary span { display: block; color: var(--bs-secondary-color); font-size: .75rem; }
+.sale-lots-summary strong { display: block; font-variant-numeric: tabular-nums; }
+@media (max-width: 575.98px) {
+    .sale-lots-panel { padding: .75rem; }
+    .sale-lots-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .sale-lot-detail { font-size: .85rem; }
+    .sale-lot-detail .badge { display: inline-block; margin-left: 0; }
+    .sale-lot-quantity { flex-basis: 85px; }
+}
+
+/* Covered calls: option cash flows stay separate from equity performance. */
+.cc-heading { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:22px; }
+.cc-heading h2 { font-size:1.35rem; margin:0 0 6px; }
+.cc-heading p, .cc-scope { color:var(--slate-500, #64748b); font-size:.85rem; margin:0; }
+.cc-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-bottom:16px; }
+.cc-metrics > div { border-bottom:2px solid var(--slate-200, #e2e8f0); padding:8px 0 16px; }
+.cc-metrics span { display:block; font-size:.8rem; color:var(--slate-500, #64748b); }
+.cc-metrics strong { display:block; font-size:1.45rem; margin-top:5px; font-variant-numeric:tabular-nums; }
+.cc-scope { margin-bottom:24px; max-width:850px; }
+.cc-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,390px),1fr)); gap:18px; }
+.cc-card { border:1px solid var(--slate-200, #e2e8f0); border-radius:12px; padding:22px; background:var(--bs-body-bg); min-width:0; }
+.cc-card-head { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
+.cc-card h3 { font-size:1.1rem; margin:0 0 5px; }
+.cc-card h3 span { font-weight:400; }
+.cc-card-head p { font-size:.8rem; color:var(--slate-500, #64748b); margin:0; overflow-wrap:anywhere; }
+.cc-status { align-self:flex-start; font-size:.75rem; background:var(--bs-tertiary-bg); border-radius:5px; padding:4px 8px; }
+.cc-details { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:18px; }
+.cc-details dt { font-size:.75rem; font-weight:400; color:var(--slate-500, #64748b); }
+.cc-details dd { margin:3px 0 0; font-weight:600; font-variant-numeric:tabular-nums; }
+.cc-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; }
+.cc-events { list-style:none; padding:0; margin:10px 0; }
+.cc-events li { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; padding:10px 0; border-bottom:1px solid var(--slate-200, #e2e8f0); font-size:.8rem; }
+.cc-events small { width:100%; }
+.cc-empty { padding:36px 10px; text-align:center; color:var(--slate-500, #64748b); }
+.cc-empty span { font-size:.85rem; }
+.cc-estimate { padding:14px; border-left:3px solid var(--cobalt, #205b91); background:var(--bs-tertiary-bg); font-weight:600; font-size:.85rem; }
+.cc-replacement { border-top:1px solid var(--slate-200, #e2e8f0); padding-top:15px; }
+.cc-replacement legend { float:none; font-size:.9rem; font-weight:600; width:auto; margin:0 0 10px; }
+.cc-lot { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid var(--slate-200, #e2e8f0); font-size:.8rem; }
+.cc-lot input { max-width:120px; }
+#coveredCallModal [hidden] { display:none !important; }
+@media(max-width:575px) {
+  .cc-heading { align-items:stretch; flex-direction:column; }
+  .cc-metrics { gap:12px; grid-template-columns:1fr; }
+  .cc-metrics > div { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; }
+  .cc-metrics strong { font-size:1.2rem; margin:0; }
+  .cc-card { padding:16px; }
+  #coveredCallModal .form-label { font-size:.8rem; }
+}

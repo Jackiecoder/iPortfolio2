@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ;
+-- Nullable method preserves historical FIFO; new sales persist exact buy IDs
+-- and quantities in the sale date's share units, so splits replay correctly.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS cost_basis_method TEXT;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS lot_allocations JSONB NOT NULL DEFAULT '[]'::jsonb;
 UPDATE transactions
 SET executed_at = (
     CASE
@@ -31,6 +35,16 @@ ALTER TABLE transactions ALTER COLUMN executed_at SET NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_transactions_asset ON transactions (asset);
 CREATE INDEX IF NOT EXISTS idx_transactions_date  ON transactions (date);
 CREATE INDEX IF NOT EXISTS idx_transactions_executed_at ON transactions (executed_at);
+
+-- Confirmed standard covered calls; independent from equity lots and cash
+-- balance snapshots. Lifecycle events and linked assignments commit together.
+CREATE TABLE IF NOT EXISTS covered_calls (
+    id BIGSERIAL PRIMARY KEY,
+    request_id UUID NOT NULL UNIQUE,
+    opening JSONB NOT NULL,
+    events JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- Normalize known broker names on existing rows. Exact-label matching keeps
 -- separately named accounts distinct; no trade values or identifiers change.

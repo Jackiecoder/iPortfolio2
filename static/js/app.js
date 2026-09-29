@@ -493,6 +493,7 @@ function toggleAnonymousMode() {
     anonymousMode = !anonymousMode;
     portfolioStorage.setItem('anonymousMode', anonymousMode);
     updateAnonymousButton();
+    window.coveredCallsUI?.render();
     updateIntradaySpotlight(renderedIntraday);
     // Reload all data to apply the mode
     loadAllData();
@@ -1639,36 +1640,7 @@ async function toggleTransactionDetail(holdingRow) {
         return;
     }
 
-    // Compute running quantity and avg cost using FIFO lot tracking (oldest → newest)
-    const oldestFirst = [...txns].reverse();
-    let lots = []; // [{qty, costPerShare}] in purchase order
-    for (const t of oldestFirst) {
-        const qty = t.quantity || 0;
-        const price = t.ave_price != null ? t.ave_price
-                      : (qty > 0 && t.amount != null ? Math.abs(t.amount) / qty : 0);
-        if (t.action === 'BUY') {
-            lots.push({ qty, costPerShare: price });
-        } else if (t.action === 'GIFT' || t.action === 'SPLIT') {
-            lots.push({ qty, costPerShare: 0 });
-        } else if (t.action === 'SELL') {
-            // Remove shares FIFO
-            let remaining = qty;
-            while (remaining > 1e-9 && lots.length > 0) {
-                if (lots[0].qty <= remaining + 1e-9) {
-                    remaining -= lots[0].qty;
-                    lots.shift();
-                } else {
-                    lots[0].qty -= remaining;
-                    remaining = 0;
-                }
-            }
-        }
-        const totalQty = lots.reduce((s, l) => s + l.qty, 0);
-        const totalCost = lots.reduce((s, l) => s + l.qty * l.costPerShare, 0);
-        t._runningQty = totalQty;
-        t._runningAvgCost = totalQty > 1e-9 ? totalCost / totalQty : 0;
-    }
-
+    // Running costs come from the same server replay as Holdings and tax lots.
     const actionClass = (action) => {
         switch (action) {
             case 'BUY': case 'GIFT': return 'txn-buy';
@@ -1682,9 +1654,9 @@ async function toggleTransactionDetail(holdingRow) {
         const qty = t.quantity !== null ? formatNumber(t.quantity, 4) : '--';
         const price = t.ave_price !== null ? formatPrice(symbol, t.ave_price, true) : '--';
         const amount = t.amount !== null ? formatCurrencyAlways(t.amount) : '--';
-        const heldQty = t._runningQty != null ? formatNumber(t._runningQty, 4) : '--';
-        const avgCostAfter = (t._runningQty > 0 && t._runningAvgCost != null)
-            ? formatPrice(symbol, t._runningAvgCost, true) : '--';
+        const heldQty = t.running_quantity != null ? formatNumber(t.running_quantity, 4) : '--';
+        const avgCostAfter = (t.running_quantity > 0 && t.running_avg_cost != null)
+            ? formatPrice(symbol, t.running_avg_cost, true) : '--';
         return `<tr>
             <td>${t.date}</td>
             <td><span class="txn-action ${actionClass(t.action)}">${t.action}</span></td>
@@ -1705,8 +1677,8 @@ async function toggleTransactionDetail(holdingRow) {
                     <th>Quantity</th>
                     <th>Price</th>
                     <th>Amount</th>
-                    <th>Held Qty</th>
-                    <th>Avg Cost</th>
+                    <th title="Adjusted for stock splits">Held Qty</th>
+                    <th title="Remaining lot cost, adjusted for stock splits">Avg Cost</th>
                 </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -4276,7 +4248,7 @@ function renderTransactions() {
             <td class="text-end">${amount}</td>
             <td>${escapeHtml(t.broker || '--')}</td>
             <td class="text-muted small">${escapeHtml(t.source || '')}</td>
-            <td class="text-muted small">${escapeHtml(t.comment || '')}</td>
+            <td class="text-muted small">${escapeHtml(t.comment || '')}${t.action === 'SELL' ? `<div class="small text-muted">${escapeHtml(SaleLots.labels[t.cost_basis_method] || 'FIFO (legacy)')}${(t.lot_allocations || []).length ? ` · ${(t.lot_allocations || []).map(a => `#${a.lot_id}: ${escapeHtml(a.quantity)}`).join(', ')}` : ''}</div>` : ''}</td>
             <td class="text-end">
                 <button class="btn btn-sm btn-outline-danger txn-delete-btn" data-txn-id="${t.id}"
                         title="Delete this transaction">
@@ -4476,6 +4448,7 @@ function applySavedTransaction(result = {}) {
 
 function refreshAfterTransaction() {
     setTransactionUpdateState('updating');
+    window.coveredCallsUI?.load().catch(() => {});
     const pending = loadAllData({ prioritizeIntraday: false });
     const requestId = dashboardLoadRequestId;
     pending.then(() => {
@@ -4932,6 +4905,7 @@ async function addTransaction(payload) {
         );
         fillDropdown(brokerSelect, brokerOther, recentDistinct(txns, 'broker'), { placeholder: null });
         renderTradePreview();
+        saleLots.refresh();
     }
 
     // Reveal the free-text input only when "Other…" is chosen.
@@ -5206,12 +5180,17 @@ async function addTransaction(payload) {
             clearDerivedField();
             applyActionLayout(actionSelect ? actionSelect.value : 'BUY');
         }
+        saleLots.refresh();
     }
 
     // Show/hide fields based on the action. CASH is a cash-balance snapshot, so
     // it only needs an Amount (asset is fixed to "CASH") — hide symbol, broker,
     // quantity and price to avoid confusion.
     const actionSelect = form.elements['action'];
+    const saleLots = SaleLots.create({
+        form, modal: modalEl, assetSelect, assetOther, brokerSelect, brokerOther,
+        isActive: () => transactionMode === 'record' && actionSelect.value === 'SELL',
+    });
     function applyActionLayout(action) {
         if (transactionMode === 'preview') return;
         const isCash = action === 'CASH';
@@ -5302,6 +5281,15 @@ async function addTransaction(payload) {
             comment: str(fd.get('comment')),
         };
 
+        if (action === 'SELL') {
+            try {
+                Object.assign(payload, saleLots.selection());
+            } catch (error) {
+                errBox.textContent = error.message;
+                errBox.classList.remove('d-none');
+                return;
+            }
+        }
         submitBtn.disabled = true;
         submitBtn.textContent = 'Saving…';
         let result;
@@ -5376,6 +5364,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     initTransactionsTab();
+    window.coveredCallsUI = window.CoveredCalls.init({
+        demo: isDemoPortfolio, private: () => anonymousMode,
+        money: formatCurrency, today: marketTodayStr, toast: showToast,
+        onSaved: () => { applySavedTransaction(); return refreshAfterTransaction(); },
+    });
     window.TickerTechnicalsUI.init();
     document.getElementById('tickerHistorySymbol')?.addEventListener('change', () => {
         tickerHistoryInitialized = false;
