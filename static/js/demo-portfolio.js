@@ -93,9 +93,7 @@
                 const baseline = total - sum(holdings, 'daily_change_amount');
                 return { time: String(Math.floor(minute / 60)).padStart(2, '0') + ':' + String(minute % 60).padStart(2, '0'),
                     value: cents(baseline + pnl), daily_pnl: pnl, daily_pnl_percent: pnl / baseline * 100,
-                    holdings_complete: true, asset_changes: changes, holdings_daily_pnl: pnl, option_daily_pnl: 0,
-                    combined_daily_pnl: pnl, options_complete: true, options_present: false,
-                    option_cash_flow: 0, option_details: [] };
+                    holdings_complete: true, asset_changes: changes };
             }) };
         }
 
@@ -231,7 +229,7 @@
                         return {contract_symbol:`DEMO-${symbol}-${expiration}-${strike}`, strike, bid:cents(mid-.25), ask:cents(mid+.25), mid, last:mid,
                             last_trade_at:now().toISOString(), quote_at:null, volume:100, open_interest:200, quote_status:'two_sided'}; })});
             }
-            if (path === '/api/covered-calls') return response({ calls: [], inventory: holdings.filter(h => h.symbol !== 'CASH' && !h.symbol.endsWith('-USD')).map(h => ({ asset: h.symbol, broker: 'Demo account', shares: h.quantity, reserved_shares: 0, available_shares: h.quantity, available_contracts: Math.floor(h.quantity / 100) })), summary: { open_contracts: 0, premiums_received: 0, buyback_paid: 0, fees_paid: 0, net_cash_flow: 0, realized_option_pnl: 0, unrealized_option_pnl: null } });
+            if (path === '/api/covered-calls') return response({ calls: [], inventory: holdings.filter(h => h.symbol !== 'CASH' && !h.symbol.endsWith('-USD')).map(h => ({ asset: h.symbol, broker: 'Demo account', shares: h.quantity, reserved_shares: 0, available_shares: h.quantity, available_contracts: Math.floor(h.quantity / 100) })), summary: { open_contracts: 0, net_cash_flow: 0, realized_option_pnl: 0, unrealized_option_pnl: null } });
             if (path.startsWith('/api/transactions/')) {
                 return response({ transactions: transactions.filter(t => t.asset === decodeURIComponent(path.split('/').at(-1))) });
             }

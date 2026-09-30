@@ -65,12 +65,50 @@ def no_overflow(page, label):
     assert dimensions['page'] <= dimensions['viewport'] + 1, f'{label}: page overflow {dimensions}'
 
 
-def metric_values(page, selector):
-    return page.locator(selector + ' .pnl-breakdown-grid strong').all_text_contents()
+def capture(page, **kwargs):
+    # Date.now is fixed for deterministic financial fixtures. Chart.js uses
+    # that clock for tweens, so finish its animation for honest screenshots.
+    # This changes only rendering time, never dataset values or product styles.
+    page.evaluate("""() => {
+        const chart = Chart.getChart('intradayChart');
+        if (chart) { chart.stop(); chart.update('none'); }
+    }""")
+    page.screenshot(**kwargs)
+
+
+def original_chart(page):
+    """The accepted change adds one contribution; it must not redesign the chart."""
+    assert page.locator('.pnl-breakdown, #intradayPnlBreakdown, #holdingsPnlBreakdown, #ccProfitMetrics').count() == 0
+    expect(page.locator('.intraday-return .spotlight-label')).to_have_text('Daily return')
+    chart = page.evaluate("""() => {
+        const c = Chart.getChart('intradayChart');
+        return {labels:c.data.labels, legend:c.options.plugins.legend.display,
+            datasets:c.data.datasets.map(s=>({label:s.label, data:s.data,
+                spanGaps:s.spanGaps, pointRadius:s.pointRadius, borderDash:Array.from(s.borderDash || [])}))};
+    }""")
+    assert len(chart['datasets']) == 1, 'The original chart must retain one dataset'
+    series = chart['datasets'][0]
+    assert series['label'] == 'Daily P&L'
+    assert series['spanGaps'] is True and series['pointRadius'] == 0
+    assert series['borderDash'] == [] and chart['legend'] is False
+    return chart, series
+
+
+def holding_item(page, pending=False, amount='-$150.00', total='850.00'):
+    row = page.locator('#holdingsBody .covered-call-pnl-row')
+    expect(row).to_have_count(1)
+    expect(row).to_contain_text('Covered Call')
+    expect(row.locator('[data-col="5"]')).to_contain_text('Pending' if pending else amount)
+    assert row.evaluate("e=>e.nextElementSibling?.classList.contains('total-row')"), 'Option row must directly precede TOTAL'
+    assert row.get_attribute('data-symbol') is None
+    assert 'holding-row' not in (row.get_attribute('class') or '')
+    expect(page.locator('#holdingsBody .total-row [data-col="5"]')).to_contain_text(total)
+    expect(page.locator('#categoryBody .total-row td').nth(2)).to_contain_text(total)
+    return row
 
 
 def run():
-    output = Path(os.environ.get('IPORTFOLIO_QA_OUTPUT', '/tmp/option-intraday-qa'))
+    output = Path(os.environ.get('IPORTFOLIO_QA_OUTPUT', '/tmp/option-intraday-minimal-qa'))
     output.mkdir(parents=True, exist_ok=True)
     engines = os.environ.get('IPORTFOLIO_QA_BROWSERS', 'chromium,webkit').split(',')
     widths = [int(x) for x in os.environ.get('IPORTFOLIO_QA_WIDTHS', '320,390,430,1440').split(',')]
@@ -82,7 +120,7 @@ def run():
             browser = getattr(p, engine).launch(headless=True)
             try:
                 for width in widths:
-                    state = {'missing': False}
+                    state = {'mode': 'known'}
                     errors, api_requests = [], []
                     context = browser.new_context(viewport={'width': width, 'height': 844},
                         is_mobile=width < 768, has_touch=width < 768, service_workers='block')
@@ -101,7 +139,12 @@ def run():
                         if path.startswith('/api/'):
                             api_requests.append((request.method, path))
                             if path in ('/api/intraday', '/api/intraday/refresh'):
-                                result = snapshot(parse_qs(url.query).get('date', [TODAY])[0], state['missing'])
+                                result = snapshot(parse_qs(url.query).get('date', [TODAY])[0], state['mode'] == 'missing')
+                                if state['mode'] in ('zero', 'none'):
+                                    for point in result['intraday']:
+                                        point.update(option_daily_pnl=0, combined_daily_pnl=point['daily_pnl'],
+                                            options_complete=True, options_present=state['mode'] != 'none')
+                                        point['option_details'] = [] if state['mode'] == 'none' else [{**point['option_details'][0], 'pnl':0}]
                             elif path == '/api/covered-calls':
                                 assert request.method == 'GET', 'Unexpected financial write'
                                 result = calls_fixture()
@@ -145,42 +188,46 @@ def run():
                     page.clock.set_fixed_time(NOW)
                     page.on('pageerror', lambda error: errors.append(str(error)))
                     page.goto('https://option-day.test/', wait_until='networkidle')
-                    expect(page.locator('#intradayPnlBreakdown')).to_be_visible()
+                    expect(page.locator('#coveredCallMover')).to_be_visible()
+                    expect(page.locator('#coveredCallMover')).to_contain_text('Covered Call')
+                    expect(page.locator('#coveredCallMover')).to_contain_text('-$150.00')
+                    expect(page.locator('#intradayPnlLabel')).to_have_text('Latest daily P&L')
                     expect(page.locator('#intradayLatestPnl')).to_contain_text('850.00')
-                    assert metric_values(page, '#intradayPnlBreakdown') == ['$1,000.00', '-$150.00', '$850.00']
-                    expect(page.locator('#intradayPnlBreakdown .pnl-cashflow')).to_contain_text('$1,299.35')
+                    expect(page.locator('#intradayLatestReturn')).to_contain_text('1.70%')
+                    expect(page.locator('#topMoversDailyTotal')).to_contain_text('850.00')
+                    assert page.locator('#coveredCallMover[data-mover-symbol]').count() == 0
                     no_overflow(page, f'{engine} {width} Today')
-                    chart = page.evaluate("""() => {
-                        const chart = Chart.getChart('intradayChart');
-                        return {labels: chart.data.labels, datasets:chart.data.datasets.map(s=>({label:s.label,data:s.data}))};
-                    }""")
-                    combined, stocks = chart['datasets'][:2]
-                    assert combined['data'][chart['labels'].index('09:30')] is None, 'Earlier missing option mark was backfilled'
-                    assert combined['data'][chart['labels'].index('09:45')] == 650
-                    assert combined['data'][chart['labels'].index('10:00')] == 850
-                    assert stocks['data'][chart['labels'].index('10:00')] == 1000
-                    assert all(value is None for i, value in enumerate(combined['data']) if chart['labels'][i] > '10:00'), 'Future chart values'
-                    # Exercise the real chart hover callback with its own point index.
+                    chart, series = original_chart(page)
+                    assert series['data'][chart['labels'].index('09:30')] == 400, 'Missing mark changed original stock curve'
+                    assert series['data'][chart['labels'].index('09:45')] == 650
+                    assert series['data'][chart['labels'].index('10:00')] == 850
+                    assert all(value is None for i, value in enumerate(series['data']) if chart['labels'][i] > '10:00'), 'Future chart values'
+                    # Exercise the original chart's hover callback with its own point index.
                     page.evaluate("""() => { const c=Chart.getChart('intradayChart');
                         c.options.onHover({}, [{index:c.data.labels.indexOf('09:45'),datasetIndex:0}], c); }""")
                     expect(page.locator('#intradayLatestPnl')).to_contain_text('650.00')
-                    assert metric_values(page, '#intradayPnlBreakdown') == ['$700.00', '-$50.00', '$650.00']
+                    expect(page.locator('#intradayLatestReturn')).to_contain_text('1.30%')
+                    expect(page.locator('#intradayPnlLabel')).to_have_text('Daily P&L · 09:45 ET')
+                    expect(page.locator('#coveredCallMover')).to_contain_text('-$50.00')
                     page.evaluate("""() => { const c=Chart.getChart('intradayChart');
-                        c.options.onHover({}, [{index:c.data.labels.indexOf('09:30'),datasetIndex:1}], c); }""")
+                        c.options.onHover({}, [{index:c.data.labels.indexOf('09:30'),datasetIndex:0}], c); }""")
                     expect(page.locator('#intradayLatestPnl')).to_contain_text('400.00')
-                    assert metric_values(page, '#intradayPnlBreakdown') == ['$400.00', 'Unavailable', 'Unavailable']
-                    expect(page.locator('#intradayPnlBreakdown .pnl-cashflow strong')).to_have_text('$0.00')
+                    expect(page.locator('#intradayLatestReturn')).to_contain_text('0.80%')
+                    expect(page.locator('#coveredCallMover')).to_contain_text('Pending')
+                    expect(page.locator('#coveredCallMover')).not_to_contain_text('-$150.00')
                     page.evaluate("document.querySelector('#intradayChart').onmouseleave()")
                     expect(page.locator('#intradayLatestPnl')).to_contain_text('850.00')
-                    page.screenshot(path=str(output / f'{engine}-{width}-today.png'), full_page=True, animations='disabled')
+                    capture(page, path=str(output / f'{engine}-{width}-today.png'), full_page=True, animations='disabled')
 
                     page.locator('#holdings-tab').click()
-                    expect(page.locator('#holdingsPnlBreakdown')).to_be_visible()
                     expect(page.locator('#trackerHoldings')).to_have_css('opacity', '1')
-                    assert metric_values(page, '#holdingsPnlBreakdown') == ['$1,000.00', '-$150.00', '$850.00']
+                    row = holding_item(page)
+                    labels = page.locator('#holdingsTable thead th').all_text_contents()
+                    assert [label.strip() for label in labels] == ['Symbol','Quantity','Avg Cost','Price','Today','YTD','YTD %','Invested','Market Value','Alloc %','Target %','Δ Target','Unrealized P&L','Unrealized %','Realized P&L','Total P&L','Total %','Annual %','W-Annual %'], labels
                     rows = page.locator('#holdingsBody .holding-row [data-col="5"]').all_text_contents()
                     amount = lambda value: float(value.replace('$','').replace(',','').replace('+','').strip())
                     assert abs(sum(amount(value) for value in rows) - 1000) < .01, rows
+                    assert abs(sum(amount(value) for value in rows) + amount(row.locator('[data-col="5"]').inner_text().replace('est.','').strip()) - 850) < .01
                     no_overflow(page, f'{engine} {width} Holdings')
                     if width < 768:
                         page.evaluate("window.scrollBy(0, document.querySelector('#holdingsTable').getBoundingClientRect().top + 160)")
@@ -193,43 +240,65 @@ def run():
                         page.locator('.holdings-table-scroll').evaluate('(element) => element.scrollTop = 150')
                         page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().top - document.querySelector('.holdings-table-scroll').getBoundingClientRect().top) < 2")
                         page.locator('.holdings-table-scroll').evaluate('(element) => element.scrollTop = 0')
-                    page.screenshot(path=str(output / f'{engine}-{width}-holdings.png'), full_page=True, animations='disabled')
+                    capture(page, path=str(output / f'{engine}-{width}-holdings.png'), full_page=True, animations='disabled')
                     page.locator('#anonymousBtn').click()
-                    assert metric_values(page, '#holdingsPnlBreakdown') == ['***', '***', '***']
-                    expect(page.locator('#holdingsPnlBreakdown .pnl-cashflow')).not_to_contain_text('1,299.35')
+                    expect(row.locator('[data-col="5"]')).to_contain_text('***')
+                    expect(row).not_to_contain_text('150.00')
+                    page.locator('#today-tab').click()
+                    expect(page.locator('#coveredCallMover')).to_contain_text('***')
+                    expect(page.locator('#coveredCallMover')).not_to_contain_text('150.00')
                     page.locator('#covered-calls-tab').click()
-                    expect(page.locator('#ccMetrics')).not_to_contain_text('2,600.00')
+                    expect(page.locator('#ccMetrics')).not_to_contain_text('1,398.05')
                     page.locator('#anonymousBtn').click()
-                    expect(page.locator('#ccMetrics')).to_contain_text('Premiums received')
-                    expect(page.locator('#ccMetrics')).to_contain_text('$2,600.00')
-                    expect(page.locator('#ccMetrics')).to_contain_text('$1,200.00')
-                    expect(page.locator('#ccMetrics')).to_contain_text('$1.95')
+                    assert page.locator('#ccMetrics > div').count() == 3, 'Original Option metrics changed'
+                    expect(page.locator('#ccMetrics')).to_contain_text('Open contracts')
+                    expect(page.locator('#ccMetrics')).to_contain_text('Net option cash flow')
+                    expect(page.locator('#ccMetrics')).to_contain_text('Realized option P&L')
                     expect(page.locator('#ccMetrics')).to_contain_text('$1,398.05')
-                    expect(page.locator('#ccProfitMetrics')).to_contain_text('$98.70')
+                    expect(page.locator('#ccMetrics')).to_contain_text('$98.70')
                     expect(page.locator('#trackerCoveredCalls')).to_have_css('opacity', '1')
                     no_overflow(page, f'{engine} {width} Option')
-                    page.screenshot(path=str(output / f'{engine}-{width}-cashflow.png'), full_page=True, animations='disabled')
+                    capture(page, path=str(output / f'{engine}-{width}-option.png'), full_page=True, animations='disabled')
 
-                    # Reload actual page against a missing-baseline response, avoiding direct UI mutation.
-                    state['missing'] = True
+                    # Missing baseline affects only the new item; original stock curve and return survive.
+                    state['mode'] = 'missing'
                     page.reload(wait_until='networkidle')
                     page.locator('#today-tab').click()
-                    expect(page.locator('#intradayPnlBreakdown')).to_contain_text('Combined total unavailable')
-                    assert metric_values(page, '#intradayPnlBreakdown') == ['$1,000.00', 'Unavailable', 'Unavailable']
-                    expect(page.locator('#intradayPnlLabel')).to_contain_text('Holdings subtotal')
+                    expect(page.locator('#coveredCallMover')).to_contain_text('Pending')
+                    expect(page.locator('#coveredCallMover')).to_contain_text('not included')
+                    expect(page.locator('#intradayPnlLabel')).to_have_text('Latest daily P&L')
                     expect(page.locator('#intradayLatestPnl')).to_contain_text('1,000.00')
-                    expect(page.locator('#intradayLatestReturn')).not_to_contain_text('2.00%')
+                    expect(page.locator('#intradayLatestReturn')).to_contain_text('2.00%')
+                    chart, series = original_chart(page)
+                    assert [series['data'][chart['labels'].index(t)] for t in ['09:30','09:45','10:00']] == [400,700,1000]
                     no_overflow(page, f'{engine} {width} missing baseline')
-                    page.screenshot(path=str(output / f'{engine}-{width}-missing.png'), full_page=True, animations='disabled')
+                    capture(page, path=str(output / f'{engine}-{width}-missing.png'), full_page=True, animations='disabled')
                     page.locator('#holdings-tab').click()
-                    expect(page.locator('#holdingsPnlBreakdown')).to_be_visible()
-                    assert metric_values(page, '#holdingsPnlBreakdown') == ['$1,000.00', 'Unavailable', 'Unavailable']
+                    holding_item(page, pending=True, total='1,000.00')
                     page.locator('#today-tab').click()
                     page.locator('#intradayDatePicker').fill(PREVIOUS)
                     page.locator('#intradayDatePicker').dispatch_event('change')
                     expect(page.locator('#intradayDatePicker')).to_have_value(PREVIOUS)
-                    expect(page.locator('#intradayPnlBreakdown')).to_contain_text('Combined total unavailable')
-                    assert page.evaluate("Chart.getChart('intradayChart').data.datasets[0].data.every(v=>v===null)"), 'Historical missing marks filled with current marks'
+                    expect(page.locator('#coveredCallMover')).to_contain_text('Pending')
+                    chart, series = original_chart(page)
+                    assert [series['data'][chart['labels'].index(t)] for t in ['09:30','09:45','10:00']] == [400,700,1000], 'Historical missing marks filled with current marks'
+
+                    state['mode'] = 'zero'
+                    page.reload(wait_until='networkidle')
+                    page.locator('#today-tab').click()
+                    expect(page.locator('#coveredCallMover')).to_contain_text('$0.00')
+                    expect(page.locator('#coveredCallMover')).not_to_contain_text('Pending')
+                    page.locator('#holdings-tab').click()
+                    holding_item(page, amount='$0.00', total='1,000.00')
+                    state['mode'] = 'none'
+                    page.reload(wait_until='networkidle')
+                    page.locator('#today-tab').click()
+                    expect(page.locator('#coveredCallMover')).not_to_be_visible()
+                    expect(page.locator('#intradayLatestPnl')).to_contain_text('1,000.00')
+                    expect(page.locator('#intradayLatestReturn')).to_contain_text('2.00%')
+                    original_chart(page)
+                    page.locator('#holdings-tab').click()
+                    expect(page.locator('#holdingsBody .covered-call-pnl-row')).to_have_count(0)
                     # Demo must replace native transport, remain synthetic and disallow ledger writes.
                     count_before = len(api_requests)
                     page.goto('https://option-day.test/demo', wait_until='networkidle')
@@ -242,7 +311,7 @@ def run():
                     assert not errors, errors
                     assert not [req for req in api_requests if req[0] != 'GET' and req[1] != '/api/intraday/refresh'], api_requests
                     context.close()
-                    print(f'PASS {engine} {width}: combined/missing P&L, Holdings reconciliation, hover/history, cash flow, privacy, Demo isolation, layout')
+                    print(f'PASS {engine} {width}: original single chart/labels/return, one CC item, known/pending/zero/none, Holdings sum, hover/history, privacy, Demo, sticky layout')
             finally:
                 browser.close()
     print('Screenshots:', output)

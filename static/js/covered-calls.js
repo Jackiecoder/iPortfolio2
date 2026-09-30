@@ -98,18 +98,16 @@
             renderHoldings();
             const summary = data.summary;
             $('ccMetrics').innerHTML = [
-                ['Premiums received', money(summary.premiums_received || 0)],
-                ['Buyback paid', money(summary.buyback_paid || 0)],
-                ['Fees paid', money(summary.fees_paid || 0)],
-                ['Net cash collected', money(summary.net_cash_flow || 0)],
+                ['Open contracts', number(summary.open_contracts || 0)],
+                ['Net option cash flow', money(summary.net_cash_flow || 0)],
+                ['Realized option P&L', money(summary.realized_option_pnl || 0)],
             ].map(([label, val]) => `<div><span>${label}</span><strong>${val}</strong></div>`).join('');
-            $('ccProfitMetrics').innerHTML = `<span>Open contracts <strong>${number(summary.open_contracts || 0)}</strong></span><span>Realized option P&amp;L <strong>${money(summary.realized_option_pnl || 0)}</strong></span>`;
             $('ccScopeNote').classList.toggle('d-none', !data.calls.length);
             const filter = value('ccFilter');
             const rows = data.calls.filter(c => filter === 'all' || (filter === 'open' ? c.remaining_contracts > 0 : c.remaining_contracts === 0));
             $('ccList').innerHTML = rows.length ? rows.map(c => {
                 const status = c.adjustment_required ? 'Contract adjustment required' : c.outcome_pending ? 'Awaiting broker outcome' : labels[c.status];
-                const events = c.events.map(e => `<li><span>${escape(e.date)} · ${escape(labels[e.action])} · ${number(e.contracts)} contract(s)</span><strong>Realized P&amp;L ${money(e.option_pnl)}</strong>${e.stock_transaction_id ? `<small>Linked stock sale #${e.stock_transaction_id}</small>` : ''}${e.replacement_call_id ? `<small>Replacement call #${e.replacement_call_id}</small>` : ''}</li>`).join('');
+                const events = c.events.map(e => `<li><span>${escape(e.date)} · ${escape(labels[e.action])} · ${number(e.contracts)} contract(s)</span><strong>${money(e.option_pnl)}</strong>${e.stock_transaction_id ? `<small>Linked stock sale #${e.stock_transaction_id}</small>` : ''}${e.replacement_call_id ? `<small>Replacement call #${e.replacement_call_id}</small>` : ''}</li>`).join('');
                 return `<article class="cc-card"><div class="cc-card-head"><div><h3>${escape(c.asset)} <span>${config.private() ? '***' : '$' + Number(c.strike).toFixed(2)} Call</span></h3><p>${escape(c.expiration)} · ${config.private() ? '***' : escape(c.broker || 'Unassigned account')}</p></div><span class="cc-status">${escape(status)}</span></div>
                     <dl class="cc-details"><div><dt>Contracts open / original</dt><dd>${number(c.remaining_contracts)} / ${number(c.contracts)}</dd></div><div><dt>Shares reserved</dt><dd>${c.adjustment_required ? 'Verify adjusted deliverable' : number(c.reserved_shares)}</dd></div><div><dt>Opening premium, net</dt><dd>${money(c.net_opening_premium)}</dd></div><div><dt>Realized option P&L</dt><dd>${money(c.realized_option_pnl)}</dd></div></dl>
                     <p class="small text-muted mb-2">Opened ${escape(c.date)} ${escape(c.transaction_time.slice(0, 5))} ET · Fill ${money(c.premium)}/share · Fees ${money(c.fees)}</p>

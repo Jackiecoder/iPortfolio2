@@ -1,12 +1,10 @@
 <div class="tab-pane fade" id="trackerCoveredCalls" role="tabpanel" aria-labelledby="covered-calls-tab" tabindex="0">
   <div class="cc-heading">
-    <div><h2>Covered Call</h2><p>Collect premium from shares you own. Record filled covered calls and track cash collected, buybacks and reserved shares.</p></div>
+    <div><h2>Covered Call</h2><p>Covered calls only. Record fills from your broker and track the shares committed to each call.</p></div>
     <button class="btn btn-primary" id="ccOpenBtn" type="button"><i class="bi bi-plus-lg me-1"></i>Record sell to open</button>
   </div>
   <div class="cc-metrics" id="ccMetrics" aria-live="polite"></div>
-  <p class="cc-scope">All recorded calls · Net cash collected = premiums received − buybacks − fees. Cash collected is not profit while a call remains open. Cash balances remain your manual snapshots.</p>
-  <div id="ccProfitMetrics" class="cc-profit-metrics" aria-live="polite"></div>
-  <p class="cc-scope">Realized option P&amp;L appears separately from cash flow. Open-call estimates use reference quotes; daily option changes appear in Intraday and Holdings when data is available. Stock values and tax calculations exclude option estimates.</p>
+  <p class="cc-scope">Option cash flows and realized option P&amp;L are tracked here separately from stock performance. Reference quote estimates appear on open calls and are excluded from stock totals. Tax adjustments are not included. Cash balances remain your manual snapshots.</p>
   <div class="d-flex justify-content-between align-items-center gap-2 mb-3">
     <label class="d-flex align-items-center gap-2" for="ccFilter">Show <select id="ccFilter" class="form-select form-select-sm"><option value="all">All calls</option><option value="open">Open calls</option><option value="closed">Completed calls</option></select></label>
     <button type="button" class="btn btn-sm btn-outline-secondary" id="ccReloadBtn">Refresh</button>

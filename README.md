@@ -372,20 +372,27 @@ or reported realized option P&L. Demo quotes are synthetic and never use Yahoo.
 
 Provider interface: https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.html
 
-### Covered-call cash flow and estimated daily P&L
+### Covered-call estimated daily P&L
 
-The Option tab leads with gross premiums received, buybacks paid, fees and net
-cash collected across recorded fills. Net cash collected is not realized profit.
-The existing realized option ledger and equity/cash balance accounting are unchanged.
+The existing Option ledger and quote cards retain their original layout. Cash
+flow stays separate from realized profit; equity values and cash balance
+accounting are unchanged.
 
 Single-day Intraday responses retain their original `daily_pnl` and equity
 `asset_changes`; additional `holdings_daily_pnl`, `option_daily_pnl`,
 `combined_daily_pnl`, `options_complete`, `option_cash_flow` and `option_details`
-provide the estimated covered-call contribution. Holdings and the Intraday header
-use the same complete snapshot for the breakdown. Unknown option valuations leave
-the combined graph empty at that point and label the displayed holdings subtotal.
+provide the estimated covered-call contribution. The UI keeps the original
+single solid chart, labels and Daily return, adding only one compact Covered Call
+item to Top Movers and a dedicated row before the Holdings and Category totals. The option
+item is never a stock ticker or an allocation holding.
+
+A complete option estimate is included once in the chart, headline, Top Movers
+header and the Holdings / Category Today totals. Daily return uses the same original holdings
+baseline as before. If the option contribution is unavailable, its item says
+Pending and explicitly remains excluded; existing holdings amounts, percentages
+and the chart keep working. Unknown option P&L is not displayed as zero.
 Historical multi-day value, performance and daily/monthly history remain
-holdings-only. Combined return percentages are not computed from a stock-only basis.
+holdings-only. Hover uses the selected point's option snapshot.
 
 The scheduled five-minute refresh saves quotes for recorded open standard calls to
 Postgres; manual refresh uses the same bounded collector. Prior-session baselines
@@ -407,5 +414,5 @@ value must not be deducted again. Unconfirmed expiry or contract adjustments blo
 valuation. No option price or estimate creates a transaction.
 
 Browser regression: `scripts/check_option_intraday_ui.py` uses synthetic fixtures
-for known/missing baselines, past points, cash flow, privacy and desktop/mobile
+for known/missing baselines, past points, the unchanged layout, privacy and desktop/mobile
 Holdings reconciliation in Chromium and WebKit.

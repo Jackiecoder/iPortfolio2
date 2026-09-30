@@ -124,35 +124,89 @@ test('the rendered Holdings row, total and category amounts use the displayed sn
 });
 
 
-test('option estimates reconcile beside holdings without altering stock rows, values or cost', () => {
-    const p = {...snapshot.intraday[0], holdings_daily_pnl:12.03, options_present:true,
-        options_complete:true,option_daily_pnl:-3,combined_daily_pnl:9.03,
-        option_cash_flow:999,option_details:[{id:1,symbol:'AAPL',pnl:-3}]};
-    const rows=TodayPnl.project(holdings,{date,intraday:[p]},date);
-    assert.equal(cents(rows),1203);
-    const v=TodayPnl.valuation(p);
-    assert.equal(v.holdings,12.03);assert.equal(v.options,-3);assert.equal(v.combined,9.03);
-    assert.equal(v.percent,null);
-    assert.equal(rows.reduce((n,r)=>n+r.market_value,0),250);
-    assert.equal(rows.reduce((n,r)=>n+r.cost_basis,0),150);
-    const html=TodayPnl.breakdownHtml(p,n=>n.toFixed(2));
-    assert.match(html,/9.03/);assert.match(html,/999.00/);assert.match(html,/Cash flow, not profit/);
+test('complete option contribution is separate from holding values and missing estimates preserve returns', () => {
+    const stock = {daily_pnl: 1000, daily_pnl_percent: 2, baseline_value: 50000};
+    const known = {...stock, options_present: true, options_complete: true, option_daily_pnl: -150};
+    assert.equal(TodayPnl.valuation(known).display, 850);
+    assert.ok(Math.abs(TodayPnl.valuation(known).percent - 1.7) < 1e-12);
+    for (const price of [null, NaN, Infinity]) {
+        const view = TodayPnl.valuation({...known, options_complete: false, option_daily_pnl: price});
+        assert.equal(view.display, 1000);
+        assert.equal(view.percent, 2);
+        assert.equal(view.complete, false);
+        assert.equal(view.contribution, 0);
+    }
+    const withoutOptions = TodayPnl.valuation(stock);
+    assert.equal(withoutOptions.hasOptions, false);
+    assert.equal(withoutOptions.display, 1000);
+    const zero = TodayPnl.valuation({...known, option_daily_pnl: 0});
+    assert.equal(zero.complete, true);
+    assert.equal(zero.options, 0);
+    assert.equal(zero.percent, 2);
+    assert.equal(TodayPnl.valuation({...known, baseline_value: 0}).percent, null);
+    const withQuotes = {...snapshot, intraday: [{...snapshot.intraday[0], ...known}]};
+    const rows = TodayPnl.project(holdings, withQuotes, date);
+    assert.deepEqual(rows.map(row => row.symbol), ['AAPL', 'CASH', 'SOLD']);
+    assert.equal(rows.reduce((sum, row) => sum + row.market_value, 0), 250);
 });
 
-test('missing option data does not become zero or a full portfolio total', () => {
-    const p={daily_pnl:100,options_present:true,options_complete:false,
-        option_daily_pnl:null,combined_daily_pnl:null,option_cash_flow:0,
-        option_details:[{pnl:null,reason:'missing_previous_session_reference'}]};
-    const v=TodayPnl.valuation(p);
-    assert.equal(v.display,100);assert.equal(v.combined,null);assert.equal(v.options,null);assert.equal(v.complete,false);
-    assert.match(TodayPnl.breakdownHtml(p,String),/Combined total unavailable/);
-    assert.equal(TodayPnl.breakdownHtml({daily_pnl:100,options_complete:true,options_present:false,option_details:[]},String),'');
-});
-
-test('option breakdown escapes quote data and masks all new amounts in privacy mode', () => {
-    const p={daily_pnl:100,options_present:true,options_complete:false,option_cash_flow:123,
-        option_details:[{pnl:null,reason:'<img onerror="boom">',asof:'<script>'}]};
-    const html=TodayPnl.breakdownHtml(p,String,true);
-    assert.doesNotMatch(html,/<img|<script>|123|100/);
-    assert.match(html,/\*\*\*/);
+test('Holdings has exactly one separate option row and Today TOTAL adds its estimate once', () => {
+    const tbody = {innerHTML: '', querySelectorAll: () => []};
+    const basePoint = {time: '12:00', holdings_complete: true, daily_pnl: 1000,
+        baseline_value: 50000, daily_pnl_percent: 2,
+        options_present: true, options_complete: true, option_daily_pnl: -150,
+        asset_changes: [{symbol: 'AAPL', quantity: 100, pnl: 1000, pnl_percent: 2}]};
+    const context = {
+        TodayPnl, latestTodaySnapshot: {date, intraday: [basePoint]}, marketTodayStr: () => date,
+        anonymousMode: false, targetAllocations: {}, targetGroups: {}, symbolToGroup: {},
+        holdingsSortColumn: 'symbol', holdingsSortDirection: 'asc', holdingsViewMode: 'flat',
+        window: {}, document: {getElementById: () => tbody, querySelectorAll: () => []},
+        formatCurrencyAlways: n => '$' + Number(n || 0).toFixed(2),
+        formatCurrency: n => '$' + Number(n || 0).toFixed(2),
+        formatPercent: n => Number(n || 0).toFixed(2) + '%',
+        formatNumber: n => String(n), formatPrice: (_symbol, n) => String(n ?? '--'),
+        getCategory: () => 'Individual Stocks', getTargetKey: symbol => symbol,
+        displaySymbol: symbol => symbol, escapeHtml: s => s,
+        getTargetPct: () => null, getAssetIconHtml: () => '', getGroupMarketValue: () => 0,
+    };
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function sortHoldings('), source.indexOf('async function toggleTransactionDetail(')), context);
+    const stockRows = [{symbol: 'AAPL', quantity: 100, market_value: 51000, cost_basis: 45000,
+        daily_change_amount: 1000, daily_change_percent: 2}];
+    context.renderHoldingsTable(stockRows);
+    assert.equal((tbody.innerHTML.match(/class="covered-call-pnl-row"/g) || []).length, 1);
+    const row = tbody.innerHTML.match(/<tr class="covered-call-pnl-row">[\s\S]*?<\/tr>/)[0];
+    assert.equal((row.match(/data-col=/g) || []).length, 19);
+    assert.match(row, /\$-150\.00/);
+    assert.doesNotMatch(row, /data-symbol|holding-row|target-pct-cell|data-cc-symbol/);
+    assert.ok(tbody.innerHTML.indexOf('covered-call-pnl-row') < tbody.innerHTML.indexOf('class="total-row"'));
+    const total = tbody.innerHTML.match(/<tr class="total-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(total, /data-col="5"[^>]*><strong>\+\$850\.00/);
+    assert.match(total, /data-col="6"><strong>\$51000\.00/);
+    assert.equal(stockRows.length, 1);
+    context.latestTodaySnapshot.intraday[0] = {...basePoint, options_complete: false, option_daily_pnl: null};
+    context.renderHoldingsTable(stockRows);
+    assert.match(tbody.innerHTML, /Pending · not included/);
+    const pendingTotal = tbody.innerHTML.match(/<tr class="total-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(pendingTotal, /data-col="5"[^>]*><strong>\+\$1000\.00/);
+    context.latestTodaySnapshot.intraday[0] = {...basePoint, options_complete: true, option_daily_pnl: 0};
+    context.renderHoldingsTable(stockRows);
+    assert.equal((tbody.innerHTML.match(/class="covered-call-pnl-row"/g) || []).length, 1);
+    context.anonymousMode = true;
+    context.renderHoldingsTable(stockRows);
+    const privateRow = tbody.innerHTML.match(/<tr class="covered-call-pnl-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(privateRow, /\*\*\*/);
+    vm.runInContext(source.slice(source.indexOf('function updateCategoryTable('), source.indexOf('function updateDividendsTable(')), context);
+    context.anonymousMode = false;
+    context.latestTodaySnapshot.intraday[0] = basePoint;
+    context.updateCategoryTable(stockRows);
+    assert.equal((tbody.innerHTML.match(/class="covered-call-category-row"/g) || []).length, 1);
+    const categoryTotal = tbody.innerHTML.match(/<tr class="total-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(categoryTotal, /<strong>\+\$850\.00<\/strong>/);
+    assert.match(categoryTotal, /<strong>\$51000\.00<\/strong>/);
+    context.latestTodaySnapshot.intraday[0] = {...basePoint, options_complete: false, option_daily_pnl: null};
+    context.updateCategoryTable(stockRows);
+    assert.match(tbody.innerHTML, /Pending · not included/);
+    const pendingCategoryTotal = tbody.innerHTML.match(/<tr class="total-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(pendingCategoryTotal, /<strong>\+\$1000\.00<\/strong>/);
 });
