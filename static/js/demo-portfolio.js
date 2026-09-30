@@ -215,6 +215,20 @@
             if (path === '/api/holdings' || path === '/api/positions') return response({ ...stamp(), holdings });
             if (path === '/api/targets') return response({ ...targets });
             if (path === '/api/transactions') return response({ transactions });
+            if (path === '/api/options/calls') {
+                const symbol = (query.get('symbol') || '').toUpperCase();
+                const holding = holdings.find(h => h.symbol === symbol && !symbol.endsWith('-USD'));
+                if (!holding) return response({ detail: 'Demo quotes are available for the sample stock/ETF tickers only (for example MU).' }, 404);
+                const expirations = [shift(today, 7), shift(today, 30), shift(today, 60)];
+                const expiration = query.get('expiration') || expirations[0];
+                if (!expirations.includes(expiration)) return response({detail:'Choose a listed demo expiration.'}, 400);
+                const center = Math.round(holding.current_price / 5) * 5;
+                return response({symbol, expiration, expirations, source:'Synthetic demo', fetched_at:now().toISOString(), quote_at:null,
+                    cache_status:'fresh', cache_age_seconds:0, delay_notice:'Illustrative sample prices, not market quotes.',
+                    calls:[-10, -5, 0, 5, 10].map(offset => { const strike = center + offset, mid = Math.max(1, 6 - offset * .2);
+                        return {contract_symbol:`DEMO-${symbol}-${expiration}-${strike}`, strike, bid:cents(mid-.25), ask:cents(mid+.25), mid, last:mid,
+                            last_trade_at:now().toISOString(), quote_at:null, volume:100, open_interest:200, quote_status:'two_sided'}; })});
+            }
             if (path === '/api/covered-calls') return response({ calls: [], inventory: holdings.filter(h => h.symbol !== 'CASH' && !h.symbol.endsWith('-USD')).map(h => ({ asset: h.symbol, broker: 'Demo account', shares: h.quantity, reserved_shares: 0, available_shares: h.quantity, available_contracts: Math.floor(h.quantity / 100) })), summary: { open_contracts: 0, net_cash_flow: 0, realized_option_pnl: 0, unrealized_option_pnl: null } });
             if (path.startsWith('/api/transactions/')) {
                 return response({ transactions: transactions.filter(t => t.asset === decodeURIComponent(path.split('/').at(-1))) });

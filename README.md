@@ -346,3 +346,28 @@ and rejects all network API requests.
 - **Frontend**: HTML/CSS/JavaScript with Chart.js
 - **Market Data**: yfinance
 - **Data Processing**: Pandas, Pydantic
+
+
+### Call reference quotes
+
+Option → Call prices looks up standard calls by ticker, listed expiry and optional
+strike using Yahoo Finance through yfinance. Open covered-call cards independently
+load matching quotes on entry, refresh and once a minute while the Option tab is
+visible. No quote fills a trade form or changes the ledger. `GET /api/options/calls`
+requires normal application authentication, and never reads private holdings.
+
+Bid, Ask, midpoint, Last and last-trade time are separate fields. Quotes may be
+delayed; Yahoo does not supply bid/ask timestamps here. Retrieval time is explicitly
+labeled and must not be treated as exchange quote time. A 60-second server cache,
+four-request concurrency cap and short failure backoff limit upstream calls. An
+upstream failure can return a clearly stale snapshot for at most 15 minutes;
+stale quotes are excluded from valuation. Missing/zero or crossed quotes never
+become a zero-cost buyback. No Last-price fallback is used for valuation.
+
+Buyback cost uses Ask × remaining contracts × 100. Estimated unrealized option
+P&L uses the valid bid/ask midpoint, subtracting the remaining share of opening
+fees. Closing fees and stock performance are excluded. Expired, adjusted and
+unmatched contracts have no valuation. These estimates do not change stock totals
+or reported realized option P&L. Demo quotes are synthetic and never use Yahoo.
+
+Provider interface: https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.html

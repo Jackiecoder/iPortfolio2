@@ -34,6 +34,7 @@ from .models import ActionType, CostBasisMethod, LotAllocation, Transaction, def
 from .sale_service import preview_sale
 from . import covered_call_repository
 from .covered_calls import CallOpen, CallEvent
+from .option_price_service import option_price_service, OptionQuoteUnavailable, OptionExpiryUnavailable
 from .portfolio import Portfolio
 from .price_service import price_service
 from .split_service import split_service
@@ -927,6 +928,19 @@ async def get_sold_assets():
     except Exception as e:
         logger.error(f"Error fetching sold assets: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/options/calls")
+async def get_call_quotes(symbol: str = Query(min_length=1, max_length=15, pattern=r"^[A-Za-z][A-Za-z0-9.\-]*$"),
+                          expiration: Optional[date_type] = None):
+    """Authenticated, read-only public call quotes; no portfolio or broker writes."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(option_price_service.get_chain,
+            symbol, expiration.isoformat() if expiration else None), timeout=25)
+    except (OptionExpiryUnavailable, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OptionQuoteUnavailable, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail="Call quotes are temporarily unavailable. Try again shortly.") from exc
 
 
 @app.get("/api/covered-calls")

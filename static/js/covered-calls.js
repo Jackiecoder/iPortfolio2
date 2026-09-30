@@ -64,6 +64,7 @@
         if (!form) return;
         const modal = $('coveredCallModal');
         let data = { calls: [], inventory: [], summary: {} };
+        const quotes = root.OptionQuotes?.init({demo:config.demo, private:config.private, money:config.money, calls:() => data.calls});
         let selectedCall = null, requestId, replacementId, busy = false;
         let coverageState = 'loading', coverageSymbol = null;
         let loadVersion = 0, previewVersion = 0, timer, allocations = [], lotContext = '';
@@ -111,9 +112,11 @@
                     <dl class="cc-details"><div><dt>Contracts open / original</dt><dd>${number(c.remaining_contracts)} / ${number(c.contracts)}</dd></div><div><dt>Shares reserved</dt><dd>${c.adjustment_required ? 'Verify adjusted deliverable' : number(c.reserved_shares)}</dd></div><div><dt>Opening premium, net</dt><dd>${money(c.net_opening_premium)}</dd></div><div><dt>Realized option P&L</dt><dd>${money(c.realized_option_pnl)}</dd></div></dl>
                     <p class="small text-muted mb-2">Opened ${escape(c.date)} ${escape(c.transaction_time.slice(0, 5))} ET · Fill ${money(c.premium)}/share · Fees ${money(c.fees)}</p>
                     ${c.comment && !config.private() ? `<p class="small">${escape(c.comment)}</p>` : ''}
+                    ${c.remaining_contracts > 0 ? `<div class="cc-quote" data-cc-quote="${c.id}"></div>` : ''}
                     ${events ? `<details><summary>Recorded events (${c.events.length})</summary><ul class="cc-events">${events}</ul></details>` : ''}
                     ${!config.demo ? `<div class="cc-actions">${c.remaining_contracts > 0 ? `<button type="button" class="btn btn-sm btn-outline-primary" data-cc-manage="${c.id}">Record outcome / roll</button>` : ''}${!c.events.length ? `<button type="button" class="btn btn-sm btn-link text-muted" data-cc-delete="${c.id}">Remove record</button>` : ''}</div>` : ''}</article>`;
             }).join('') : '<div class="cc-empty">No covered calls recorded.<br><span>Record an actual sell-to-open fill to start tracking collateral and option income.</span></div>';
+            quotes?.render();
         }
         async function load() {
             const version = ++loadVersion;
@@ -124,6 +127,7 @@
                 if (version !== loadVersion) return;
                 data = result; coverageState = 'ready';
                 render();
+                if ($('trackerCoveredCalls').classList.contains('active')) quotes?.loadCalls();
                 $('ccStatus').textContent = config.demo ? 'Demo is read-only. No personal option records are loaded.' : '';
             } catch (err) {
                 if (version === loadVersion) {

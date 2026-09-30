@@ -15,7 +15,7 @@ class DemoRouteTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.get('/demo')
                 self.assertEqual(response.status_code, 200)
                 self.assertIn('data-portfolio-mode="demo"', response.text)
-                self.assertIn('/static/js/demo-portfolio.js?v=3', response.text)
+                self.assertIn('/static/js/demo-portfolio.js?v=4', response.text)
                 self.assertIn('action="/" method="get"', response.text)
                 self.assertIn('aria-label="Demo portfolio" aria-pressed="true"', response.text)
                 for route in ['/api/summary', '/api/positions', '/api/transactions', '/demo/private']:
