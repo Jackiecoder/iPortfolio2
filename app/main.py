@@ -36,6 +36,7 @@ from . import covered_call_repository
 from .covered_calls import CallOpen, CallEvent
 from .option_price_service import option_price_service, OptionQuoteUnavailable, OptionExpiryUnavailable
 from .portfolio import Portfolio
+from .option_pnl_service import option_pnl_service
 from .price_service import price_service
 from .split_service import split_service
 from .simulator import run_simulation
@@ -359,6 +360,21 @@ async def get_positions():
     )
 
 
+def _with_option_intraday(points: list[dict], day: date_type, *, collect: bool = True) -> list[dict]:
+    """Attach option estimates without changing equity rows or hiding missing data."""
+    try:
+        return option_pnl_service.decorate(points, day, collect=collect)
+    except Exception:
+        logger.exception("Option intraday estimates unavailable")
+        return [{**point, "holdings_daily_pnl": point.get("daily_pnl"),
+                 "option_daily_pnl": None, "combined_daily_pnl": None,
+                 "options_complete": False, "option_cash_flow": None,
+                 "options_collection_complete": False, "options_present": True,
+                 "option_details": [], "options_status": "unavailable",
+                 "options_note": "Covered call data unavailable; holdings subtotal only."}
+                for point in points]
+
+
 def _refresh_intraday_cache(
     cache_key: str, target_date: date_type, interval: str, generation: int
 ) -> None:
@@ -373,6 +389,7 @@ def _refresh_intraday_cache(
             data = active_portfolio.get_intraday_values_for_date(
                 target_date, interval=interval
             )
+        data = _with_option_intraday(data, target_date)
         if generation == _portfolio_generation:
             _set_api_cache(
                 cache_key, {
@@ -586,6 +603,7 @@ def _refresh_market_snapshot(
         try:
             today = market_today()
             intraday = active_portfolio.get_intraday_values(interval="1m")
+            intraday = _with_option_intraday(intraday, today)
             entries[f"intraday_{today.isoformat()}_1m"] = {
                 "intraday": intraday,
                 "date": today.isoformat(),
@@ -624,14 +642,25 @@ def _build_today_snapshot() -> dict:
     if active_portfolio is None:
         raise RuntimeError("Portfolio is not loaded")
     metadata = {}
+    # Collect first: an option quote received in a later minute must not be
+    # attached to an earlier stock-chart point. Persist before returning to
+    # the request-billed scheduler, including on otherwise unchanged stock data.
+    try:
+        option_collection = option_pnl_service.collect()
+    except Exception:
+        logger.exception("Option reference collection unavailable")
+        option_collection = {"complete": False}
     intraday = active_portfolio.get_intraday_values(
         "1m", refresh_prices=True, use_live_quotes=False, refresh_metadata=metadata
     )
+    intraday = _with_option_intraday(intraday, today, collect=False)
     result = {
         "intraday": intraday,
         "date": today.isoformat(),
         "cache_status": "partial" if metadata.get("stale_symbols") else "fresh",
         "computed_at": datetime.now(MARKET_TZ).isoformat(),
+        "options_collection_complete": option_collection.get("complete", False) and (
+            intraday[-1].get("options_collection_complete", True) if intraday else True),
         **metadata,
     }
     with _api_cache_lock:
@@ -665,6 +694,7 @@ def _reusable_today_snapshot() -> Optional[dict]:
         and int(started_at.timestamp() // 60) == int(now.timestamp() // 60)
         and result.get("cache_status") == "fresh"
         and not result.get("stale_symbols")
+        and result.get("options_collection_complete") is not False
         and result.get("intraday")
     ):
         return {**result, "refresh_skipped": True}
@@ -708,7 +738,8 @@ async def scheduled_market_refresh():
     a retryable failure instead of reporting a successful scheduled collection.
     """
     result = await refresh_today_intraday()
-    if result.get("cache_status") != "fresh" or not result.get("intraday"):
+    if (result.get("cache_status") != "fresh" or not result.get("intraday")
+            or result.get("options_collection_complete") is False):
         logger.warning("Scheduled market refresh incomplete")
         raise HTTPException(status_code=503, detail="Market data collection incomplete")
     logger.info(
@@ -1425,6 +1456,7 @@ async def get_intraday(
             intraday_data = await asyncio.to_thread(
                 portfolio.get_intraday_values_for_date, target_date, interval
             )
+        intraday_data = await asyncio.to_thread(_with_option_intraday, intraday_data, target_date, collect=target_date == today)
         result = {
             "intraday": intraday_data,
             "date": target_date.isoformat(),
@@ -1469,7 +1501,7 @@ async def get_intraday_multiday(
         data = await asyncio.to_thread(
             portfolio.get_multiday_intraday_values, interval=interval, days=days
         )
-        result = {"data": data, "interval": interval, "days": days}
+        result = {"data": data, "interval": interval, "days": days, "valuation_scope": "holdings_only"}
         _set_api_cache(cache_key, result)
         return result
     except Exception as e:

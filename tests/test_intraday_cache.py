@@ -13,6 +13,12 @@ from app.price_service import PriceService, cache_service
 
 class ApiCacheTests(unittest.TestCase):
     def setUp(self):
+        # These tests isolate stock refresh/caching; option replay has its own suite.
+        for method, kwargs in (("collect", {"return_value": {"complete": True}}),
+                               ("decorate", {"side_effect": lambda points, *args, **kw: points})):
+            option_patch = patch.object(main.option_pnl_service, method, **kwargs)
+            option_patch.start()
+            self.addCleanup(option_patch.stop)
         with main._api_cache_lock:
             main._api_cache.clear()
             main._api_refreshing.clear()

@@ -122,3 +122,37 @@ test('the rendered Holdings row, total and category amounts use the displayed sn
     }
     assert.match(status.holdingsTodayStatus, /2026-09-08 12:00 ET/);
 });
+
+
+test('option estimates reconcile beside holdings without altering stock rows, values or cost', () => {
+    const p = {...snapshot.intraday[0], holdings_daily_pnl:12.03, options_present:true,
+        options_complete:true,option_daily_pnl:-3,combined_daily_pnl:9.03,
+        option_cash_flow:999,option_details:[{id:1,symbol:'AAPL',pnl:-3}]};
+    const rows=TodayPnl.project(holdings,{date,intraday:[p]},date);
+    assert.equal(cents(rows),1203);
+    const v=TodayPnl.valuation(p);
+    assert.equal(v.holdings,12.03);assert.equal(v.options,-3);assert.equal(v.combined,9.03);
+    assert.equal(v.percent,null);
+    assert.equal(rows.reduce((n,r)=>n+r.market_value,0),250);
+    assert.equal(rows.reduce((n,r)=>n+r.cost_basis,0),150);
+    const html=TodayPnl.breakdownHtml(p,n=>n.toFixed(2));
+    assert.match(html,/9.03/);assert.match(html,/999.00/);assert.match(html,/Cash flow, not profit/);
+});
+
+test('missing option data does not become zero or a full portfolio total', () => {
+    const p={daily_pnl:100,options_present:true,options_complete:false,
+        option_daily_pnl:null,combined_daily_pnl:null,option_cash_flow:0,
+        option_details:[{pnl:null,reason:'missing_previous_session_reference'}]};
+    const v=TodayPnl.valuation(p);
+    assert.equal(v.display,100);assert.equal(v.combined,null);assert.equal(v.options,null);assert.equal(v.complete,false);
+    assert.match(TodayPnl.breakdownHtml(p,String),/Combined total unavailable/);
+    assert.equal(TodayPnl.breakdownHtml({daily_pnl:100,options_complete:true,options_present:false,option_details:[]},String),'');
+});
+
+test('option breakdown escapes quote data and masks all new amounts in privacy mode', () => {
+    const p={daily_pnl:100,options_present:true,options_complete:false,option_cash_flow:123,
+        option_details:[{pnl:null,reason:'<img onerror="boom">',asof:'<script>'}]};
+    const html=TodayPnl.breakdownHtml(p,String,true);
+    assert.doesNotMatch(html,/<img|<script>|123|100/);
+    assert.match(html,/\*\*\*/);
+});

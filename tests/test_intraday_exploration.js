@@ -18,7 +18,7 @@ function setup() {
     const ctx = {canvas: get('intradayChart'), clearRect() {}, fillText() {}};
     const context = {document: {getElementById: get}, anonymousMode: false,
         intradayChart: null, renderedIntraday: null, holdingsData: [], baseHoldingsData: [],
-        TodayPnl: {latest: () => null}, marketTodayStr: () => '2026-09-24',
+        TodayPnl: {...require('../static/js/today-pnl.js'), latest: () => null}, marketTodayStr: () => '2026-09-24',
         updateHoldingsTable() {}, marketHoursPlugin: {}, hoverLinePlugin: {},
         formatCurrency: n => context.anonymousMode ? '***' : '$' + n.toFixed(2),
         formatCurrencyAlways: n => '$' + n.toFixed(2),
@@ -104,4 +104,57 @@ test('exploration preserves headline privacy and supports zero/missing return', 
     context.renderTopMoversAtTime('12:00', 0, null, []);
     assert.equal(get('intradayLatestPnl').textContent, '+$0.00');
     assert.equal(get('intradayLatestReturn').textContent, '--');
+});
+
+function withOptions(point, pnl, extra = {}) {
+    return {...point, holdings_daily_pnl:point.daily_pnl, options_present:true,
+        options_complete:pnl !== null, option_daily_pnl:pnl,
+        combined_daily_pnl:pnl === null ? null : point.daily_pnl + pnl,
+        option_cash_flow:1299.35,
+        option_details:[{id:1,symbol:'MU',pnl,reason:pnl === null ? 'missing_previous_session_reference' : null}], ...extra};
+}
+
+test('combined chart and headline use option mark changes, with separate holdings movers and cash flow', () => {
+    const {context, get, explore, point} = setup();
+    context.updateIntradayChart({date:'2026-09-23',intraday:[withOptions(point('12:48',1000),-150)]}, '1m');
+    assert.equal(get('intradayLatestPnl').textContent, '+$850.00');
+    assert.equal(get('intradayLatestReturn').textContent, '--');
+    assert.match(get('intradayPnlLabel').textContent, /Combined daily P&L/);
+    assert.match(get('topMoversDailyTotal').textContent, /1000.00/);
+    assert.equal(get('topMoversScope').textContent, 'Holdings daily P&L');
+    assert.match(get('intradayPnlBreakdown').innerHTML, /1299.35/);
+    assert.match(get('intradayPnlBreakdown').innerHTML, /Cash flow, not profit/);
+    const chart = context.intradayChart, index = chart.data.labels.indexOf('12:48');
+    assert.equal(chart.data.datasets[0].data[index],850);
+    assert.equal(chart.data.datasets[1].data[index],1000);
+    assert.equal(chart.data.datasets[0].spanGaps,false);
+    assert.equal(chart.data.datasets[0].pointRadius,1.5, 'Isolated known option marks stay visible without joining missing quotes');
+    explore('12:48');
+    assert.equal(get('intradayLatestPnl').textContent, '+$850.00');
+});
+
+test('unknown option points stay chart gaps and show holdings subtotal even when a later quote exists', () => {
+    const {context, get, explore, point} = setup();
+    context.updateIntradayChart({date:'2026-09-23',intraday:[withOptions(point('09:30',100),null),withOptions(point('12:48',1000),-150)]}, '1m');
+    const chart = context.intradayChart, early = chart.data.labels.indexOf('09:30');
+    assert.equal(chart.data.datasets[0].data[early],null);
+    assert.equal(chart.data.datasets[1].data[early],100);
+    explore('09:30');
+    assert.equal(get('intradayLatestPnl').textContent,'+$100.00');
+    assert.match(get('intradayPnlLabel').textContent,/Holdings subtotal · options unavailable/);
+    assert.match(get('intradayPnlBreakdown').innerHTML,/No prior-session reference has been collected yet/);
+    assert.match(get('intradayPnlBreakdown').innerHTML,/Unavailable/);
+    get('intradayChart').onmouseleave();
+    assert.equal(get('intradayLatestPnl').textContent,'+$850.00');
+});
+
+test('privacy masks cash and option estimates; a stock-only refresh removes option details', () => {
+    const {context, get, point} = setup();
+    context.anonymousMode=true;
+    context.updateIntradayChart({date:'2026-09-23',intraday:[withOptions(point('12:48',1000),-150)]}, '1m');
+    assert.equal(get('intradayLatestPnl').textContent,'***');
+    assert.doesNotMatch(get('intradayPnlBreakdown').innerHTML,/1299.35|850.00|150.00|1000.00/);
+    context.updateIntradayChart({date:'2026-09-23',intraday:[point('12:48',1000)]},'1m');
+    assert.equal(get('intradayPnlBreakdown').hidden,true);
+    assert.equal(context.intradayChart.data.datasets.length,1);
 });

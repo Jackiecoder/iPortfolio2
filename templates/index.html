@@ -24,7 +24,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=65">
+    <link rel="stylesheet" href="/static/css/style.css?v=66">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -347,7 +347,7 @@
             </div>
         </div>
 
-        <p id="ccScopeNote" class="small text-muted d-none">Stock, crypto and cash totals exclude option valuations. See Option for option cash flows and realized P&amp;L.</p>
+        <p id="ccScopeNote" class="small text-muted d-none">Stock, crypto and cash values exclude option valuations. Intraday and Holdings show a separate Covered Call contribution and combined daily estimate when quotes are available. See Option for cash collected and realized option P&amp;L.</p>
         </div>
         <div id="transactionUpdateNotice" class="transaction-update-notice d-none" role="status" aria-live="polite">
             <span class="value-spinner" aria-hidden="true"></span>
@@ -421,6 +421,7 @@
                     </div>
                     <span class="intraday-chart-hint"><i class="bi bi-cursor me-1"></i>Explore the chart to see each moment</span>
                 </div>
+                <div id="intradayPnlBreakdown" class="pnl-breakdown" aria-live="polite" hidden></div>
                 <div class="chart-container pnl-chart-container">
                     <canvas id="intradayChart"></canvas>
                 </div>
@@ -431,7 +432,7 @@
         <div class="card border-0 shadow-sm mb-4 movers-card">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h5 class="mb-0"><i class="bi bi-arrow-down-up me-2"></i>Today's Top Movers</h5>
-                <span class="small"><span id="topMoversTime" class="text-muted"></span>Daily P&amp;L: <span id="topMoversDailyTotal" class="fw-semibold">--</span></span>
+                <span class="small"><span id="topMoversTime" class="text-muted"></span><span id="topMoversScope">Daily P&amp;L</span>: <span id="topMoversDailyTotal" class="fw-semibold">--</span></span>
             </div>
             <div class="card-body">
                 <p class="small text-muted mb-2"><i class="bi bi-cursor me-1" aria-hidden="true"></i>Click any row for the latest price vs. 50 / 200-day moving averages.</p>
@@ -488,6 +489,7 @@
             <div class="tab-pane fade" id="trackerPerformance" role="tabpanel" aria-labelledby="performance-tab" tabindex="0">
 
         <div id="performanceDataStatus" class="dashboard-data-status" role="status"></div>
+        <p class="small text-muted">Performance, Daily P&amp;L and Monthly P&amp;L show stock and crypto holdings only. Covered Call daily estimates are shown separately in Intraday.</p>
 
         <!-- P&L Chart Row -->
         <div class="row g-4 mb-4">
@@ -807,6 +809,7 @@
                 </details>
             </div>
             <div class="card-body p-0">
+                <div id="holdingsPnlBreakdown" class="pnl-breakdown holdings-pnl-breakdown" aria-live="polite" hidden></div>
                 <div class="table-responsive holdings-table-scroll" tabindex="0" role="region" aria-label="Holdings table">
                     <table class="table table-hover mb-0" id="holdingsTable">
                         <thead class="table-light">
@@ -1267,14 +1270,14 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/js/trade-preview.js?v=1"></script>
     <script src="/static/js/sale-lots.js?v=1"></script>
-    <script src="/static/js/today-pnl.js?v=2"></script>
+    <script src="/static/js/today-pnl.js?v=3"></script>
     <script src="/static/js/transaction-updates.js?v=1"></script>
     <script src="/static/js/ticker-technicals.js?v=2"></script>
-    {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=4"></script>{% endif %}
+    {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=5"></script>{% endif %}
     <script src="/static/js/holdings-layout.js?v=1"></script>
     <script src="/static/js/option-quotes.js?v=1"></script>
-    <script src="/static/js/covered-calls.js?v=3"></script>
-    <script src="/static/js/app.js?v=158"></script>
+    <script src="/static/js/covered-calls.js?v=4"></script>
+    <script src="/static/js/app.js?v=159"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

@@ -61,6 +61,9 @@ class CoveredCallPostgresTests(unittest.TestCase):
         data = calls.list_calls()
         self.assertEqual(len(data['calls']), 1)
         self.assertEqual(data['summary']['net_cash_flow'], 1299.35)
+        self.assertEqual(data['summary']['premiums_received'], 1300)
+        self.assertEqual(data['summary']['buyback_paid'], 0)
+        self.assertEqual(data['summary']['fees_paid'], .65)
         self.assertEqual(data['summary']['realized_option_pnl'], 0)
         self.assertEqual(data['inventory'][0]['available_shares'], 50)
         self.assertEqual(self.shares(), 150)
@@ -122,6 +125,9 @@ class CoveredCallPostgresTests(unittest.TestCase):
         self.assertEqual(data['inventory'][0]['available_shares'], 50)
         self.assertAlmostEqual(result['realized_option_pnl'], -701.3)
         self.assertAlmostEqual(data['summary']['net_cash_flow'], 1498.05)
+        self.assertEqual(data['summary']['premiums_received'], 3500)
+        self.assertEqual(data['summary']['buyback_paid'], 2000)
+        self.assertAlmostEqual(data['summary']['fees_paid'], 1.95)
 
     def test_bad_roll_does_not_close_original(self):
         saved = calls.create_call(self.opening())

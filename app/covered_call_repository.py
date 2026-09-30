@@ -30,6 +30,13 @@ def list_calls():
     items = [summarize(c) for c in reversed(calls)]
     return {"calls": items, "inventory": positions, "summary": {
         "open_contracts": sum(c["remaining_contracts"] for c in items),
+        "premiums_received": float(sum((Decimal(str(c["gross_premium"])) for c in items), Decimal(0))),
+        "buyback_paid": float(sum((Decimal(str(e["premium"])) * e["contracts"] * 100
+                                  for c in items for e in c["events"]
+                                  if e["action"] in ("CLOSE", "ROLL")), Decimal(0))),
+        "fees_paid": float(sum((Decimal(str(c["fees"])) + sum(
+            (Decimal(str(e["fees"])) for e in c["events"]), Decimal(0))
+            for c in items), Decimal(0))),
         "net_cash_flow": float(sum((Decimal(str(c["net_cash_flow"])) for c in items), Decimal(0))),
         "realized_option_pnl": float(sum((Decimal(str(c["realized_option_pnl"])) for c in items), Decimal(0))),
         "unrealized_option_pnl": None,

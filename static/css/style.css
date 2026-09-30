@@ -3041,7 +3041,7 @@ body[data-secondary-tools="hidden"] { padding-left: 0; }
 .cc-heading { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:22px; }
 .cc-heading h2 { font-size:1.35rem; margin:0 0 6px; }
 .cc-heading p, .cc-scope { color:var(--slate-500, #64748b); font-size:.85rem; margin:0; }
-.cc-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-bottom:16px; }
+.cc-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:18px; margin-bottom:16px; }
 .cc-metrics > div { border-bottom:2px solid var(--slate-200, #e2e8f0); padding:8px 0 16px; }
 .cc-metrics span { display:block; font-size:.8rem; color:var(--slate-500, #64748b); }
 .cc-metrics strong { display:block; font-size:1.45rem; margin-top:5px; font-variant-numeric:tabular-nums; }
@@ -3109,3 +3109,24 @@ body[data-secondary-tools="hidden"] { padding-left: 0; }
 .oq-table { max-height:420px; }
 .oq-table th, .oq-table td { white-space:nowrap; padding:8px; font-size:.8rem; }
 @media(max-width:767px) { .oq-form { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } .oq-form .form-label { font-size:.8rem; } }
+
+/* Option cash flow stays distinct from daily mark-to-market estimates. */
+.cc-profit-metrics { display:flex; flex-wrap:wrap; gap:10px 28px; padding:0 0 12px; font-size:.9rem; }
+.cc-profit-metrics strong { margin-left:8px; font-variant-numeric:tabular-nums; }
+.cc-metrics > div:last-child { border-color:#087f65; }
+.pnl-breakdown { margin:10px 0 18px; padding:15px; border:1px solid var(--slate-200,#e2e8f0); border-radius:10px; background:var(--bs-tertiary-bg); }
+.pnl-breakdown[hidden] { display:none!important; }
+.pnl-breakdown-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.pnl-breakdown-grid span { display:block; color:var(--slate-500,#64748b); font-size:.75rem; }
+.pnl-breakdown-grid strong { display:block; margin-top:4px; font-size:1rem; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.pnl-breakdown-note { margin:12px 0 0; font-size:.75rem; color:var(--slate-500,#64748b); }
+.pnl-cashflow { border-top:1px solid var(--slate-200,#e2e8f0); padding-top:10px; margin:10px 0 0; font-size:.8rem; }
+.pnl-cashflow strong { margin-left:8px; }
+.pnl-cashflow span { display:block; margin-top:3px; font-size:.75rem; color:var(--slate-500,#64748b); }
+.holdings-pnl-breakdown { margin:0 16px 16px; }
+@media(max-width:575px) {
+ .pnl-breakdown-grid { grid-template-columns:1fr; gap:8px; }
+ .pnl-breakdown-grid > div { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+ .pnl-breakdown-grid strong { margin:0; font-size:.9rem; }
+ .cc-profit-metrics { flex-direction:column; }
+}

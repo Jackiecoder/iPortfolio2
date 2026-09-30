@@ -79,6 +79,12 @@ class SchedulerTokenTests(unittest.TestCase):
 
 class SchedulerRequestTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # These tests isolate stock refresh/caching; option replay has its own suite.
+        for method, kwargs in (("collect", {"return_value": {"complete": True}}),
+                               ("decorate", {"side_effect": lambda points, *args, **kw: points})):
+            option_patch = patch.object(main.option_pnl_service, method, **kwargs)
+            option_patch.start()
+            self.addCleanup(option_patch.stop)
         self.original_portfolio = main.portfolio
         main.portfolio = MagicMock()
         self.mode = patch.object(main, "MARKET_REFRESH_MODE", "scheduler")

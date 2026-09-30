@@ -127,3 +127,29 @@ CREATE INDEX IF NOT EXISTS idx_analysis_reports_created_at
     ON analysis_reports (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analysis_reports_period
     ON analysis_reports (period, created_at DESC);
+
+-- Recorded reference option midpoints, not exchange-certified closes or fills.
+-- Retain their original retrieval timestamp; unavailable quotes create no row.
+CREATE TABLE IF NOT EXISTS option_quote_snapshots (
+    asset TEXT NOT NULL,
+    expiration DATE NOT NULL,
+    strike NUMERIC NOT NULL CHECK (strike > 0),
+    contract_symbol TEXT NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL,
+    bid NUMERIC NOT NULL CHECK (bid > 0),
+    ask NUMERIC NOT NULL CHECK (ask >= bid),
+    mid NUMERIC NOT NULL CHECK (mid > 0 AND abs(mid - (bid + ask) / 2) <= 0.000001),
+    source TEXT NOT NULL,
+    PRIMARY KEY (asset, expiration, strike, captured_at)
+);
+CREATE INDEX IF NOT EXISTS idx_option_quote_snapshots_captured_at ON option_quote_snapshots (captured_at);
+
+-- A persisted per-day deliverable check prevents a cold instance from assuming
+-- that a standard opening is still standard after a later corporate action.
+CREATE TABLE IF NOT EXISTS option_contract_checks (
+    call_id BIGINT NOT NULL REFERENCES covered_calls(id) ON DELETE CASCADE,
+    market_date DATE NOT NULL,
+    adjustment_factor NUMERIC NOT NULL CHECK (adjustment_factor > 0),
+    checked_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (call_id, market_date)
+);

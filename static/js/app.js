@@ -1690,6 +1690,11 @@ function updateHoldingsTable(holdings) {
     baseHoldingsData = holdings || [];
     holdingsData = TodayPnl.project(baseHoldingsData, latestTodaySnapshot, marketTodayStr());
     const point = TodayPnl.latest(latestTodaySnapshot, marketTodayStr());
+    const breakdown = document.getElementById('holdingsPnlBreakdown');
+    if (breakdown) {
+        breakdown.hidden = !TodayPnl.valuation(point).hasOptions;
+        breakdown.innerHTML = TodayPnl.breakdownHtml(point, formatCurrency, anonymousMode);
+    }
     setDashboardStatus('holdingsTodayStatus', point
         ? `Today ${latestTodaySnapshot.date} ${point.time} ET · Same snapshot as Intraday P&L${latestTodaySnapshot.stale_symbols?.length ? ' · Some prices are cached' : ''}`
         : 'Today P&L updating…');
@@ -3184,7 +3189,7 @@ const marketHoursPlugin = {
                     ctx.fillText(pnlText, x - 10, y - 5);
 
                     // Only show percentage if not in anonymous mode
-                    if (!anonymousMode) {
+                    if (!anonymousMode && dataset.pnlPercentData[lastIndex] != null) {
                         const pnlPercent = dataset.pnlPercentData[lastIndex];
                         const percentText = `(${sign}${pnlPercent.toFixed(2)}%)`;
                         ctx.font = '11px sans-serif';
@@ -3195,7 +3200,7 @@ const marketHoursPlugin = {
                     ctx.fillText(pnlText, x + 10, y - 5);
 
                     // Only show percentage if not in anonymous mode
-                    if (!anonymousMode) {
+                    if (!anonymousMode && dataset.pnlPercentData[lastIndex] != null) {
                         const pnlPercent = dataset.pnlPercentData[lastIndex];
                         const percentText = `(${sign}${pnlPercent.toFixed(2)}%)`;
                         ctx.font = '11px sans-serif';
@@ -3225,16 +3230,23 @@ function generateFullDayLabels(interval) {
 function updateIntradaySpotlight(intraday, selectedPoint = null) {
     const points = intraday?.intraday || [];
     const latest = selectedPoint || [...points].reverse().find(point => point.daily_pnl != null);
+    const view = TodayPnl.valuation(latest);
     const value = document.getElementById('intradayLatestPnl');
     const percent = document.getElementById('intradayLatestReturn');
     const label = document.getElementById('intradayPnlLabel');
-    if (label) label.textContent = selectedPoint ? `Daily P&L · ${selectedPoint.time} ET` : 'Latest daily P&L';
+    const breakdown = document.getElementById('intradayPnlBreakdown');
+    if (breakdown) {
+        breakdown.hidden = !view.hasOptions;
+        breakdown.innerHTML = TodayPnl.breakdownHtml(latest, formatCurrency, anonymousMode);
+    }
+    const scope = view.hasOptions ? (view.complete ? 'Combined daily P&L · est.' : 'Holdings subtotal · options unavailable') : 'Daily P&L';
+    if (label) label.textContent = selectedPoint ? `${scope} · ${selectedPoint.time} ET` : view.hasOptions ? scope : 'Latest daily P&L';
     if (!value || !percent) return;
-    value.textContent = latest ? `${latest.daily_pnl >= 0 && !anonymousMode ? '+' : ''}${formatCurrency(latest.daily_pnl)}` : '--';
-    percent.textContent = latest ? formatPercent(latest.daily_pnl_percent) : '--';
+    value.textContent = view.display !== null ? `${view.display >= 0 && !anonymousMode ? '+' : ''}${formatCurrency(view.display)}` : '--';
+    percent.textContent = view.percent !== null ? formatPercent(view.percent) : '--';
     for (const element of [value, percent]) {
-        element.classList.toggle('text-success', !!latest && latest.daily_pnl >= 0);
-        element.classList.toggle('text-danger', !!latest && latest.daily_pnl < 0);
+        element.classList.toggle('text-success', view.display !== null && view.display >= 0);
+        element.classList.toggle('text-danger', view.display !== null && view.display < 0);
     }
 }
 
@@ -3305,6 +3317,9 @@ function updateIntradayChart(intraday, interval = '5m') {
 
     // Map data to full day labels, fill with null for missing times
     const pnlData = [];
+    const holdingsPnlData = [];
+    const pointData = [];
+    const hasOptions = rawData.some(point => TodayPnl.valuation(point).hasOptions);
     const pnlPercentData = [];
     const baselineData = [];
     const assetChangesData = [];
@@ -3313,14 +3328,20 @@ function updateIntradayChart(intraday, interval = '5m') {
 
     fullDayLabels.forEach((time, index) => {
         if (dataMap[time]) {
-            pnlData.push(dataMap[time].daily_pnl);
-            pnlPercentData.push(dataMap[time].daily_pnl_percent);
+            const point = dataMap[time];
+            const view = TodayPnl.valuation(point);
+            pnlData.push(view.combined);
+            holdingsPnlData.push(view.holdings);
+            pointData.push(point);
+            pnlPercentData.push(view.percent);
             baselineData.push(dataMap[time].baseline_value);
             assetChangesData.push(dataMap[time].asset_changes || []);
             lastDataIndex = index;
-            lastPnl = dataMap[time].daily_pnl;
+            lastPnl = TodayPnl.valuation(dataMap[time]).display ?? 0;
         } else {
             pnlData.push(null);
+            holdingsPnlData.push(null);
+            pointData.push(null);
             pnlPercentData.push(null);
             baselineData.push(null);
             assetChangesData.push(null);
@@ -3343,8 +3364,9 @@ function updateIntradayChart(intraday, interval = '5m') {
         data: {
             labels: fullDayLabels,
             datasets: [{
-                label: "Daily P&L",
+                label: hasOptions ? 'Combined daily P&L · est.' : 'Daily P&L',
                 data: pnlData,
+                pointData: pointData,
                 pnlPercentData: pnlPercentData,
                 baselineData: baselineData,
                 assetChangesData: assetChangesData,
@@ -3359,10 +3381,15 @@ function updateIntradayChart(intraday, interval = '5m') {
                     target: 'origin'
                 },
                 tension: 0.2,
-                pointRadius: 0,
+                pointRadius: hasOptions ? 1.5 : 0,
                 pointHoverRadius: 4,
-                spanGaps: true
-            }]
+                spanGaps: !hasOptions
+            }, ...(hasOptions ? [{
+                label: 'Holdings daily P&L', data: holdingsPnlData,
+                borderColor: '#7b8ca5', backgroundColor: 'transparent', borderWidth: 1.5,
+                borderDash: [4, 4], pointRadius: 0, pointHoverRadius: 3,
+                fill: false, tension: 0.2, spanGaps: false
+            }] : [])]
         },
         options: {
             responsive: true,
@@ -3378,9 +3405,9 @@ function updateIntradayChart(intraday, interval = '5m') {
                 if (activeElements && activeElements.length > 0) {
                     const idx = activeElements[0].index;
                     const ac = ds.assetChangesData ? ds.assetChangesData[idx] : null;
-                    if (ac != null && ds.data[idx] != null) {
+                    if (ac != null && ds.pointData?.[idx]) {
                         renderTopMoversAtTime(chart.data.labels[idx], ds.data[idx],
-                            ds.pnlPercentData ? ds.pnlPercentData[idx] : null, ac);
+                            ds.pnlPercentData ? ds.pnlPercentData[idx] : null, ac, true, ds.pointData[idx]);
                         return;
                     }
                 }
@@ -3388,7 +3415,7 @@ function updateIntradayChart(intraday, interval = '5m') {
             },
             plugins: {
                 legend: {
-                    display: false
+                    display: hasOptions
                 },
                 datalabels: {
                     display: false
@@ -4366,13 +4393,18 @@ function renderTopMovers(holdings) {
 }
 
 // Hover view: movers as of a specific intraday time point.
-function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges, selected = true) {
-    const point = {time: timeLabel, daily_pnl: pnl, daily_pnl_percent: pnlPercent};
+function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges, selected = true, sourcePoint = null) {
+    const point = sourcePoint || {time: timeLabel, daily_pnl: pnl, daily_pnl_percent: pnlPercent};
+    const view = TodayPnl.valuation(point);
     updateIntradaySpotlight({intraday: [point]}, selected ? point : null);
+    const scope = document.getElementById('topMoversScope');
+    if (scope) scope.textContent = view.hasOptions ? 'Holdings daily P&L' : 'Daily P&L';
     const items = (assetChanges || [])
         .filter(a => a.symbol !== 'CASH' && a.pnl != null && Math.abs(a.pnl) >= 0.01)
         .map(a => ({ ...a, amt: a.pnl, pct: a.pnl_percent }));
-    _setTopMoversHeader(pnl || 0, pnlPercent != null ? pnlPercent : null, timeLabel);
+    // Movers remain stock/crypto contributors; the option contribution and
+    // combined total are explicitly separated immediately above the chart.
+    _setTopMoversHeader(view.holdings ?? 0, point.daily_pnl_percent ?? null, timeLabel);
     _fillMoverTables(items);
 }
 
@@ -4385,7 +4417,7 @@ function renderTopMoversDefault() {
         && ds.assetChangesData && ds.assetChangesData[ds.lastDataIndex]) {
         const i = ds.lastDataIndex;
         renderTopMoversAtTime(intradayChart.data.labels[i], ds.data[i],
-            ds.pnlPercentData ? ds.pnlPercentData[i] : null, ds.assetChangesData[i], false);
+            ds.pnlPercentData ? ds.pnlPercentData[i] : null, ds.assetChangesData[i], false, ds.pointData?.[i]);
     } else {
         updateIntradaySpotlight(renderedIntraday);
         renderTopMovers(holdingsData);

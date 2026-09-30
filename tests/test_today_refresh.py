@@ -12,6 +12,12 @@ from app.price_service import PriceService, cache_service
 
 class TodayRefreshTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # These tests isolate stock refresh/caching; option replay has its own suite.
+        for method, kwargs in (("collect", {"return_value": {"complete": True}}),
+                               ("decorate", {"side_effect": lambda points, *args, **kw: points})):
+            option_patch = patch.object(main.option_pnl_service, method, **kwargs)
+            option_patch.start()
+            self.addCleanup(option_patch.stop)
         self.old_task = main._today_refresh_task
         main._today_refresh_task = None
         main._clear_api_cache()
@@ -180,6 +186,12 @@ class MinutePersistenceTests(unittest.TestCase):
 
 class MinuteReuseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # These tests isolate stock refresh/caching; option replay has its own suite.
+        for method, kwargs in (("collect", {"return_value": {"complete": True}}),
+                               ("decorate", {"side_effect": lambda points, *args, **kw: points})):
+            option_patch = patch.object(main.option_pnl_service, method, **kwargs)
+            option_patch.start()
+            self.addCleanup(option_patch.stop)
         main._clear_api_cache()
         self.old_task = main._today_refresh_task
         main._today_refresh_task = None
