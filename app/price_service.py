@@ -1,4 +1,4 @@
-"""Price service for fetching market data using yfinance."""
+"""Market prices from Coinbase Exchange (Crypto) and yfinance (stocks)."""
 
 import logging
 import random
@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import yfinance as yf
 
 from .cache_service import cache_service
+from .crypto_price_service import CryptoPriceService, is_crypto_symbol
 
 logger = logging.getLogger(__name__)
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -60,6 +61,7 @@ class PriceService:
         """
         self.cache_ttl = timedelta(seconds=cache_ttl_seconds)
         self.live_cache_ttl = timedelta(seconds=live_cache_ttl_seconds)
+        self.crypto = CryptoPriceService(live_ttl_seconds=live_cache_ttl_seconds)
         self._price_cache: dict[str, tuple[Decimal, datetime]] = {}
         self._history_cache: dict[str, tuple[dict, datetime]] = {}
         self._prev_close_cache: dict[str, tuple[dict, datetime]] = {}
@@ -93,6 +95,11 @@ class PriceService:
                 return price
 
         try:
+            if self._is_crypto_symbol(symbol):
+                price = self.crypto.get_current_price(symbol)
+                self._price_cache[symbol] = (price, datetime.now())
+                return price
+
             ticker = yf.Ticker(symbol)
             # Try intraday data first for real-time price
             hist = ticker.history(period="1d", interval="1m", prepost=True)
@@ -138,6 +145,13 @@ class PriceService:
                     continue
             uncached_symbols.append(symbol)
 
+        if not uncached_symbols:
+            return results
+
+        crypto_symbols = [s for s in uncached_symbols if self._is_crypto_symbol(s)]
+        for symbol in crypto_symbols:
+            results[symbol] = self.get_current_price(symbol)
+        uncached_symbols = [s for s in uncached_symbols if not self._is_crypto_symbol(s)]
         if not uncached_symbols:
             return results
 
@@ -240,18 +254,20 @@ class PriceService:
             fetch_start = start_d
 
         try:
-            ticker = yf.Ticker(symbol)
-            history = _yf_call_with_retry(
-                ticker.history,
-                start=fetch_start,
-                end=end_d + timedelta(days=1),
-            )
+            if self._is_crypto_symbol(symbol):
+                fetched_prices = self.crypto.get_historical_prices(symbol, fetch_start, end_d)
+            else:
+                ticker = yf.Ticker(symbol)
+                history = _yf_call_with_retry(
+                    ticker.history,
+                    start=fetch_start,
+                    end=end_d + timedelta(days=1),
+                )
 
-            fetched_prices = {}
-            for date_idx, row in history.iterrows():
-                # Convert pandas Timestamp to datetime.date
-                date_key = date_idx.to_pydatetime().date()
-                fetched_prices[date_key] = Decimal(str(row["Close"]))
+                fetched_prices = {}
+                for date_idx, row in history.iterrows():
+                    date_key = date_idx.to_pydatetime().date()
+                    fetched_prices[date_key] = Decimal(str(row["Close"]))
 
             # Save newly fetched prices to persistent cache (only dates > 7 days old)
             if fetched_prices:
@@ -294,10 +310,15 @@ class PriceService:
         end_d = end_date.date() if isinstance(end_date, datetime) else end_date
 
         cutoff_date = cache_service._get_cache_cutoff_date()
-        results: dict[str, dict[date, Decimal]] = {}
+        results: dict[str, dict[date, Decimal]] = {
+            symbol: self.get_historical_prices(symbol, start_date, end_date)
+            for symbol in symbols if self._is_crypto_symbol(symbol)
+        }
         need_fetch: dict[str, date] = {}  # symbol -> earliest date to fetch
 
         for symbol in symbols:
+            if self._is_crypto_symbol(symbol):
+                continue
             cache_key = f"{symbol}_{start_d}_{end_d}"
             if cache_key in self._history_cache:
                 data, cached_at = self._history_cache[cache_key]
@@ -402,57 +423,26 @@ class PriceService:
 
     def _is_crypto_symbol(self, symbol: str) -> bool:
         """Return True if this symbol is a 24/7 crypto asset."""
-        return any(symbol.endswith(s) for s in ('-USD', '-USDT', '-BTC', '-ETH'))
+        return is_crypto_symbol(symbol)
 
     def _get_crypto_est_midnight_price_batch(self, symbols: list[str]) -> dict[str, Optional[Decimal]]:
-        """For crypto, return the price at the most recent EST midnight using 1h data."""
-        import pytz
-        from datetime import datetime as dt
-
-        cache_key = str(sorted(symbols))
+        """Use Coinbase's hourly open at Eastern midnight as a stable baseline."""
+        today = _market_today()
+        cache_key = f"{today.isoformat()}_{sorted(symbols)}"
         if cache_key in self._crypto_midnight_cache:
-            data, cached_at = self._crypto_midnight_cache[cache_key]
-            if datetime.now() - cached_at < self.cache_ttl:
-                return data
-
-        est = pytz.timezone('US/Eastern')
-        now_est = dt.now(est)
-        # Today's midnight in EST (start of today)
-        midnight_est = est.localize(dt(now_est.year, now_est.month, now_est.day, 0, 0, 0))
-        midnight_utc = midnight_est.astimezone(pytz.utc)
-
-        logger.info(f"Crypto baseline: using EST midnight = {midnight_est} (UTC: {midnight_utc})")
+            data, _cached_at = self._crypto_midnight_cache[cache_key]
+            return data
 
         results = {}
         for symbol in symbols:
             try:
-                ticker = yf.Ticker(symbol)
-                history = ticker.history(period="2d", interval="1h")
-
-                if history.empty:
-                    results[symbol] = None
-                    continue
-
-                # Normalise index to UTC
-                if history.index.tzinfo is None:
-                    history.index = history.index.tz_localize('UTC')
-                else:
-                    history.index = history.index.tz_convert(pytz.utc)
-
-                # Find the last candle whose open time is <= midnight UTC
-                before = history[history.index <= midnight_utc]
-                if before.empty:
-                    results[symbol] = Decimal(str(history['Close'].iloc[0]))
-                else:
-                    results[symbol] = Decimal(str(before['Close'].iloc[-1]))
-
-                logger.info(f"Crypto EST midnight price for {symbol}: {results[symbol]}")
-
+                results[symbol] = self.crypto.get_midnight_prices(symbol, today, today).get(today)
             except Exception as e:
-                logger.error(f"Error fetching EST midnight price for {symbol}: {e}")
+                logger.error(f"Error fetching Coinbase midnight price for {symbol}: {e}")
                 results[symbol] = None
 
-        self._crypto_midnight_cache[cache_key] = (results, datetime.now())
+        if all(price is not None for price in results.values()):
+            self._crypto_midnight_cache[cache_key] = (results, datetime.now())
         return results
 
     def get_historical_prices_est_midnight_batch(
@@ -460,44 +450,25 @@ class PriceService:
     ) -> dict[str, dict]:
         """Return prices at EST midnight for each of the past num_days days.
 
-        Crypto (24/7): sampled from 1h intraday at midnight ET.
+        Crypto (24/7): Coinbase hourly open at midnight ET.
         Stocks: use daily close (market closes ~4 pm ET, well before midnight).
 
         Returns: {symbol: {date: Decimal}}
         """
-        import pytz
-        from datetime import datetime as dt, timedelta
-
-        est = pytz.timezone('US/Eastern')
-        now_est = dt.now(est)
+        today = _market_today()
         results: dict[str, dict] = {s: {} for s in symbols}
 
         crypto = [s for s in symbols if self._is_crypto_symbol(s)]
         stocks  = [s for s in symbols if not self._is_crypto_symbol(s)]
 
-        # Crypto: 1-hour data sampled at midnight ET
+        # Crypto: an hourly open never includes price movement after midnight.
         for symbol in crypto:
             try:
-                ticker = yf.Ticker(symbol)
-                history = ticker.history(period=f"{num_days + 3}d", interval="1h")
-                if history.empty:
-                    continue
-                if history.index.tzinfo is None:
-                    history.index = history.index.tz_localize('UTC')
-                else:
-                    history.index = history.index.tz_convert(pytz.utc)
-
-                for i in range(num_days):
-                    target_date = now_est.date() - timedelta(days=i)
-                    midnight_utc = est.localize(
-                        dt(target_date.year, target_date.month, target_date.day, 0, 0, 0)
-                    ).astimezone(pytz.utc)
-
-                    before = history[history.index <= midnight_utc]
-                    if not before.empty:
-                        results[symbol][target_date] = Decimal(str(before['Close'].iloc[-1]))
+                results[symbol] = self.crypto.get_midnight_prices(
+                    symbol, today - timedelta(days=num_days - 1), today
+                )
             except Exception as e:
-                logger.error(f"Error fetching EST midnight history for {symbol}: {e}")
+                logger.error(f"Error fetching Coinbase midnight history for {symbol}: {e}")
 
         # Stocks: daily close
         if stocks:
@@ -818,11 +789,9 @@ class PriceService:
     ) -> list[dict]:
         """Get intraday prices for a symbol.
 
-        Data source strategy per date:
-        - today: always yfinance (live)
-        - within yfinance window: yfinance is authoritative; DB is updated on every fetch
-          so stale/bad data gets corrected automatically
-        - beyond yfinance window: DB only (yfinance can't provide it anyway)
+        Crypto uses Coinbase's paginated 24/7 candles; stocks use yfinance.
+        Complete historical days are reused from Postgres. Missing/incomplete
+        Crypto days can be refetched beyond Yahoo's rolling history window.
 
         Args:
             symbol: Yahoo Finance ticker symbol
@@ -845,11 +814,11 @@ class PriceService:
                 return data
 
         today_str = today.isoformat()
-        is_crypto = symbol.endswith('-USD')
+        is_crypto = self._is_crypto_symbol(symbol)
 
         if days == 1:
             # Today only: fetch once per live TTL, then incrementally persist bars.
-            prices = self._fetch_intraday_from_yfinance(symbol, interval, 1, today, is_crypto)
+            prices = self._fetch_intraday_prices(symbol, interval, 1, today, is_crypto)
             if prices:
                 date_str = prices[0]["date"]
                 self._save_intraday_if_valid(
@@ -858,6 +827,8 @@ class PriceService:
             if prices:
                 self._intraday_cache[intraday_key] = (prices, datetime.now())
                 return prices
+            if not stale_prices:
+                stale_prices = cache_service.get_intraday_prices(symbol, today_str, interval)
             if stale_prices:
                 logger.warning(
                     "Using stale intraday fallback for %s [%s]", symbol, interval
@@ -867,16 +838,17 @@ class PriceService:
             return []
 
         # days > 1: mix of live + DB
-        db_only_prices: list[dict] = []   # served from DB (window or beyond)
-        needs_yf_dates: list[date] = []   # must be fetched live from yfinance
+        db_only_prices: list[dict] = []
+        needs_live_dates: list[date] = []
+        incomplete_prices: list[dict] = []
 
         for i in range(days):
             check_date = today - timedelta(days=i)
             check_str = check_date.isoformat()
             if check_str >= today_str:
                 # Today — always fetch live (never cached)
-                needs_yf_dates.append(check_date)
-            elif self._is_within_yf_window(check_str, interval):
+                needs_live_dates.append(check_date)
+            elif is_crypto or self._is_within_yf_window(check_str, interval):
                 # A live crypto day may have been persisted before midnight. Do not
                 # treat that partial snapshot as a complete historical day.
                 cached = cache_service.get_intraday_prices(symbol, check_str, interval)
@@ -886,14 +858,15 @@ class PriceService:
                 )
                 if cache_is_complete:
                     db_only_prices.extend(cached)
-                    logger.info(f"Intraday DB hit (within window): {symbol} {check_str} [{interval}]")
+                    logger.info(f"Intraday DB hit: {symbol} {check_str} [{interval}]")
                 else:
                     if cached:
+                        incomplete_prices.extend(cached)
                         logger.info(
-                            "Incomplete intraday DB cache: %s %s [%s], refreshing from yfinance",
+                            "Incomplete intraday DB cache: %s %s [%s], refreshing from provider",
                             symbol, check_str, interval,
                         )
-                    needs_yf_dates.append(check_date)
+                    needs_live_dates.append(check_date)
             else:
                 # Beyond yfinance window — DB only
                 cached = cache_service.get_intraday_prices(symbol, check_str, interval)
@@ -902,25 +875,46 @@ class PriceService:
                     logger.info(f"Intraday DB-only: {symbol} {check_str} [{interval}]")
                 # If not in DB either, data is simply unavailable
 
-        # Fetch everything yfinance can cover in one call
-        yf_prices: list[dict] = []
-        if needs_yf_dates:
-            oldest = min(needs_yf_dates)
-            live_days = (today - oldest).days + 1  # +1 so start_dt lands one day before oldest
-            yf_prices = self._fetch_intraday_from_yfinance(symbol, interval, live_days, today, is_crypto)
+        # Coinbase paginates this range; Yahoo applies its rolling window.
+        live_prices: list[dict] = []
+        if needs_live_dates:
+            oldest = min(needs_live_dates)
+            live_days = (today - oldest).days + 1
+            live_prices = self._fetch_intraday_prices(symbol, interval, live_days, today, is_crypto)
 
-            # Update DB for every completed day yfinance returned
+            # Update DB for every completed day the provider returned.
             fetched_by_date: dict[str, list[dict]] = {}
-            for p in yf_prices:
+            for p in live_prices:
                 fetched_by_date.setdefault(p["date"], []).append(p)
             for date_str, date_prices in fetched_by_date.items():
                 if date_str < today_str:
-                    # Always overwrite within the window so bad data gets corrected
+                    # Refresh incomplete historical days with the full result.
                     self._save_intraday_if_valid(symbol, date_str, interval, date_prices, overwrite=True)
 
-        all_prices = sorted(db_only_prices + yf_prices, key=lambda p: (p["date"], p["time"]))
+        # Fetching through an incomplete older day can overlap complete DB days.
+        # Prefer fresh bars and keep cached/stale data if the provider fails.
+        fetched_dates = {p["date"] for p in live_prices}
+        by_time = {
+            (p["date"], p["time"]): p
+            for p in stale_prices + incomplete_prices + db_only_prices
+            if p["date"] not in fetched_dates
+        }
+        by_time.update({(p["date"], p["time"]): p for p in live_prices})
+        all_prices = [by_time[key] for key in sorted(by_time)]
         self._intraday_cache[intraday_key] = (all_prices, datetime.now())
         return all_prices
+
+    def _fetch_intraday_prices(self, symbol, interval, days, today, is_crypto):
+        if is_crypto:
+            return self._fetch_intraday_from_coinbase(symbol, interval, days, today)
+        return self._fetch_intraday_from_yfinance(symbol, interval, days, today, False)
+
+    def _fetch_intraday_from_coinbase(self, symbol, interval, days, today) -> list[dict]:
+        try:
+            return self.crypto.get_intraday_prices(symbol, interval, days, today)
+        except Exception as exc:
+            logger.error("Error fetching Coinbase intraday for %s: %s", symbol, exc)
+            return []
 
     def _save_intraday_if_valid(
         self,
@@ -967,11 +961,13 @@ class PriceService:
         try:
             ticker = yf.Ticker(symbol)
             # Use start/end instead of period= to avoid the double-+2 overshoot
-            start_dt = today - timedelta(days=safe_days)
-            end_dt   = today + timedelta(days=1)   # yfinance end is exclusive
+            # Explicit Eastern boundaries also prevent UTC-based symbols from
+            # interpreting tomorrow's date as tonight at 20:00 Eastern.
+            start_dt = datetime.combine(today - timedelta(days=safe_days), datetime.min.time(), MARKET_TZ)
+            end_dt = datetime.combine(today + timedelta(days=1), datetime.min.time(), MARKET_TZ)
             history = ticker.history(
-                start=start_dt.isoformat(),
-                end=end_dt.isoformat(),
+                start=start_dt,
+                end=end_dt,
                 interval=interval,
                 prepost=True,
             )
@@ -1044,7 +1040,7 @@ class PriceService:
 
         logger.info(f"Fetching intraday data for symbols: {symbols}, days: {days}")
 
-        # Bound concurrency to reduce total latency without overwhelming yfinance.
+        # Bound concurrency; Coinbase requests also share their own rate limiter.
         worker_count = min(6, len(symbols))
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
@@ -1092,6 +1088,7 @@ class PriceService:
         self._previous_market_session_cache.clear()
         self._crypto_midnight_cache.clear()
         self._intraday_cache.clear()
+        self.crypto.clear_cache()
 
     def clear_live_cache(self) -> None:
         """Expire only live quotes and intraday bars.
