@@ -1,14 +1,16 @@
+{# Temporarily pause secondary tools; flip this flag to restore both tools. #}
+{% set secondary_tools_enabled = false %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>iPortfolio · Personal Capital Desk</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <title>iPortfolio · {{ 'Demo Portfolio' if demo_mode else 'Personal Capital Desk' }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=3">
     <!-- PWA: installable as an app -->
-    <link rel="manifest" href="/static/manifest.webmanifest">
-    <meta name="theme-color" content="#0b1324">
-    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+    <link rel="manifest" href="/static/{{ 'manifest-demo.webmanifest?v=2' if demo_mode else 'manifest.webmanifest?v=3' }}">
+    <meta name="theme-color" content="#19365a">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png?v=3">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -17,45 +19,44 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
-    <!-- Editorial display + highly legible data typography -->
+    <!-- Display typography with tabular, readable financial data -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=38">
+    <link rel="stylesheet" href="/static/css/style.css?v=67">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 </head>
-<body>
+<body data-portfolio-mode="{{ 'demo' if demo_mode else 'personal' }}" data-secondary-tools="{{ 'visible' if secondary_tools_enabled else 'hidden' }}">
     <!-- Navbar -->
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-top app-navbar">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-top app-navbar" aria-label="Workspace">
         <div class="container-fluid">
             <a class="navbar-brand" href="#" aria-label="iPortfolio home">
                 <span class="brand-mark" aria-hidden="true">
-                    <svg viewBox="0 0 36 36" role="img">
-                        <path d="M6 25.5 12.5 19l5 3.5L29.5 10" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"/>
-                        <circle cx="6" cy="25.5" r="2.5"/><circle cx="17.5" cy="22.5" r="2.5"/><circle cx="29.5" cy="10" r="2.5"/>
-                    </svg>
+                    <img src="/static/favicon.svg?v=3" alt="" width="39" height="39">
                 </span>
                 <span class="brand-copy">
-                    <span class="brand-name">Live portfolio</span>
-                    <span class="brand-tagline">iPortfolio · Personal capital desk</span>
+                    <span class="brand-name">iPortfolio</span>
+                    <span class="brand-tagline">Personal capital desk</span>
                 </span>
             </a>
+            {% if secondary_tools_enabled %}
             <!-- Page toggle -->
             <div class="d-flex gap-1 mx-auto page-switcher" aria-label="Primary navigation">
                 <button id="pageTrackerBtn" class="btn btn-light btn-sm px-3">
                     <i class="bi bi-briefcase me-1"></i>Tracker
                 </button>
-                <button id="pageSimulatorBtn" class="btn btn-outline-light btn-sm px-3">
+                <button id="pageSimulatorBtn" data-secondary-tool {{ '' if secondary_tools_enabled else 'hidden' }} class="btn btn-outline-light btn-sm px-3">
                     <i class="bi bi-play-circle me-1"></i>Simulator
                 </button>
-                <button id="pageAnalysisBtn" class="btn btn-outline-light btn-sm px-3">
+                <button id="pageAnalysisBtn" data-secondary-tool {{ '' if secondary_tools_enabled else 'hidden' }} class="btn btn-outline-light btn-sm px-3">
                     <i class="bi bi-clipboard-data me-1"></i>Analysis
                 </button>
             </div>
+            {% endif %}
             <div class="d-flex gap-2 align-items-center nav-actions">
                 <button id="installAppBtn" class="btn btn-light btn-sm d-none" title="Install Portfolio Tracker as an app">
                     <i class="bi bi-download me-1"></i><span class="nav-label">Install App</span>
@@ -63,13 +64,26 @@
                 <button id="anonymousBtn" class="btn btn-outline-light btn-sm" title="Toggle Anonymous Mode">
                     <i class="bi bi-eye"></i>
                 </button>
+                <form class="portfolio-mode-control" action="{{ '/' if demo_mode else '/demo' }}" method="get">
+                    <button id="demoPortfolioBtn" type="submit" class="btn btn-outline-light btn-sm"
+                            aria-label="Demo portfolio" aria-pressed="{{ 'true' if demo_mode else 'false' }}"
+                            title="{{ 'Switch back to my portfolio' if demo_mode else 'Switch to demo portfolio' }}">
+                        <i class="bi {{ 'bi-check2' if demo_mode else 'bi-easel2' }}" aria-hidden="true"></i><span>Demo</span>
+                    </button>
+                </form>
                 <button id="addTxnBtn" class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTxnModal" aria-label="Add transaction" title="Add transaction">
                     <i class="bi bi-plus-lg me-1"></i><span class="nav-label">Add Transaction</span>
                 </button>
-                <button id="refreshBtn" class="btn btn-sm nav-refresh-btn" type="button" aria-label="Refresh portfolio data" title="Load the latest precomputed portfolio snapshot">
-                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
-                    <span class="refresh-label">Refresh</span>
-                </button>
+                <div class="nav-refresh-controls">
+                    <button id="refreshBtn" class="btn btn-sm nav-refresh-btn" type="button" aria-label="Refresh intraday chart" title="Fetch minute prices and update the intraday chart">
+                        <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                        <span class="refresh-label">Refresh</span>
+                    </button>
+                    <label class="nav-live-control" for="liveRefreshSwitch" title="Automatically refresh every minute; turns off after 3 hours">
+                        <span>Live</span>
+                        <input id="liveRefreshSwitch" type="checkbox" role="switch" aria-label="Live refresh every minute" aria-description="Automatically turns off 3 hours after enabling, including across page reloads.">
+                    </label>
+                </div>
             </div>
         </div>
     </nav>
@@ -84,6 +98,7 @@
               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
+              {% if demo_mode %}<div class="demo-action-note">Try a trade with the sample holdings. This demo is read-only; nothing is saved to an account.</div>{% endif %}
               <div class="btn-group txn-mode-switch" role="group" aria-label="Transaction mode">
                 <button type="button" class="btn btn-primary active" id="txnRecordModeBtn" aria-pressed="true">
                   <i class="bi bi-pencil-square me-1"></i>Record Trade
@@ -131,7 +146,7 @@
                     <option value="" selected>None</option>
                     <option value="__other__">Other…</option>
                   </select>
-                  <input type="text" id="brokerOther" class="form-control mt-2 d-none" placeholder="Enter broker (e.g. fidelity)">
+                  <input type="text" id="brokerOther" class="form-control mt-2 d-none" placeholder="Enter broker (e.g. Fidelity, OKX)">
                 </div>
                 <div class="col-4" id="fldQuantity">
                   <label class="form-label" for="txnQuantityInput">
@@ -169,6 +184,26 @@
                   <input type="text" class="form-control" name="comment">
                 </div>
               </div>
+              <section id="saleLotsPanel" class="sale-lots-panel d-none" aria-label="Sell tax lots">
+                <label class="form-label fw-semibold" for="sellCostBasisMethod">Cost Basis Method</label>
+                <select id="sellCostBasisMethod" class="form-select">
+                  <option value="FIFO">First In First Out (FIFO)</option>
+                  <option value="LIFO">Last In First Out (LIFO)</option>
+                  <option value="HIGH_COST">High Cost — highest purchase cost first</option>
+                  <option value="LOW_COST">Low Cost — lowest purchase cost first</option>
+                  <option value="TAX_OPTIMIZER">Tax Optimizer — losses first, gains last</option>
+                  <option value="SPECIFIC">Specified Lots — choose quantities yourself</option>
+                </select>
+                <p id="saleLotsMethodHelp" class="form-text mb-3"></p>
+                <div class="sale-lots-heading">
+                  <strong id="saleLotsAccount">Available lots</strong>
+                  <button type="button" id="saleLotsCustomize" class="btn btn-sm btn-outline-secondary" disabled>Specify these lots</button>
+                </div>
+                <div id="saleLotsStatus" class="small my-2" role="status" aria-live="polite"></div>
+                <div id="saleLotsList" class="sale-lots-list"></div>
+                <div id="saleLotsSummary" class="sale-lots-summary d-none" aria-live="polite"></div>
+                <p class="form-text mb-0 mt-3">Preview only until you click Add. Match these lots in your broker's sell order. Estimates exclude wash-sale adjustments and personal tax rates; Tax Optimizer does not guarantee the lowest tax.</p>
+              </section>
               <section id="tradePreviewPanel" class="trade-preview-panel d-none" aria-live="polite">
                 <div class="trade-preview-heading">
                   <div>
@@ -213,36 +248,27 @@
     </div>
 
     <main class="container-fluid py-4 app-shell">
+    {% if demo_mode %}
+    <aside class="demo-banner" aria-label="Demo portfolio">
+        <div class="demo-banner-icon" aria-hidden="true"><i class="bi bi-shield-check"></i></div>
+        <div class="demo-banner-copy">
+            <strong>Demo portfolio <span class="demo-sample-label">SAMPLE DATA</span></strong>
+            <p>Showing sample holdings. Your personal portfolio stays private.</p>
+        </div>
+    </aside>
+    {% endif %}
 
     <!-- ============================================================ TRACKER PAGE -->
     <div id="trackerPage">
-        <header id="portfolioRefreshCard" class="portfolio-brief mb-3" role="button" tabindex="0" aria-label="Refresh portfolio market data" title="Click to load the latest precomputed portfolio snapshot">
+        <div id="portfolioOverview">
+        <header id="portfolioRefreshCard" class="portfolio-brief mb-3" role="button" tabindex="0" aria-label="Refresh intraday chart" title="Click to update the intraday chart">
             <div class="portfolio-brief-copy">
-                <div class="brief-eyebrow"><span></span> Market-aware holdings</div>
-                <h1>Capital, in motion.</h1>
-                <p>Track today’s signal without losing sight of the long game.</p>
-            </div>
-            <div class="asset-trajectory" aria-hidden="true">
-                <svg viewBox="0 0 620 112" preserveAspectRatio="none">
-                    <defs>
-                        <linearGradient id="trajectoryStroke" x1="0" x2="1">
-                            <stop offset="0" stop-color="#6f8cff" stop-opacity=".18"/>
-                            <stop offset=".55" stop-color="#6f8cff"/>
-                            <stop offset="1" stop-color="#42d59b"/>
-                        </linearGradient>
-                        <linearGradient id="trajectoryFill" x1="0" x2="0" y1="0" y2="1">
-                            <stop offset="0" stop-color="#4f73ef" stop-opacity=".2"/>
-                            <stop offset="1" stop-color="#4f73ef" stop-opacity="0"/>
-                        </linearGradient>
-                    </defs>
-                    <path class="trajectory-area" d="M0 92 C70 92 75 70 130 76 S210 91 256 59 S333 70 374 46 S445 55 487 29 S557 34 620 10 L620 112 L0 112Z"/>
-                    <path class="trajectory-line" d="M0 92 C70 92 75 70 130 76 S210 91 256 59 S333 70 374 46 S445 55 487 29 S557 34 620 10"/>
-                    <circle cx="620" cy="10" r="5"/>
-                </svg>
+                <h1>{{ 'Demo portfolio' if demo_mode else 'Portfolio overview' }}</h1>
+                <p>{{ 'Six holdings. A complete view of how iPortfolio works.' if demo_mode else 'Your positions, performance and activity, in one place.' }}</p>
             </div>
             <div class="brief-refresh-cue" aria-hidden="true">
                 <i class="bi bi-arrow-clockwise"></i>
-                <span>Click to refresh</span>
+                <span>Refresh prices</span>
             </div>
         </header>
         <!-- Portfolio Summary toggle + condensed strip -->
@@ -251,13 +277,15 @@
                 <i class="bi bi-chevron-down me-1" id="summaryToggleIcon"></i><span id="summaryToggleLabel">Show summary</span>
             </button>
             <div class="summary-strip text-muted small flex-grow-1" id="summaryStrip">
-                <span class="summary-strip-item"><span class="text-muted">Unreal</span> <span id="stripUnrealizedPnl">--</span></span>
+                <span class="summary-strip-item"><span class="text-muted">Unrealized P&amp;L</span> <span id="stripUnrealizedPnl">--</span></span>
                 <span class="summary-strip-sep">·</span>
-                <span class="summary-strip-item"><span class="text-muted">Total</span> <span id="stripTotalPnl">--</span></span>
+                <span class="summary-strip-item"><span class="text-muted">Total P&amp;L</span> <span id="stripTotalPnl">--</span></span>
                 <span class="summary-strip-sep">·</span>
-                <span class="summary-strip-item"><span class="text-muted">YTD</span> <span id="stripYtdPnl">--</span></span>
+                <span class="summary-strip-item"><span class="text-muted">Year to date</span> <span id="stripYtdPnl">--</span></span>
             </div>
         </div>
+
+        <div id="summaryDataStatus" class="dashboard-data-status" role="status"></div>
 
         <!-- Portfolio Summary Cards (collapsible) -->
         <div class="collapse" id="summaryCardsCollapse">
@@ -319,6 +347,15 @@
             </div>
         </div>
 
+        <p id="ccScopeNote" class="small text-muted d-none">Stock, crypto and cash totals exclude option valuations. See Option for option cash flows and realized P&amp;L.</p>
+        </div>
+        <div id="transactionUpdateNotice" class="transaction-update-notice d-none" role="status" aria-live="polite">
+            <span class="value-spinner" aria-hidden="true"></span>
+            <span id="transactionUpdateMessage"></span>
+            <button id="transactionUpdateRetry" type="button" class="btn btn-sm btn-outline-primary d-none">Retry update</button>
+        </div>
+
+        <div id="trackerTabsStart" aria-hidden="true"></div>
         <ul class="nav nav-pills tracker-tabs mb-3" id="trackerTabs" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="today-tab" data-bs-toggle="pill" data-bs-target="#trackerToday" type="button" role="tab" aria-controls="trackerToday" aria-selected="true">
@@ -340,15 +377,24 @@
                     <i class="bi bi-list-ul me-1"></i>Transactions
                 </button>
             </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="covered-calls-tab" data-bs-toggle="pill" data-bs-target="#trackerCoveredCalls" type="button" role="tab" aria-controls="trackerCoveredCalls" aria-selected="false"><i class="bi bi-shield-check me-1"></i>Option</button>
+            </li>
         </ul>
 
         <div class="tab-content tracker-tab-content" id="trackerTabContent">
+            {% include 'covered_calls.html' %}
             <div class="tab-pane fade show active" id="trackerToday" role="tabpanel" aria-labelledby="today-tab" tabindex="0">
 
         <!-- Intraday P&L Chart -->
-        <div class="card border-0 shadow-sm mb-4">
+        <div class="card border-0 shadow-sm mb-4 intraday-focus-card">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Intraday P&L</h5>
+                <div class="d-flex align-items-center flex-wrap gap-2">
+                    <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Intraday P&L</h5>
+                    <button id="intradayRefreshBtn" class="btn btn-sm btn-primary intraday-refresh-btn" type="button" aria-label="Refresh intraday chart" title="Fetch minute prices and update the intraday chart">
+                        <i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>
+                    </button>
+                </div>
                 <div class="intraday-date-controls d-flex align-items-center gap-2 flex-wrap">
                     <div class="input-group input-group-sm intraday-date-nav" role="group" aria-label="Intraday date navigation">
                         <button type="button" id="intradayPrevDate" class="btn btn-outline-secondary" title="Previous day" aria-label="Previous day">
@@ -359,10 +405,22 @@
                             <i class="bi bi-chevron-right" aria-hidden="true"></i>
                         </button>
                     </div>
-                    <span id="intradayIntervalBadge" class="badge bg-secondary px-2 py-1" style="font-size:0.8rem;">--</span>
+                    <span id="intradayFreshnessBadge" class="badge" role="status" aria-label="Last update time unavailable" title="Last chart update">--</span>
+                    <span id="intradayUpdatedAt" class="small text-muted" role="status"></span>
                 </div>
             </div>
             <div class="card-body">
+                <div class="intraday-spotlight" aria-live="polite">
+                    <div class="intraday-headline">
+                        <span class="spotlight-label" id="intradayPnlLabel">Latest daily P&amp;L</span>
+                        <strong id="intradayLatestPnl">--</strong>
+                    </div>
+                    <div class="intraday-return">
+                        <span class="spotlight-label">Daily return</span>
+                        <span id="intradayLatestReturn">--</span>
+                    </div>
+                    <span class="intraday-chart-hint"><i class="bi bi-cursor me-1"></i>Explore the chart to see each moment</span>
+                </div>
                 <div class="chart-container pnl-chart-container">
                     <canvas id="intradayChart"></canvas>
                 </div>
@@ -370,12 +428,20 @@
         </div>
 
         <!-- Today's Top Movers: per-holding daily P&L contributions -->
-        <div class="card border-0 shadow-sm mb-4">
+        <div class="card border-0 shadow-sm mb-4 movers-card">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h5 class="mb-0"><i class="bi bi-arrow-down-up me-2"></i>Today's Top Movers</h5>
                 <span class="small"><span id="topMoversTime" class="text-muted"></span>Daily P&amp;L: <span id="topMoversDailyTotal" class="fw-semibold">--</span></span>
             </div>
             <div class="card-body">
+                <p class="small text-muted mb-2"><i class="bi bi-cursor me-1" aria-hidden="true"></i>Click any row for the latest price vs. 50 / 200-day moving averages.</p>
+                <div class="trade-activity-legend" aria-label="Trade activity color legend">
+                    <span>Net trading vs. opening position:</span>
+                    <span class="trade-activity-badge trade-activity-closed">Closed</span>
+                    <span class="trade-activity-badge trade-activity-bought">Opened / added ≥25%</span>
+                    <span class="trade-activity-badge trade-activity-reduced">Reduced ≥50%</span>
+                    <span class="trade-activity-badge trade-activity-trimmed">Reduced &lt;50%</span>
+                </div>
                 <div class="row g-3">
                     <div class="col-md-6">
                         <div class="fw-semibold text-success mb-2"><i class="bi bi-caret-up-fill me-1"></i>Top Gainers</div>
@@ -414,12 +480,15 @@
                         </div>
                     </div>
                 </div>
+                <div id="coveredCallMover" class="covered-call-mover" aria-live="polite" hidden></div>
             </div>
         </div>
 
             </div>
 
             <div class="tab-pane fade" id="trackerPerformance" role="tabpanel" aria-labelledby="performance-tab" tabindex="0">
+
+        <div id="performanceDataStatus" class="dashboard-data-status" role="status"></div>
 
         <!-- P&L Chart Row -->
         <div class="row g-4 mb-4">
@@ -462,6 +531,7 @@
                         <h5 class="mb-0"><i class="bi bi-calendar-day me-2"></i>Daily P&L <span class="text-muted small ms-2">current week + past 4 weeks</span></h5>
                     </div>
                     <div class="card-body p-0">
+                        <div id="dailyPnlDataStatus" class="dashboard-data-status" role="status"></div>
                         <div id="dailyPnlList" class="daily-pnl-list">
                             <div class="text-center text-muted py-4">
                                 <div class="spinner-border spinner-border-sm me-2" role="status"></div>
@@ -484,6 +554,7 @@
                         </button>
                     </div>
                     <div class="card-body p-0" id="monthlyPnlBody">
+                        <div id="monthlyPnlDataStatus" class="dashboard-data-status" role="status"></div>
                         <div id="monthlyPnlList" class="monthly-pnl-list">
                             <div class="text-center text-muted py-4">
                                 <div class="spinner-border spinner-border-sm me-2" role="status"></div>
@@ -657,15 +728,67 @@
                 </div>
             </div>
         </section>
+        <!-- Individual ticker history with ledger trade markers -->
+        <div class="card border-0 shadow-sm mb-4 ticker-history-card">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0 d-flex align-items-center gap-2">
+                    <button class="card-collapse-btn" type="button" data-collapse-target="tickerHistoryBody" data-default-collapsed="true" aria-expanded="false" aria-controls="tickerHistoryBody" aria-label="Collapse / expand Ticker history">
+                        <i class="bi bi-chevron-down"></i>
+                    </button>
+                    Ticker history
+                </h5>
+            </div>
+            <div id="tickerHistoryBody" style="display: none;">
+                <div class="card-header bg-white border-0 ticker-history-header">
+                    <div class="ticker-history-identity">
+                        <label for="tickerHistorySymbol" class="ticker-history-label">Ticker</label>
+                        <select id="tickerHistorySymbol" class="form-select form-select-sm" aria-label="Select ticker">
+                            <option value="">Loading tickers…</option>
+                        </select>
+                        <span id="tickerHistoryMeta" class="ticker-history-meta">6 months · daily closes</span>
+                    </div>
+                    <div class="btn-group btn-group-sm ticker-history-periods" role="group" aria-label="Ticker history period">
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="1M">1M</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="3M">3M</button>
+                        <button class="btn btn-primary ticker-history-period-btn active" data-period="6M">6M</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="1Y">1Y</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="3Y">3Y</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="5Y">5Y</button>
+                        <button class="btn btn-outline-secondary ticker-history-period-btn" data-period="ALL">ALL</button>
+                    </div>
+                </div>
+                <div class="card-body ticker-history-body">
+                    <div class="ticker-history-summary" aria-live="polite">
+                        <div><span>Last</span><strong id="tickerHistoryLast">--</strong></div>
+                        <div><span>Period change</span><strong id="tickerHistoryChange">--</strong></div>
+                        <div><span>Trades shown</span><strong id="tickerHistoryTradeCount">--</strong></div>
+                        <div class="ticker-history-legend" aria-label="Trade marker legend">
+                            <span><i class="ticker-history-key is-buy">B</i>Buy</span>
+                            <span><i class="ticker-history-key is-sell">S</i>Sell</span>
+                            <span class="ticker-history-size-note">Circle size = trade amount</span>
+                        </div>
+                    </div>
+                    <div class="chart-container ticker-history-chart-wrap">
+                        <canvas id="tickerHistoryChart"></canvas>
+                        <div id="tickerHistoryEmpty" class="ticker-history-empty d-none">No price history is available for this range.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
             </div>
 
             <div class="tab-pane fade" id="trackerHoldings" role="tabpanel" aria-labelledby="holdings-tab" tabindex="0">
 
         <!-- Holdings Table -->
         <div class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
-                <h5 class="mb-0"><i class="bi bi-briefcase me-2"></i>Holdings</h5>
-                <div class="d-flex gap-2 align-items-center">
+            <div class="card-header bg-white border-0 holdings-card-header">
+                <div class="holdings-toolbar">
+                <h5 class="mb-0 holdings-heading"><i class="bi bi-briefcase me-2"></i>Holdings</h5>
+                <div class="d-flex gap-2 align-items-center holdings-controls">
+                    <button id="holdingsOverviewToggle" class="btn btn-sm btn-outline-secondary" type="button" aria-expanded="false" aria-controls="portfolioOverview">
+                        Overview <i class="bi bi-chevron-down" aria-hidden="true"></i>
+                    </button>
                     <div class="btn-group btn-group-sm" role="group">
                         <button class="btn btn-outline-secondary holdings-view-btn" data-view="flat">All</button>
                         <button class="btn btn-primary holdings-view-btn active" data-view="category">Category</button>
@@ -677,9 +800,15 @@
                         <ul class="dropdown-menu dropdown-menu-end" id="colToggleMenu"></ul>
                     </div>
                 </div>
+                </div>
+                <details class="holdings-update-details">
+                    <summary><span id="holdingsUpdateLabel" role="status">Updating…</span><span class="visually-hidden"> — update details</span></summary>
+                    <div id="holdingsTodayStatus" class="dashboard-data-status" role="status"></div>
+                    <div id="holdingsDataStatus" class="dashboard-data-status" role="status"></div>
+                </details>
             </div>
             <div class="card-body p-0">
-                <div class="table-responsive">
+                <div class="table-responsive holdings-table-scroll" tabindex="0" role="region" aria-label="Holdings table">
                     <table class="table table-hover mb-0" id="holdingsTable">
                         <thead class="table-light">
                             <tr>
@@ -716,6 +845,8 @@
                 </div>
             </div>
         </div>
+
+        <p class="holding-cc-legend small text-muted">CC = Covered Call. Open = recorded contracts still outstanding; available = additional contracts your free shares can cover, counted separately per account. Tap a CC label for details.</p>
 
         <!-- Category Summary Table -->
         <div class="card border-0 shadow-sm mb-4">
@@ -762,7 +893,7 @@
                         <option value="30">Past month</option>
                         <option value="90">Past 3 months</option>
                         <option value="365">Past year</option>
-                        <option value="0">All time</option>
+                        <option value="0" {{ 'selected' if demo_mode else '' }}>All time</option>
                     </select>
                     <input type="search" id="txnSearch" class="form-control form-control-sm" placeholder="Filter by symbol…" style="width:160px;">
                     <select id="txnActionFilter" class="form-select form-select-sm" style="width:130px;">
@@ -815,7 +946,12 @@
     </div><!-- /#trackerPage -->
 
     <!-- ============================================================ SIMULATOR PAGE -->
-    <div id="simulatorPage" style="display:none">
+    <div id="simulatorPage" data-secondary-tool {{ '' if secondary_tools_enabled else 'hidden' }} style="display:none">
+        {% if demo_mode %}<div class="demo-action-note">Illustrative simulation · Prices and returns are generated sample data, not historical market results.</div>{% endif %}
+        <header class="workspace-heading">
+            <h1>Portfolio simulator</h1>
+            <p>Explore allocations and compare how a strategy would have performed.</p>
+        </header>
         <div class="row g-4">
 
             <!-- -------- Config Panel -------- -->
@@ -1006,11 +1142,12 @@
     </div><!-- /#simulatorPage -->
 
     <!-- ============================================================ ANALYSIS PAGE -->
-    <div id="analysisPage" style="display:none">
+    <div id="analysisPage" data-secondary-tool {{ '' if secondary_tools_enabled else 'hidden' }} style="display:none">
+        {% if demo_mode %}<div class="demo-action-note">Sample report · Explore the report layout. Live market analysis and AI generation are disabled in this demo.</div>{% endif %}
         <div class="analysis-toolbar mb-4">
             <div>
                 <h4 class="mb-1"><i class="bi bi-clipboard-data me-2"></i>Investment Analysis</h4>
-                <div class="text-muted small">GPT-assisted review grounded in your calculated portfolio results</div>
+                <div class="text-muted small">A closer look at your performance, allocation and decisions</div>
             </div>
             <div class="analysis-actions">
                 <div class="analysis-date-range">
@@ -1032,7 +1169,7 @@
                         <button class="btn btn-outline-secondary analysis-period-btn" data-period="1y">1Y</button>
                     </div>
                     <button id="generateAnalysisBtn" class="btn btn-success btn-sm">
-                        <i class="bi bi-stars me-1"></i><span>Generate Report</span>
+                        <i class="bi bi-stars me-1"></i><span>{{ 'Open Sample Report' if demo_mode else 'Generate Report' }}</span>
                     </button>
                 </div>
             </div>
@@ -1062,7 +1199,7 @@
                 <div id="analysisReportEmpty" class="analysis-empty-state">
                     <i class="bi bi-file-earmark-bar-graph"></i>
                     <h5>No analysis report yet</h5>
-                    <p class="mb-0">Choose a date range to create the first GPT report.</p>
+                    <p class="mb-0">Choose a date range, then generate an analysis of your portfolio.</p>
                 </div>
                 <article id="analysisReport" class="d-none" aria-live="polite"></article>
             </div>
@@ -1073,10 +1210,40 @@
 
     <footer class="app-footer py-3 mt-4">
         <div class="container-fluid text-center text-muted">
-            <small><span class="footer-mark"></span> iPortfolio · Built for the long view</small>
+            <small><span class="footer-mark"></span> iPortfolio — Your personal capital desk</small>
         </div>
     </footer>
 
+    <div class="modal fade" id="tickerTechnicalsModal" tabindex="-1" aria-labelledby="tickerTechnicalsTitle" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="tickerTechnicalsTitle">Moving averages</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="tickerTechnicalsLoading" class="text-center py-5" role="status"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Loading moving averages…</div>
+                    <div id="tickerTechnicalsError" class="alert alert-warning d-none" role="alert"><span id="tickerTechnicalsErrorMessage"></span> <button id="tickerTechnicalsRetry" class="btn btn-sm btn-outline-secondary" type="button">Retry</button></div>
+                    <div id="tickerTechnicalsContent" class="d-none" aria-live="polite">
+                        <div class="ticker-ma-quote"><span>{{ 'Simulated price' if demo_mode else 'Latest market price' }}</span><strong id="tickerTechnicalsPrice">--</strong><small id="tickerTechnicalsQuoteTime"></small></div>
+                        <p id="tickerTechnicalsSummary" class="fw-semibold mt-3 mb-3"></p>
+                        <div class="ticker-ma-grid">
+                            <div class="ticker-ma-card"><h6><span class="ticker-ma-key is-50"></span>50-day SMA</h6><strong id="tickerSma50">--</strong><div id="tickerSma50Comparison" class="ticker-ma-comparison"></div></div>
+                            <div class="ticker-ma-card"><h6><span class="ticker-ma-key is-200"></span>200-day SMA</h6><strong id="tickerSma200">--</strong><div id="tickerSma200Comparison" class="ticker-ma-comparison"></div></div>
+                        </div>
+                        <div id="tickerTechnicalsChartWrap" class="ticker-ma-chart"><canvas id="tickerTechnicalsChart" role="img" aria-label="Last six months of daily closes and 50-day and 200-day moving averages"></canvas></div>
+                        <p id="tickerTechnicalsBasis" class="small text-muted mt-3 mb-2"></p>
+                        <p class="small text-muted mb-0">Above / below measures distance from each average, not today's gain or loss. {{ 'Source: generated demo data.' if demo_mode else 'Source: Yahoo Finance.' }}</p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary w-100 ticker-ma-close" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% include 'covered_call_modal.html' %}
     <!-- Toast notification -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3">
         <div id="toast" class="toast align-items-center border-0" role="alert">
@@ -1100,7 +1267,15 @@
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/js/trade-preview.js?v=1"></script>
-    <script src="/static/js/app.js?v=126"></script>
+    <script src="/static/js/sale-lots.js?v=1"></script>
+    <script src="/static/js/today-pnl.js?v=4"></script>
+    <script src="/static/js/transaction-updates.js?v=1"></script>
+    <script src="/static/js/ticker-technicals.js?v=2"></script>
+    {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=4"></script>{% endif %}
+    <script src="/static/js/holdings-layout.js?v=1"></script>
+    <script src="/static/js/option-quotes.js?v=1"></script>
+    <script src="/static/js/covered-calls.js?v=3"></script>
+    <script src="/static/js/app.js?v=160"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

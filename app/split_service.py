@@ -76,6 +76,9 @@ class SplitService:
         if target_date is None:
             target_date = date.today()
 
+        if transaction_date >= target_date:
+            return Decimal("1")
+
         splits = self.get_splits(symbol)
         if not splits:
             return Decimal("1")

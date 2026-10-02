@@ -136,12 +136,155 @@ class DailyPnlTests(unittest.TestCase):
             ),
         ):
             points = portfolio.get_intraday_values("30m")
+            with patch.object(price_service, "get_prices_batch") as quotes:
+                fast_points = portfolio.get_intraday_values(
+                    "30m", refresh_prices=True, use_live_quotes=False
+                )
+                quotes.assert_not_called()
+
+        self.assertEqual(fast_points, points)
 
         by_time = {point["time"]: point for point in points}
         self.assertEqual(by_time["09:30"]["daily_pnl"], 0.0)
         self.assertEqual(by_time["10:00"]["daily_pnl"], 0.0)
         self.assertEqual(by_time["12:00"]["daily_pnl"], 45.0)
         self.assertEqual(by_time["12:00"]["asset_changes"][0]["pnl"], 45.0)
+
+
+class IntradayHoldingsReconciliationTests(unittest.TestCase):
+    def snapshot(self, portfolio, closes, bars):
+        with (
+            patch('app.portfolio._market_today', return_value=TODAY),
+            patch('app.portfolio._market_now', return_value=datetime(2026, 7, 31, 12, 0, tzinfo=MARKET_TZ)),
+            patch.object(price_service, 'get_previous_close_batch', return_value=closes),
+            patch.object(price_service, 'get_intraday_prices_batch', return_value=bars),
+            patch.object(price_service, 'get_prices_batch', side_effect=AssertionError('Extra quote fetch')),
+        ):
+            return portfolio.get_intraday_values('1m', use_live_quotes=False)
+
+    def test_latest_contains_all_holdings_and_sums_visible_cents(self):
+        portfolio = Portfolio(adjust_splits=False)
+        symbols = [f'STOCK{i}' for i in range(12)]
+        portfolio.add_transactions([Transaction(date=date(2026, 7, 30), asset=symbol,
+            action=ActionType.BUY, quantity=Decimal('1'), ave_price=Decimal('80')) for symbol in symbols])
+        points = self.snapshot(portfolio,
+            {symbol: Decimal('100') for symbol in symbols},
+            {symbol: [{'time': '10:00', 'price': Decimal('100.005')}] for symbol in symbols})
+        latest = points[-1]
+        self.assertTrue(latest['holdings_complete'])
+        self.assertEqual(len(latest['asset_changes']), 12)
+        self.assertEqual(latest['daily_pnl'], .12)
+        self.assertEqual(sum(Decimal(str(item['pnl'])) for item in latest['asset_changes']), Decimal('.12'))
+        self.assertTrue(all(item['pnl'] == .01 for item in latest['asset_changes']))
+        self.assertLessEqual(len(points[-2]['asset_changes']), 10)
+
+    def test_closed_today_keeps_day_gain_rather_than_all_time_realized_gain(self):
+        portfolio = Portfolio(adjust_splits=False)
+        portfolio.add_transactions([
+            Transaction(date=date(2026, 7, 30), asset='AAPL', action=ActionType.BUY,
+                quantity=Decimal('5'), ave_price=Decimal('50')),
+            trade(ActionType.SELL, '5', '110', 11),
+        ])
+        points = self.snapshot(portfolio, {'AAPL': Decimal('100')},
+            {'AAPL': [{'time': '10:00', 'price': Decimal('105')}, {'time': '11:00', 'price': Decimal('110')}]})
+        self.assertEqual(portfolio.get_holdings(fetch_prices=False), [])
+        latest = points[-1]
+        self.assertEqual(latest['daily_pnl'], 50)
+        self.assertEqual(latest['asset_changes'][0]['quantity'], 0)
+        self.assertEqual(latest['asset_changes'][0]['pnl'], 50)
+
+    def test_round_trip_and_crypto_fallback_are_included_once(self):
+        portfolio = Portfolio(adjust_splits=False)
+        portfolio.add_transactions([
+            Transaction(date=date(2026, 7, 30), asset='BTC-USD', action=ActionType.BUY,
+                quantity=Decimal('2'), ave_price=Decimal('80')),
+            trade(ActionType.BUY, '10', '100', 10),
+            trade(ActionType.SELL, '10', '102', 11),
+        ])
+        latest = self.snapshot(portfolio, {'AAPL': Decimal('99'), 'BTC-USD': Decimal('100')},
+            {'AAPL': [{'time': '11:00', 'price': Decimal('102')}], 'BTC-USD': []})[-1]
+        changes = {item['symbol']: item for item in latest['asset_changes']}
+        self.assertEqual(changes['BTC-USD']['pnl'], 0)
+        self.assertEqual(changes['AAPL']['pnl'], 20)
+        self.assertEqual(latest['daily_pnl'], 20)
+
+    def test_trade_activity_tracks_executed_trades_and_last_sale_without_repricing_pnl(self):
+        portfolio = Portfolio(adjust_splits=False)
+        portfolio.add_transactions([
+            Transaction(date=date(2026, 7, 30), asset='AAPL', action=ActionType.BUY,
+                quantity=Decimal('5'), ave_price=Decimal('50')),
+            trade(ActionType.SELL, '2', '108', 10),
+            trade(ActionType.SELL, '3', '112', 11),
+            trade(ActionType.BUY, '1', '200', 13),  # Still in the future.
+        ])
+        bars = {'AAPL': [{'time': '09:30', 'price': Decimal('105')},
+            {'time': '12:00', 'price': Decimal('200')}]}
+        points = self.snapshot(portfolio, {'AAPL': Decimal('100')}, bars)
+        changes = {p['time']: p['asset_changes'][0] for p in points}
+        self.assertIsNone(changes['09:30']['trade_activity'])
+        partial = changes['10:00']['trade_activity']
+        self.assertEqual(partial['change_percent'], -40)
+        self.assertEqual(partial['sold_quantity'], 2)
+        self.assertFalse(partial['is_closed'])
+        self.assertEqual(partial['last_sell_price'], 108)
+        closed = changes['12:00']['trade_activity']
+        self.assertEqual(closed['sold_quantity'], 5)
+        self.assertEqual(closed['bought_quantity'], 0)
+        self.assertEqual(closed['last_sell_price'], 112)
+        self.assertEqual(closed['last_sell_time'], '11:00')
+        self.assertEqual(closed['change_percent'], -100)
+        self.assertTrue(closed['is_closed'])
+        self.assertEqual(changes['12:00']['current_price'], 200)
+        self.assertEqual(changes['11:00']['pnl'], 52)
+        self.assertEqual(changes['12:00']['pnl'], 52)
+
+    def test_reopened_position_is_no_longer_closed(self):
+        portfolio = Portfolio(adjust_splits=False)
+        portfolio.add_transactions([
+            trade(ActionType.BUY, '10', '100', 9),
+            trade(ActionType.SELL, '10', '110', 10),
+            trade(ActionType.BUY, '2', '115', 11),
+        ])
+        points = self.snapshot(portfolio, {'AAPL': Decimal('100')},
+            {'AAPL': [{'time': '12:00', 'price': Decimal('120')}]})
+        changes = {p['time']: p['asset_changes'][0] for p in points}
+        self.assertTrue(changes['10:00']['trade_activity']['is_closed'])
+        latest = changes['12:00']
+        self.assertFalse(latest['trade_activity']['is_closed'])
+        self.assertEqual(latest['trade_activity']['net_quantity'], 2)
+        self.assertIsNone(latest['trade_activity']['change_percent'])
+        self.assertEqual(latest['quantity'], 2)
+        self.assertEqual(latest['current_price'], 120)
+
+    def test_historical_hover_has_the_same_timed_trade_metadata(self):
+        portfolio = Portfolio(adjust_splits=False)
+        portfolio.add_transactions([
+            Transaction(date=date(2026, 7, 30), asset='AAPL', action=ActionType.BUY,
+                quantity=Decimal('5'), ave_price=Decimal('50')),
+            trade(ActionType.SELL, '5', '110', 11),
+        ])
+        with (
+            patch('app.portfolio._market_today', return_value=date(2026, 8, 1)),
+            patch.object(price_service, 'get_historical_prices_batch',
+                return_value={'AAPL': {date(2026, 7, 30): Decimal('100')}}),
+            patch.object(price_service, 'get_intraday_prices_batch', return_value={'AAPL': [
+                {'date': TODAY.isoformat(), 'time': '10:00', 'price': Decimal('105')},
+                {'date': TODAY.isoformat(), 'time': '12:00', 'price': Decimal('200')}]}),
+        ):
+            points = portfolio.get_intraday_values_for_date(TODAY, '1m')
+        self.assertIsNone(points[0]['asset_changes'][0]['trade_activity'])
+        latest = points[-1]['asset_changes'][0]
+        self.assertEqual(latest['quantity'], 0)
+        self.assertTrue(latest['trade_activity']['is_closed'])
+        self.assertEqual(latest['trade_activity']['last_sell_price'], 110)
+        self.assertEqual(latest['pnl'], 50)
+
+    def test_transfers_do_not_create_buy_or_sell_badges(self):
+        portfolio = Portfolio(adjust_splits=False)
+        portfolio.add_transactions([trade(ActionType.GIFT, '5', '0', 10)])
+        points = self.snapshot(portfolio, {'AAPL': Decimal('100')},
+            {'AAPL': [{'time': '10:00', 'price': Decimal('105')}]})
+        self.assertIsNone(points[-1]['asset_changes'][0]['trade_activity'])
 
 
 if __name__ == "__main__":

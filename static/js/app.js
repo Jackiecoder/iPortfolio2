@@ -1,8 +1,32 @@
 // Portfolio Tracker Frontend Application
 
+// Check the URL too: an older offline shell must never load personal data at /demo.
+const isDemoPortfolio = window.location.pathname.replace(/\/$/, '') === '/demo'
+    || document.body.dataset.portfolioMode === 'demo';
+const portfolioStorage = isDemoPortfolio ? (() => {
+    const values = new Map([
+        ['trackerActiveTab', '#trackerHoldings'], ['summaryCardsExpanded', '1'],
+        ['holdingsHiddenCols', JSON.stringify([3, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18])],
+    ]);
+    return {
+        getItem: key => values.get(key) ?? null,
+        setItem: (key, value) => values.set(key, String(value)),
+        removeItem: key => values.delete(key),
+    };
+})() : window.localStorage;
+
 // --- Access token: attached to every API request as a Bearer header. ---
 // Stored in localStorage; shown as an in-page prompt on the first 401.
 (function setupAuth() {
+    if (isDemoPortfolio) {
+        window.getAccessToken = () => '';
+        window.clearAccessToken = () => {};
+        // Deliberately no native-fetch fallback, including when the demo script fails.
+        window.fetch = window.DemoPortfolio
+            ? window.DemoPortfolio.create().fetch
+            : async () => { throw new Error('Demo unavailable. Reconnect and reload /demo.'); };
+        return;
+    }
     const TOKEN_KEY = 'iportfolio_token';
     let promptVisible = false;
 
@@ -45,7 +69,8 @@
                     placeholder="Paste token, API_TOKEN=..., or Bearer ..."
                     style="width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:6px;padding:12px 14px;font-size:16px;">
                 <div id="accessTokenHint" style="min-height:20px;margin-top:8px;font-size:13px;color:#64748b;"></div>
-                <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+                <div style="display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:10px;margin-top:18px;">
+                    <a href="/demo" style="margin-right:auto;color:#205b4d;">Try demo portfolio</a>
                     <button id="accessTokenClear" type="button" style="border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:9px 14px;cursor:pointer;">Clear</button>
                     <button id="accessTokenSave" type="button" style="border:0;background:#0d6efd;color:#fff;border-radius:6px;padding:9px 16px;cursor:pointer;">Save & reload</button>
                 </div>
@@ -110,12 +135,34 @@
     };
 })();
 
+// Shared chart typography and interaction styling.
+if (window.Chart) {
+    Chart.defaults.font.family = 'Manrope, sans-serif';
+    Chart.defaults.font.size = 11;
+    Chart.defaults.color = '#6c7e95';
+    Chart.defaults.borderColor = '#e8edf5';
+    Chart.defaults.plugins.tooltip.backgroundColor = '#19365a';
+    Chart.defaults.plugins.tooltip.padding = 12;
+    Chart.defaults.plugins.tooltip.cornerRadius = 10;
+    Chart.defaults.plugins.tooltip.titleFont = { weight: '600' };
+    Chart.defaults.plugins.legend.labels.usePointStyle = true;
+    Chart.defaults.plugins.legend.labels.boxWidth = 8;
+    Chart.defaults.plugins.legend.labels.padding = 18;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        Chart.defaults.animation = false;
+    }
+}
+
 // Chart instances
 let performanceChart = null;
 let investmentChart = null;
 let allocationChart = null;
 let pnlChart = null;
 let intradayChart = null;
+let tickerHistoryChart = null;
+let tickerHistoryPeriod = '6M';
+let tickerHistoryInitialized = false;
+let tickerHistoryRequestId = 0;
 
 // Portfolio chart view mode
 let portfolioChartView = 'investment'; // 'value' or 'investment'
@@ -127,9 +174,17 @@ let currentInterval = '1m';
 // Current intraday date (null = today)
 let currentIntradayDate = null;
 let intradayLoadRequestId = 0;
+let renderedIntraday = null;
+let latestTodaySnapshot = null;
+let baseHoldingsData = [];
+let observedMarketDate = marketTodayStr();
+let secondaryRefreshTask = null;
+let dashboardLoadRequestId = 0;
+let transactionUpdateState = 'idle';
+let holdingsLedgerKnown = false;
 
 // Anonymous mode
-let anonymousMode = localStorage.getItem('anonymousMode') === 'true';
+let anonymousMode = portfolioStorage.getItem('anonymousMode') === 'true';
 
 // Transaction detail cache (symbol -> array of transactions)
 const transactionCache = {};
@@ -219,6 +274,7 @@ const symbolToCategory = {
     'VOO': 'Index',
     'QQQM': 'Index',
     'QQQ': 'Index',
+    'SOXX': 'Index',
     'BRK-B': 'Index',
     'SPY': 'Index',
     'VTI': 'Index',
@@ -328,6 +384,7 @@ async function saveTarget(symbol, pct) {
 // Cache for API responses
 const apiCache = {
     data: {},
+    epoch: 0,
     ttl: 5 * 60 * 1000, // 5 minutes cache TTL
 
     get(key) {
@@ -338,14 +395,16 @@ const apiCache = {
         return null;
     },
 
-    set(key, value) {
+    set(key, value, epoch = this.epoch) {
+        if (epoch !== this.epoch) return;
         this.data[key] = {
             value: value,
             timestamp: Date.now()
         };
     },
 
-    clear() {
+    clear({ invalidatePending = false } = {}) {
+        if (invalidatePending) this.epoch++;
         this.data = {};
     }
 };
@@ -432,8 +491,10 @@ function formatPercent(value) {
 
 function toggleAnonymousMode() {
     anonymousMode = !anonymousMode;
-    localStorage.setItem('anonymousMode', anonymousMode);
+    portfolioStorage.setItem('anonymousMode', anonymousMode);
     updateAnonymousButton();
+    window.coveredCallsUI?.render();
+    updateIntradaySpotlight(renderedIntraday);
     // Reload all data to apply the mode
     loadAllData();
 }
@@ -515,7 +576,8 @@ function setupTooltips() {
 }
 
 // API functions
-async function fetchSummary(useCache = true) {
+async function fetchSummary(useCache = true, waitForFresh = false) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'summary';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -523,14 +585,15 @@ async function fetchSummary(useCache = true) {
     }
 
     try {
-        const response = await fetch('/api/summary');
+        const response = await fetch('/api/summary' + (waitForFresh ? '?wait_for_fresh=true' : ''));
         if (!response.ok) throw new Error('Failed to fetch summary');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching summary:', error);
-        showToast('Error loading portfolio data', 'error');
+        if (transactionUpdateState === 'idle') showToast('Error loading portfolio data', 'error');
         return null;
     }
 }
@@ -580,9 +643,12 @@ function getDateRangeForPeriod(period) {
     };
 }
 
-async function fetchPerformance(period = '1Y', useCache = true) {
+async function fetchPerformance(period = '1Y', useCache = true, waitForFresh = false) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = `performance_${period}`;
-    if (useCache) {
+    if (useCache && !waitForFresh) {
+        const all = apiCache.get("performance_ALL");
+        if (all) return slicePerformance(all, period);
         const cached = apiCache.get(cacheKey);
         if (cached) return cached;
     }
@@ -591,6 +657,7 @@ async function fetchPerformance(period = '1Y', useCache = true) {
         const { start_date, end_date } = getDateRangeForPeriod(period);
         let url = '/api/performance';
         const params = new URLSearchParams();
+        if (waitForFresh) params.append('wait_for_fresh', 'true');
         if (start_date) params.append('start_date', start_date);
         if (end_date) params.append('end_date', end_date);
         if (params.toString()) url += '?' + params.toString();
@@ -598,7 +665,8 @@ async function fetchPerformance(period = '1Y', useCache = true) {
         const response = await fetch(url);
         if (!response.ok) throw new Error('Failed to fetch performance');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching performance:', error);
@@ -606,17 +674,19 @@ async function fetchPerformance(period = '1Y', useCache = true) {
     }
 }
 
-async function fetchDailyPnl(useCache = true) {
+async function fetchDailyPnl(useCache = true, waitForFresh = false) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'daily_pnl';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
         if (cached) return cached;
     }
     try {
-        const response = await fetch('/api/daily-pnl');
+        const response = await fetch('/api/daily-pnl' + (waitForFresh ? '?wait_for_fresh=true' : ''));
         if (!response.ok) throw new Error('Failed to fetch daily P&L');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching daily P&L:', error);
@@ -624,17 +694,19 @@ async function fetchDailyPnl(useCache = true) {
     }
 }
 
-async function fetchMonthlyPnlData(useCache = true) {
+async function fetchMonthlyPnlData(useCache = true, waitForFresh = false) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'monthly_pnl_data';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
         if (cached) return cached;
     }
     try {
-        const response = await fetch('/api/daily-pnl?num_days=400');
+        const response = await fetch('/api/daily-pnl?num_days=400' + (waitForFresh ? '&wait_for_fresh=true' : ''));
         if (!response.ok) throw new Error('Failed to fetch monthly P&L data');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching monthly P&L data:', error);
@@ -643,6 +715,7 @@ async function fetchMonthlyPnlData(useCache = true) {
 }
 
 async function fetchDividends(useCache = true) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'dividends';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -653,7 +726,8 @@ async function fetchDividends(useCache = true) {
         const response = await fetch('/api/dividends');
         if (!response.ok) throw new Error('Failed to fetch dividends');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching dividends:', error);
@@ -662,6 +736,7 @@ async function fetchDividends(useCache = true) {
 }
 
 async function fetchSoldAssets(useCache = true) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = 'sold';
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -672,7 +747,8 @@ async function fetchSoldAssets(useCache = true) {
         const response = await fetch('/api/sold');
         if (!response.ok) throw new Error('Failed to fetch sold assets');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching sold assets:', error);
@@ -680,8 +756,261 @@ async function fetchSoldAssets(useCache = true) {
     }
 }
 
+async function fetchTickerHistory(symbol, period = '6M') {
+    const params = new URLSearchParams({ period });
+    if (symbol) params.set('symbol', symbol);
+    const response = await fetch(`/api/ticker-history?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Failed to fetch ticker history');
+    return data;
+}
+
+function appendTickerOptions(group, symbols) {
+    symbols.forEach(symbol => group.appendChild(new Option(displaySymbol(symbol), symbol)));
+}
+
+function populateTickerHistorySymbols(data) {
+    const select = document.getElementById('tickerHistorySymbol');
+    if (!select) return;
+    const activeSymbols = data.active_symbols || [];
+    const archivedSymbols = data.archived_symbols || [];
+    const groups = [];
+
+    if (activeSymbols.length) {
+        const activeGroup = document.createElement('optgroup');
+        activeGroup.label = 'Active tickers';
+        appendTickerOptions(activeGroup, activeSymbols);
+        groups.push(activeGroup);
+    }
+    if (archivedSymbols.length) {
+        const archivedGroup = document.createElement('optgroup');
+        archivedGroup.label = '──────── Archived tickers';
+        appendTickerOptions(archivedGroup, archivedSymbols);
+        groups.push(archivedGroup);
+    }
+    select.replaceChildren(...groups);
+    select.value = data.symbol || activeSymbols[0] || archivedSymbols[0] || '';
+}
+
+function tickerTradeAmount(trade) {
+    const amount = Number(trade?.amount);
+    if (Number.isFinite(amount) && amount !== 0) return Math.abs(amount);
+
+    const quantity = Number(trade?.quantity);
+    const price = Number(trade?.execution_price);
+    return Number.isFinite(quantity) && Number.isFinite(price)
+        ? Math.abs(quantity * price)
+        : 0;
+}
+
+function tickerTradeMarkerSize(amount, minAmount, maxAmount) {
+    const minSize = 24;
+    const maxSize = 46;
+    if (!(amount > 0)) return minSize;
+    if (!(maxAmount > minAmount)) return 34;
+
+    // A logarithmic scale keeps both small and large trades readable when
+    // transaction values span several orders of magnitude.
+    const minLog = Math.log1p(minAmount);
+    const maxLog = Math.log1p(maxAmount);
+    const normalized = Math.max(0, Math.min(1, (Math.log1p(amount) - minLog) / (maxLog - minLog)));
+    return Math.round(minSize + ((maxSize - minSize) * normalized));
+}
+
+function createTickerTradeMarker(letter, color, size) {
+    const marker = document.createElement('canvas');
+    marker.width = size;
+    marker.height = size;
+    const ctx = marker.getContext('2d');
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, (size / 2) - 2, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `700 ${Math.max(12, Math.round(size * 0.43))}px "DM Sans", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(letter, size / 2, size / 2 + 0.5);
+    return marker;
+}
+
+function tickerHistoryPeriodLabel(period) {
+    return ({
+        '1M': '1 month', '3M': '3 months', '6M': '6 months',
+        '1Y': '1 year', '3Y': '3 years', '5Y': '5 years', 'ALL': 'All history',
+    })[period] || period;
+}
+
+function updateTickerHistorySummary(data) {
+    const prices = data.prices || [];
+    const lastEl = document.getElementById('tickerHistoryLast');
+    const changeEl = document.getElementById('tickerHistoryChange');
+    const countEl = document.getElementById('tickerHistoryTradeCount');
+    const metaEl = document.getElementById('tickerHistoryMeta');
+
+    lastEl.textContent = prices.length ? formatPrice(data.symbol, prices.at(-1).close) : '--';
+    countEl.textContent = String((data.transactions || []).length);
+    metaEl.textContent = `${tickerHistoryPeriodLabel(data.period)} · ${data.granularity} closes`;
+
+    if (prices.length > 1 && prices[0].close) {
+        const change = ((prices.at(-1).close / prices[0].close) - 1) * 100;
+        changeEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+        changeEl.classList.toggle('text-success', change >= 0);
+        changeEl.classList.toggle('text-danger', change < 0);
+    } else {
+        changeEl.textContent = '--';
+        changeEl.classList.remove('text-success', 'text-danger');
+    }
+}
+
+function renderTickerHistoryChart(data) {
+    const canvas = document.getElementById('tickerHistoryChart');
+    const empty = document.getElementById('tickerHistoryEmpty');
+    if (!canvas || !empty) return;
+    if (tickerHistoryChart) tickerHistoryChart.destroy();
+    tickerHistoryChart = null;
+
+    const prices = data.prices || [];
+    empty.classList.toggle('d-none', prices.length > 0);
+    canvas.classList.toggle('d-none', prices.length === 0);
+    updateTickerHistorySummary(data);
+    if (!prices.length) return;
+
+    const transactions = data.transactions || [];
+    const tradeAmounts = transactions.map(tickerTradeAmount).filter(amount => amount > 0);
+    const minTradeAmount = tradeAmounts.length ? Math.min(...tradeAmounts) : 0;
+    const maxTradeAmount = tradeAmounts.length ? Math.max(...tradeAmounts) : 0;
+    const toMarkerPoint = (trade, letter, color) => {
+        const markerSize = tickerTradeMarkerSize(tickerTradeAmount(trade), minTradeAmount, maxTradeAmount);
+        return {
+            x: trade.date,
+            y: trade.price,
+            trade,
+            marker: createTickerTradeMarker(letter, color, markerSize),
+            markerRadius: markerSize / 2,
+        };
+    };
+    const buyData = transactions
+        .filter(t => t.action === 'BUY')
+        .map(t => toMarkerPoint(t, 'B', '#28a977'));
+    const sellData = transactions
+        .filter(t => t.action === 'SELL')
+        .map(t => toMarkerPoint(t, 'S', '#cf4f58'));
+    const timeUnit = data.granularity === 'monthly' ? 'month' : (data.granularity === 'weekly' ? 'week' : 'month');
+
+    tickerHistoryChart = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+            datasets: [
+                {
+                    label: `${displaySymbol(data.symbol)} close`,
+                    data: prices.map(p => ({ x: p.date, y: p.close })),
+                    borderColor: '#3157d5',
+                    backgroundColor: 'rgba(49, 87, 213, 0.10)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.18,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    order: 2,
+                },
+                {
+                    label: 'Buy',
+                    type: 'scatter',
+                    data: buyData,
+                    pointStyle: context => context.raw?.marker || 'circle',
+                    pointRadius: context => context.raw?.markerRadius || 12,
+                    pointHoverRadius: context => (context.raw?.markerRadius || 12) + 2,
+                    pointHitRadius: 7,
+                    order: 1,
+                },
+                {
+                    label: 'Sell',
+                    type: 'scatter',
+                    data: sellData,
+                    pointStyle: context => context.raw?.marker || 'circle',
+                    pointRadius: context => context.raw?.markerRadius || 12,
+                    pointHoverRadius: context => (context.raw?.markerRadius || 12) + 2,
+                    pointHitRadius: 7,
+                    order: 1,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { intersect: false, mode: 'nearest' },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        title: items => items[0]?.raw?.trade?.date || items[0]?.raw?.x || '',
+                        label: ctx => {
+                            const trade = ctx.raw.trade;
+                            if (!trade) return ` Close: ${formatPrice(data.symbol, ctx.parsed.y)}`;
+                            const qty = trade.quantity == null ? '' : ` · ${formatNumber(trade.quantity, 4)} shares`;
+                            return ` ${trade.action}: ${formatPrice(data.symbol, trade.execution_price)}${qty}`;
+                        },
+                        afterLabel: ctx => {
+                            const trade = ctx.raw.trade;
+                            return trade?.amount == null ? '' : ` Amount: ${formatCurrency(Math.abs(trade.amount))}`;
+                        },
+                    },
+                },
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: { unit: timeUnit, tooltipFormat: 'MMM d, yyyy' },
+                    grid: { display: false },
+                    ticks: { maxTicksLimit: 8, color: '#77849a', font: { size: 11 } },
+                },
+                y: {
+                    grace: '8%',
+                    grid: { color: 'rgba(93, 107, 130, 0.10)' },
+                    ticks: {
+                        color: '#77849a',
+                        font: { size: 11 },
+                        callback: value => formatPrice(data.symbol, value),
+                    },
+                },
+            },
+        },
+    });
+}
+
+async function loadTickerHistory(force = false) {
+    if (document.getElementById('tickerHistoryBody')?.style.display === 'none') {
+        if (force) tickerHistoryInitialized = false;
+        return;
+    }
+    if (tickerHistoryInitialized && !force) return;
+    const select = document.getElementById('tickerHistorySymbol');
+    const empty = document.getElementById('tickerHistoryEmpty');
+    const requestId = ++tickerHistoryRequestId;
+    empty.textContent = 'Loading price history…';
+    empty.classList.remove('d-none');
+    try {
+        const data = await fetchTickerHistory(select?.value, tickerHistoryPeriod);
+        if (requestId !== tickerHistoryRequestId) return;
+        populateTickerHistorySymbols(data);
+        renderTickerHistoryChart(data);
+        tickerHistoryInitialized = true;
+    } catch (error) {
+        if (requestId !== tickerHistoryRequestId) return;
+        console.error('Error fetching ticker history:', error);
+        empty.textContent = error.message || 'Price history could not be loaded.';
+        empty.classList.remove('d-none');
+        document.getElementById('tickerHistoryChart')?.classList.add('d-none');
+    }
+}
+
 async function fetchIntraday(interval = '5m', date = null, useCache = true) {
-    const cacheKey = `intraday_${date || 'today'}_${interval}`;
+    const cacheEpoch = apiCache.epoch;
+    const cacheKey = `intraday_${date || marketTodayStr()}_${interval}`;
     if (useCache) {
         const cached = apiCache.get(cacheKey);
         if (cached) return cached;
@@ -693,7 +1022,8 @@ async function fetchIntraday(interval = '5m', date = null, useCache = true) {
         const response = await fetch(url);
         if (!response.ok) throw new Error('Failed to fetch intraday data');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching intraday data:', error);
@@ -702,6 +1032,7 @@ async function fetchIntraday(interval = '5m', date = null, useCache = true) {
 }
 
 async function fetchIntradayMultiday(interval = '15m', days = 3, useCache = true) {
+    const cacheEpoch = apiCache.epoch;
     const cacheKey = `intraday_multiday_${interval}_${days}`;
     if (useCache) {
         const cached = apiCache.get(cacheKey);
@@ -712,7 +1043,8 @@ async function fetchIntradayMultiday(interval = '15m', days = 3, useCache = true
         const response = await fetch(`/api/intraday-multiday?interval=${interval}&days=${days}`);
         if (!response.ok) throw new Error('Failed to fetch multi-day intraday data');
         const data = await response.json();
-        apiCache.set(cacheKey, data);
+        if (cacheEpoch !== apiCache.epoch) return null;
+        apiCache.set(cacheKey, data, cacheEpoch);
         return data;
     } catch (error) {
         console.error('Error fetching multi-day intraday data:', error);
@@ -742,6 +1074,8 @@ async function uploadFile(file) {
 
 // UI Update functions
 function updateSummaryCards(summary) {
+    document.getElementById('summaryStrip')?.classList.remove('is-updating');
+    document.getElementById('summaryCardsCollapse')?.classList.remove('is-updating');
     document.getElementById('totalValue').textContent = formatCurrency(summary.total_market_value);
     document.getElementById('costBasis').textContent = formatCurrency(summary.total_cost_basis);
 
@@ -880,7 +1214,35 @@ function updateSortIndicators() {
     });
 }
 
+function buildTradeActivityHtml(row) {
+    const activity = TodayPnl.activity(row);
+    if (!activity) return '';
+    const trade = activity.trade;
+    const details = anonymousMode ? 'Trades through this point on the selected day'
+        : `Trades through this point: bought ${formatNumber(trade.bought_quantity, 4)}, sold ${formatNumber(trade.sold_quantity, 4)}. Net change is relative to the opening quantity (${formatNumber(trade.opening_quantity, 4)}).`;
+    return `<div class="trade-activity"><span class="trade-activity-badge trade-activity-${activity.kind}" title="${escapeHtml(details)}">${escapeHtml(activity.label)}</span></div>`;
+}
+
+function buildPositionPriceHtml(row) {
+    const price = TodayPnl.displayPrice(row);
+    const value = price != null ? formatPrice(row.symbol, price, true) : '--';
+    if (!row.trade_activity?.is_closed) return value;
+    const time = row.trade_activity.last_sell_time;
+    return `${value}<div class="trade-price-caption">Last sale${time ? ` · ${escapeHtml(time)} ET` : ''}</div>`;
+}
+
 function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
+    if (h.today_only) {
+        const amount = h.daily_change_amount;
+        const label = h.quantity === 0 ? 'Closed today' : 'Today activity';
+        const columns = [0, 1, 2, 4, 5, 17, 18, 3, 6, 7, 8, 9, 10, 11, 14, 15, 16, 12, 13];
+        return `<tr>${columns.map(col => {
+            if (col === 0) return `<td data-col="0"><strong>${escapeHtml(displaySymbol(h.symbol))}</strong>${buildTradeActivityHtml(h) || `<div class="text-muted small">${label}</div>`}</td>`;
+            if (col === 4 && h.trade_activity?.is_closed) return `<td data-col="4">${buildPositionPriceHtml(h)}</td>`;
+            if (col === 5) return `<td data-col="5" class="${amount >= 0 ? 'text-success' : 'text-danger'}">${amount >= 0 ? '+' : ''}${formatCurrencyAlways(amount)}</td>`;
+            return `<td data-col="${col}" class="text-muted">—</td>`;
+        }).join('')}</tr>`;
+    }
     const dailyChangePct = h.daily_change_percent;
     const dailyChangeAmt = h.daily_change_amount;
     const dailyChangePctHtml = dailyChangePct !== null && dailyChangePct !== undefined
@@ -956,7 +1318,7 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
 
     return `
     <tr class="holding-row" data-symbol="${h.symbol}" style="cursor:pointer;">
-        <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong></td>
+        <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong>${buildTradeActivityHtml(h)}${h.symbol !== 'CASH' && !h.symbol.endsWith('-USD') ? `<span class="holding-cc-slot" data-cc-symbol="${escapeHtml(h.symbol)}" data-cc-quantity="${Number(h.quantity)}" data-cc-pending="${Boolean(h.ledger_pending || h.quantity_pending)}"></span>` : ''}</td>
         <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)}</div><div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</div>` : ''}</td>
         <td data-col="2">${formatPrice(h.symbol, h.avg_cost)}</td>
         <td data-col="4">${formatPrice(h.symbol, h.current_price, true)} ${dailyChangePctHtml}</td>
@@ -992,6 +1354,20 @@ function buildLtStBreakdownHtml(lt, st) {
          + `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST <span class="${stCls}">${fmt(stVal)}</span></div>`;
 }
 
+function coveredCallPnlValue(view) {
+    if (!view.complete) return '<span class="text-muted">Pending · not included</span>';
+    const cls = view.options >= 0 ? 'text-success' : 'text-danger';
+    const value = anonymousMode ? '***' : `${view.options >= 0 ? '+' : ''}${formatCurrencyAlways(view.options)}`;
+    return `<span class="${cls}" title="Estimated daily P&amp;L from reference option prices, including today’s recorded fills and fees.">${value} <small class="text-muted">est.</small></span>`;
+}
+
+function buildCoveredCallPnlRowHtml(point) {
+    const view = TodayPnl.valuation(point);
+    if (!view.hasOptions) return '';
+    const columns = [0, 1, 2, 4, 5, 17, 18, 3, 6, 7, 8, 9, 10, 11, 14, 15, 16, 12, 13];
+    return `<tr class="covered-call-pnl-row">${columns.map(col => `<td data-col="${col}">${col === 0 ? '<strong>Covered Call</strong>' : col === 5 ? coveredCallPnlValue(view) : '—'}</td>`).join('')}</tr>`;
+}
+
 function buildTotalRowHtml(holdings, totalInvValue) {
     const totalMV = holdings.reduce((s, h) => s + (h.market_value || 0), 0);
     const totalCost = holdings.reduce((s, h) => s + (h.cost_basis || 0), 0);
@@ -1002,7 +1378,8 @@ function buildTotalRowHtml(holdings, totalInvValue) {
     const totalLtReal = holdings.reduce((s, h) => s + (h.lt_realized_pnl || 0), 0);
     const totalStReal = holdings.reduce((s, h) => s + (h.st_realized_pnl || 0), 0);
     const totalTotalPnl = totalPnl + totalRealized;
-    const totalDaily = holdings.reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    const optionView = TodayPnl.valuation(TodayPnl.latest(latestTodaySnapshot, marketTodayStr()));
+    const totalDaily = holdings.reduce((s, h) => s + (h.daily_change_amount || 0), 0) + optionView.contribution;
     const totalYtd = holdings.reduce((s, h) => s + (h.ytd_pnl || 0), 0);
     const totalLtYtd = holdings.reduce((s, h) => s + (h.lt_ytd_pnl || 0), 0);
     const totalStYtd = holdings.reduce((s, h) => s + (h.st_ytd_pnl || 0), 0);
@@ -1070,8 +1447,9 @@ function buildTotalRowHtml(holdings, totalInvValue) {
 }
 
 function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, categoryTargetSums, totalInvestedCost) {
-    const catColors = { 'Crypto': '#f59e0b', 'Index': '#2563eb', 'Individual Stocks': '#8b5cf6', 'Cash': '#10b981' };
+    const catColors = { 'Crypto': '#f59e0b', 'Index': '#2563eb', 'Individual Stocks': '#8b5cf6', 'Cash': '#087f65' };
     const color = catColors[catName] || '#6b7280';
+    const displayName = catName === 'Individual Stocks' ? 'Stocks' : catName;
     const mv = catHoldings.reduce((s, h) => s + (h.market_value || 0), 0);
     const cost = catHoldings.reduce((s, h) => s + (h.cost_basis || 0), 0);
     const pnl = catHoldings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0);
@@ -1114,7 +1492,7 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
 
     return `
         <tr class="category-header-row" style="background-color: #fef9e7; border-left: 4px solid ${color};">
-            <td data-col="0"><span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px;margin-right:6px;"></span><strong>${catName}</strong> <span class="text-muted">(${catHoldings.length})</span></td>
+            <td data-col="0"><span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px;margin-right:6px;"></span><strong>${displayName}</strong> <span class="text-muted">(${catHoldings.length})</span></td>
             <td data-col="1"></td><td data-col="2"></td>
             <td data-col="4" class="${dailyClass}"><strong>${formatPercent(mv > 0 ? (daily / (mv - daily) * 100) : 0)}</strong></td>
             <td data-col="5" class="${dailyClass}"><strong>${dailySign}${formatCurrencyAlways(daily)}</strong></td>
@@ -1200,8 +1578,35 @@ function renderHoldingsTable(holdings) {
         rows = sortedHoldings.map(h => buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums)).join('');
     }
 
+    rows += buildCoveredCallPnlRowHtml(TodayPnl.latest(latestTodaySnapshot, marketTodayStr()));
     rows += buildTotalRowHtml(holdings, totalInvValue);
     tbody.innerHTML = rows;
+    if (holdings.some(holding => holding.prices_pending)) {
+        const marketColumns = [4, 6, 7, 9, 10, 11, 12, 13, 15, 16, 17, 18];
+        tbody.querySelectorAll(marketColumns.map(col => `tr:not(.covered-call-pnl-row) [data-col="${col}"]`).join(',')).forEach(cell => {
+            cell.innerHTML = pendingValueHtml();
+            cell.className = 'text-muted';
+            cell.removeAttribute('title');
+        });
+    }
+    if (holdings.some(holding => holding.today_pending)) {
+        tbody.querySelectorAll('[data-col="5"]').forEach(cell => {
+            cell.innerHTML = pendingValueHtml();
+            cell.className = 'text-muted';
+        });
+    }
+    if (holdings.some(holding => holding.ledger_pending)) {
+        tbody.querySelectorAll('tr:not(.covered-call-pnl-row)').forEach(row => {
+            const holding = holdings.find(h => h.symbol === row.dataset.symbol);
+            if (holding && !holding.ledger_pending) return;
+            for (const col of [2, 3, 14]) {
+                const cell = row.querySelector(`[data-col="${col}"]`);
+                if (cell) cell.innerHTML = pendingValueHtml();
+            }
+            if (holding?.quantity_pending) row.querySelector('[data-col="1"]').innerHTML = pendingValueHtml();
+        });
+    }
+    window.coveredCallsUI?.renderHoldings();
     updateSortIndicators();
 }
 
@@ -1252,36 +1657,7 @@ async function toggleTransactionDetail(holdingRow) {
         return;
     }
 
-    // Compute running quantity and avg cost using FIFO lot tracking (oldest → newest)
-    const oldestFirst = [...txns].reverse();
-    let lots = []; // [{qty, costPerShare}] in purchase order
-    for (const t of oldestFirst) {
-        const qty = t.quantity || 0;
-        const price = t.ave_price != null ? t.ave_price
-                      : (qty > 0 && t.amount != null ? Math.abs(t.amount) / qty : 0);
-        if (t.action === 'BUY') {
-            lots.push({ qty, costPerShare: price });
-        } else if (t.action === 'GIFT' || t.action === 'SPLIT') {
-            lots.push({ qty, costPerShare: 0 });
-        } else if (t.action === 'SELL') {
-            // Remove shares FIFO
-            let remaining = qty;
-            while (remaining > 1e-9 && lots.length > 0) {
-                if (lots[0].qty <= remaining + 1e-9) {
-                    remaining -= lots[0].qty;
-                    lots.shift();
-                } else {
-                    lots[0].qty -= remaining;
-                    remaining = 0;
-                }
-            }
-        }
-        const totalQty = lots.reduce((s, l) => s + l.qty, 0);
-        const totalCost = lots.reduce((s, l) => s + l.qty * l.costPerShare, 0);
-        t._runningQty = totalQty;
-        t._runningAvgCost = totalQty > 1e-9 ? totalCost / totalQty : 0;
-    }
-
+    // Running costs come from the same server replay as Holdings and tax lots.
     const actionClass = (action) => {
         switch (action) {
             case 'BUY': case 'GIFT': return 'txn-buy';
@@ -1295,9 +1671,9 @@ async function toggleTransactionDetail(holdingRow) {
         const qty = t.quantity !== null ? formatNumber(t.quantity, 4) : '--';
         const price = t.ave_price !== null ? formatPrice(symbol, t.ave_price, true) : '--';
         const amount = t.amount !== null ? formatCurrencyAlways(t.amount) : '--';
-        const heldQty = t._runningQty != null ? formatNumber(t._runningQty, 4) : '--';
-        const avgCostAfter = (t._runningQty > 0 && t._runningAvgCost != null)
-            ? formatPrice(symbol, t._runningAvgCost, true) : '--';
+        const heldQty = t.running_quantity != null ? formatNumber(t.running_quantity, 4) : '--';
+        const avgCostAfter = (t.running_quantity > 0 && t.running_avg_cost != null)
+            ? formatPrice(symbol, t.running_avg_cost, true) : '--';
         return `<tr>
             <td>${t.date}</td>
             <td><span class="txn-action ${actionClass(t.action)}">${t.action}</span></td>
@@ -1318,8 +1694,8 @@ async function toggleTransactionDetail(holdingRow) {
                     <th>Quantity</th>
                     <th>Price</th>
                     <th>Amount</th>
-                    <th>Held Qty</th>
-                    <th>Avg Cost</th>
+                    <th title="Adjusted for stock splits">Held Qty</th>
+                    <th title="Remaining lot cost, adjusted for stock splits">Avg Cost</th>
                 </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -1327,13 +1703,37 @@ async function toggleTransactionDetail(holdingRow) {
 }
 
 function updateHoldingsTable(holdings) {
-    // Store holdings data for re-sorting
-    holdingsData = holdings || [];
+    baseHoldingsData = holdings || [];
+    holdingsData = TodayPnl.project(baseHoldingsData, latestTodaySnapshot, marketTodayStr());
+    const point = TodayPnl.latest(latestTodaySnapshot, marketTodayStr());
+    setDashboardStatus('holdingsTodayStatus', point
+        ? `Today ${latestTodaySnapshot.date} ${point.time} ET · Same snapshot as Intraday P&L${latestTodaySnapshot.stale_symbols?.length ? ' · Some prices are cached' : ''}`
+        : 'Today P&L updating…');
     renderHoldingsTable(holdingsData);
     // Also update category table
     updateCategoryTable(holdingsData);
-    // Today tab: refresh the Top Movers card (defaults to the latest intraday point)
-    renderTopMoversDefault();
+    if (holdingsData.some(holding => holding.prices_pending)) {
+        document.querySelectorAll('#categoryBody tr:not(.covered-call-category-row)').forEach(row => {
+            [3, 4, 5].forEach(index => {
+                const cell = row.children[index];
+                if (cell) { cell.innerHTML = pendingValueHtml(); cell.className = 'text-muted'; }
+            });
+            row.querySelector('td:first-child .text-muted')?.remove();
+        });
+    } else {
+        renderTopMoversDefault();
+    }
+    if (!point) {
+        document.querySelectorAll('#categoryBody tr').forEach(row => {
+            const cell = row.children[2];
+            if (cell) { cell.innerHTML = pendingValueHtml(); cell.className = 'text-muted'; }
+        });
+    }
+    if (holdingsData.some(holding => holding.ledger_pending)) {
+        document.querySelectorAll('#categoryBody tr:not(.covered-call-category-row)').forEach(row => {
+            if (row.children[1]) row.children[1].innerHTML = pendingValueHtml();
+        });
+    }
 }
 
 function updateCategoryTable(holdings) {
@@ -1353,7 +1753,7 @@ function updateCategoryTable(holdings) {
         'Crypto': '#f59e0b',
         'Index': '#2563eb',
         'Individual Stocks': '#8b5cf6',
-        'Cash': '#10b981'
+        'Cash': '#087f65'
     };
 
     // Aggregate holdings by category
@@ -1429,6 +1829,12 @@ function updateCategoryTable(holdings) {
             </tr>
         `;
     }).join('');
+
+    const optionView = TodayPnl.valuation(TodayPnl.latest(latestTodaySnapshot, marketTodayStr()));
+    if (optionView.hasOptions) {
+        rows += `<tr class="covered-call-category-row"><td><strong>Covered Call</strong></td><td>—</td><td>${coveredCallPnlValue(optionView)}</td><td>—</td><td>—</td><td>—</td></tr>`;
+        totals.daily_change += optionView.contribution;
+    }
 
     // Add total row
     const totalDailyClass = totals.daily_change >= 0 ? 'text-success' : 'text-danger';
@@ -1679,7 +2085,7 @@ function updatePerformanceChart(performance) {
                 },
                 y: {
                     grid: {
-                        color: '#e5e7eb'
+                        color: '#e8edf5'
                     },
                     ticks: {
                         callback: (value) => formatCurrency(value)
@@ -1750,7 +2156,7 @@ async function updateInvestmentChart(performance, period = 'ALL') {
         'Crypto': '#f59e0b',
         'Index': '#2563eb',
         'Individual Stocks': '#8b5cf6',
-        'Cash': '#10b981'
+        'Cash': '#087f65'
     };
 
     // Get all unique categories and months
@@ -1821,7 +2227,7 @@ async function updateInvestmentChart(performance, period = 'ALL') {
                 y: {
                     stacked: true,
                     grid: {
-                        color: '#e5e7eb'
+                        color: '#e8edf5'
                     },
                     ticks: {
                         callback: (value) => {
@@ -1930,8 +2336,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         todayDailyPnlPct = lastPoint.daily_pnl_percent;
     }
 
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const todayStr = marketTodayStr();
 
     // Build days list from the /api/daily-pnl response (need ~35 days for 5 weeks)
     const rawDays = (dailyPnlData && dailyPnlData.daily_pnl) ? [...dailyPnlData.daily_pnl].reverse() : [];
@@ -2311,12 +2716,12 @@ function updatePnlChart(performance) {
     // Create segment coloring based on baseline
     const segmentColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= baselineValue ? '#10b981' : '#ef4444';
+        return value >= baselineValue ? '#087f65' : '#bd4663';
     };
 
     const segmentBgColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= baselineValue ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+        return value >= baselineValue ? 'rgba(8, 127, 101, 0.075)' : 'rgba(189, 70, 99, 0.075)';
     };
 
     // Plugin to draw baseline and last point label
@@ -2388,7 +2793,7 @@ function updatePnlChart(performance) {
                     if (dailyChange != null) {
                         const sign = dailyChange >= 0 ? '+' : '';
                         ctx.font = 'bold 10px sans-serif';
-                        ctx.fillStyle = dailyChange >= 0 ? '#10b981' : '#ef4444';
+                        ctx.fillStyle = dailyChange >= 0 ? '#087f65' : '#bd4663';
                         ctx.fillText(anonymousMode ? '***' : sign + formatCurrencyAlways(dailyChange), x + 4, yAxis.top + 26);
                     }
                     ctx.restore();
@@ -2464,7 +2869,7 @@ function updatePnlChart(performance) {
                             if (pnlChange != null) {
                                 const sign = pnlChange >= 0 ? '+' : '';
                                 ctx.font = 'bold 9px sans-serif';
-                                ctx.fillStyle = pnlChange >= 0 ? '#10b981' : '#ef4444';
+                                ctx.fillStyle = pnlChange >= 0 ? '#087f65' : '#bd4663';
                                 ctx.fillText(anonymousMode ? '***' : sign + formatCurrencyAlways(pnlChange), x + 3, yAxis.top + 24);
                             }
                             ctx.restore();
@@ -2519,7 +2924,7 @@ function updatePnlChart(performance) {
                     ctx.save();
                     ctx.beginPath();
                     ctx.arc(x, y, 5, 0, 2 * Math.PI);
-                    ctx.fillStyle = changeFromBaseline >= 0 ? '#10b981' : '#ef4444';
+                    ctx.fillStyle = changeFromBaseline >= 0 ? '#087f65' : '#bd4663';
                     ctx.fill();
 
                     // Draw vs Start label (position to the left to avoid overflow)
@@ -2528,7 +2933,7 @@ function updatePnlChart(performance) {
                         ? `${changeSign}${formatCurrencyAlways(changeFromBaseline)}`
                         : `${changeSign}${formatCurrencyAlways(changeFromBaseline)} (${changeSign}${changePercent.toFixed(2)}%)`;
                     ctx.font = 'bold 12px sans-serif';
-                    ctx.fillStyle = changeFromBaseline >= 0 ? '#10b981' : '#ef4444';
+                    ctx.fillStyle = changeFromBaseline >= 0 ? '#087f65' : '#bd4663';
 
                     // Measure text width and position label to avoid overflow
                     const textWidth = ctx.measureText(labelText).width;
@@ -2572,8 +2977,8 @@ function updatePnlChart(performance) {
                     borderColor: segmentColor,
                     backgroundColor: segmentBgColor
                 },
-                borderColor: '#10b981',
-                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                borderColor: '#087f65',
+                backgroundColor: 'rgba(8, 127, 101, 0.075)',
                 fill: {
                     target: { value: baselineValue },
                     above: 'rgba(16, 185, 129, 0.15)',
@@ -2657,7 +3062,7 @@ function updatePnlChart(performance) {
                 },
                 y: {
                     grid: {
-                        color: '#e5e7eb'
+                        color: '#e8edf5'
                     },
                     ticks: {
                         callback: (value) => {
@@ -2781,7 +3186,7 @@ const marketHoursPlugin = {
                 ctx.save();
                 ctx.beginPath();
                 ctx.arc(x, y, 5, 0, 2 * Math.PI);
-                ctx.fillStyle = lastValue >= 0 ? '#10b981' : '#ef4444';
+                ctx.fillStyle = lastValue >= 0 ? '#087f65' : '#bd4663';
                 ctx.fill();
 
                 // Draw P&L label (always show amount, hide percentage in anonymous mode)
@@ -2789,7 +3194,7 @@ const marketHoursPlugin = {
                 const pnlText = `${sign}${formatCurrencyAlways(lastValue)}`;
 
                 ctx.font = 'bold 12px sans-serif';
-                ctx.fillStyle = lastValue >= 0 ? '#10b981' : '#ef4444';
+                ctx.fillStyle = lastValue >= 0 ? '#087f65' : '#bd4663';
 
                 // Measure text width and position label to avoid overflow
                 const textWidth = ctx.measureText(pnlText).width;
@@ -2801,7 +3206,7 @@ const marketHoursPlugin = {
                     ctx.fillText(pnlText, x - 10, y - 5);
 
                     // Only show percentage if not in anonymous mode
-                    if (!anonymousMode) {
+                    if (!anonymousMode && dataset.pnlPercentData[lastIndex] != null) {
                         const pnlPercent = dataset.pnlPercentData[lastIndex];
                         const percentText = `(${sign}${pnlPercent.toFixed(2)}%)`;
                         ctx.font = '11px sans-serif';
@@ -2812,7 +3217,7 @@ const marketHoursPlugin = {
                     ctx.fillText(pnlText, x + 10, y - 5);
 
                     // Only show percentage if not in anonymous mode
-                    if (!anonymousMode) {
+                    if (!anonymousMode && dataset.pnlPercentData[lastIndex] != null) {
                         const pnlPercent = dataset.pnlPercentData[lastIndex];
                         const percentText = `(${sign}${pnlPercent.toFixed(2)}%)`;
                         ctx.font = '11px sans-serif';
@@ -2839,7 +3244,58 @@ function generateFullDayLabels(interval) {
     return labels;
 }
 
+function updateIntradaySpotlight(intraday, selectedPoint = null) {
+    const points = intraday?.intraday || [];
+    const latest = selectedPoint || [...points].reverse().find(point => point.daily_pnl != null);
+    const view = TodayPnl.valuation(latest);
+    const value = document.getElementById('intradayLatestPnl');
+    const percent = document.getElementById('intradayLatestReturn');
+    const label = document.getElementById('intradayPnlLabel');
+    if (label) label.textContent = selectedPoint ? `Daily P&L · ${selectedPoint.time} ET` : 'Latest daily P&L';
+    if (!value || !percent) return;
+    value.textContent = view.display !== null ? `${view.display >= 0 && !anonymousMode ? '+' : ''}${formatCurrency(view.display)}` : '--';
+    percent.textContent = view.percent !== null ? formatPercent(view.percent) : '--';
+    for (const element of [value, percent]) {
+        element.classList.toggle('text-success', view.display !== null && view.display >= 0);
+        element.classList.toggle('text-danger', view.display !== null && view.display < 0);
+    }
+}
+
+function updateIntradayTimestamp() {
+    const updated = document.getElementById('intradayUpdatedAt');
+    const badge = document.getElementById('intradayFreshnessBadge');
+    if (!updated || !badge) return;
+    const timestamp = new Date(renderedIntraday?.computed_at);
+    if (!renderedIntraday?.computed_at || !Number.isFinite(timestamp.getTime())) {
+        updated.textContent = '';
+        badge.textContent = '--';
+        badge.title = 'Last chart update';
+        badge.setAttribute('data-freshness', 'unknown');
+        badge.setAttribute('aria-label', 'Last update time unavailable');
+        return;
+    }
+    const minutes = Math.max(0, Math.floor((Date.now() - timestamp.getTime()) / 60000));
+    const age = minutes === 0 ? 'Just now'
+        : minutes < 60 ? `${minutes} min ago`
+        : minutes < 1440 ? `${Math.floor(minutes / 60)} h ago`
+        : `${Math.floor(minutes / 1440)} d ago`;
+    const date = timestamp.toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+    const time = timestamp.toLocaleTimeString([], {timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit'});
+    badge.textContent = age;
+    badge.setAttribute('data-freshness', minutes < 15 ? 'fresh' : minutes < 60 ? 'recent' : 'stale');
+    badge.title = `Last updated ${date} ${time} ET`;
+    badge.setAttribute('aria-label', `Last updated: ${age}`);
+    updated.textContent = `Chart updated ${date} ${time} ET${renderedIntraday.stale_symbols?.length ? ' · Some prices are cached' : ''}`;
+}
+
 function updateIntradayChart(intraday, interval = '5m') {
+    renderedIntraday = intraday;
+    if (intraday?.date === marketTodayStr() && TodayPnl.latest(intraday, marketTodayStr())) {
+        latestTodaySnapshot = intraday;
+        updateHoldingsTable(baseHoldingsData);
+    }
+    updateIntradaySpotlight(intraday);
+    updateIntradayTimestamp();
     const ctx = document.getElementById('intradayChart').getContext('2d');
 
     if (intradayChart) {
@@ -2872,6 +3328,7 @@ function updateIntradayChart(intraday, interval = '5m') {
 
     // Map data to full day labels, fill with null for missing times
     const pnlData = [];
+    const pointData = [];
     const pnlPercentData = [];
     const baselineData = [];
     const assetChangesData = [];
@@ -2880,14 +3337,18 @@ function updateIntradayChart(intraday, interval = '5m') {
 
     fullDayLabels.forEach((time, index) => {
         if (dataMap[time]) {
-            pnlData.push(dataMap[time].daily_pnl);
-            pnlPercentData.push(dataMap[time].daily_pnl_percent);
+            const point = dataMap[time];
+            const view = TodayPnl.valuation(point);
+            pnlData.push(view.display);
+            pointData.push(point);
+            pnlPercentData.push(view.percent);
             baselineData.push(dataMap[time].baseline_value);
             assetChangesData.push(dataMap[time].asset_changes || []);
             lastDataIndex = index;
-            lastPnl = dataMap[time].daily_pnl;
+            lastPnl = view.display;
         } else {
             pnlData.push(null);
+            pointData.push(null);
             pnlPercentData.push(null);
             baselineData.push(null);
             assetChangesData.push(null);
@@ -2897,12 +3358,12 @@ function updateIntradayChart(intraday, interval = '5m') {
     // Segment coloring based on value (green above 0, red below 0)
     const segmentBorderColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= 0 ? '#10b981' : '#ef4444';
+        return value >= 0 ? '#087f65' : '#bd4663';
     };
 
     const segmentBackgroundColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+        return value >= 0 ? 'rgba(8, 127, 101, 0.075)' : 'rgba(189, 70, 99, 0.075)';
     };
 
     intradayChart = new Chart(ctx, {
@@ -2912,6 +3373,7 @@ function updateIntradayChart(intraday, interval = '5m') {
             datasets: [{
                 label: "Daily P&L",
                 data: pnlData,
+                pointData: pointData,
                 pnlPercentData: pnlPercentData,
                 baselineData: baselineData,
                 assetChangesData: assetChangesData,
@@ -2920,8 +3382,8 @@ function updateIntradayChart(intraday, interval = '5m') {
                     borderColor: segmentBorderColor,
                     backgroundColor: segmentBackgroundColor
                 },
-                borderColor: lastPnl >= 0 ? '#10b981' : '#ef4444',
-                backgroundColor: lastPnl >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                borderColor: lastPnl >= 0 ? '#087f65' : '#bd4663',
+                backgroundColor: lastPnl >= 0 ? 'rgba(8, 127, 101, 0.075)' : 'rgba(189, 70, 99, 0.075)',
                 fill: {
                     target: 'origin'
                 },
@@ -2938,8 +3400,8 @@ function updateIntradayChart(intraday, interval = '5m') {
                 intersect: false,
                 mode: 'index'
             },
-            // Hovering the chart drives the "Today's Top Movers" card below:
-            // it shows that time point's daily P&L and movers instead of a popup.
+            // Mouse and touch exploration share one point across the headline
+            // and Top Movers, so their amounts and returns always agree.
             onHover: (event, activeElements, chart) => {
                 const ds = chart.data.datasets[0];
                 if (activeElements && activeElements.length > 0) {
@@ -2947,7 +3409,7 @@ function updateIntradayChart(intraday, interval = '5m') {
                     const ac = ds.assetChangesData ? ds.assetChangesData[idx] : null;
                     if (ac != null && ds.data[idx] != null) {
                         renderTopMoversAtTime(chart.data.labels[idx], ds.data[idx],
-                            ds.pnlPercentData ? ds.pnlPercentData[idx] : null, ac);
+                            ds.pnlPercentData ? ds.pnlPercentData[idx] : null, ac, true, ds.pointData[idx]);
                         return;
                     }
                 }
@@ -2972,21 +3434,19 @@ function updateIntradayChart(intraday, interval = '5m') {
                         display: false
                     },
                     ticks: {
-                        maxTicksLimit: 12,
-                        callback: function(value, index) {
-                            // Show fewer labels for readability
+                        autoSkip: false,
+                        maxRotation: 0,
+                        callback: function(value) {
                             const label = this.getLabelForValue(value);
-                            // Show labels at every 2 hours
-                            if (label && (label.endsWith(':00') && parseInt(label.split(':')[0]) % 2 === 0)) {
-                                return label;
-                            }
-                            return '';
+                            const hourStep = this.chart.width < 500 ? 4 : 2;
+                            return label?.endsWith(':00') && parseInt(label.split(':')[0]) % hourStep === 0
+                                ? label : '';
                         }
                     }
                 },
                 y: {
                     grid: {
-                        color: '#e5e7eb'
+                        color: '#e8edf5'
                     },
                     ticks: {
                         callback: (value) => {
@@ -3000,8 +3460,9 @@ function updateIntradayChart(intraday, interval = '5m') {
         plugins: [marketHoursPlugin, hoverLinePlugin]
     });
 
-    // Leaving the chart restores the latest intraday point in the Top Movers card.
+    // Leaving or cancelling exploration restores both panels to the latest point.
     ctx.canvas.onmouseleave = () => renderTopMoversDefault();
+    ctx.canvas.ontouchcancel = () => renderTopMoversDefault();
 
     // Show the latest point immediately once the chart (re)builds.
     renderTopMoversDefault();
@@ -3093,7 +3554,7 @@ function updateAllocationChart(holdings, view = 'assets') {
             'Crypto': ['#92400e', '#b45309', '#d97706', '#f59e0b', '#fbbf24', '#fcd34d', '#fde68a', '#fef3c7'],
             'Index': ['#1e3a8a', '#1e40af', '#1d4ed8', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe'],
             'Individual Stocks': ['#581c87', '#6b21a8', '#7c3aed', '#8b5cf6', '#a78bfa', '#c4b5fd', '#ddd6fe', '#ede9fe'],
-            'Cash': ['#065f46', '#047857', '#059669', '#10b981', '#34d399', '#6ee7b7', '#a7f3d0', '#d1fae5'],
+            'Cash': ['#065f46', '#047857', '#059669', '#087f65', '#34d399', '#6ee7b7', '#a7f3d0', '#d1fae5'],
         };
         const colorScheme = categoryColorSchemes[view] || ['#9ca3af'];
         // Assign colors from dark to light based on sorted position
@@ -3120,7 +3581,7 @@ function updateAllocationChart(holdings, view = 'assets') {
             'Crypto': '#f59e0b',      // Orange
             'Index': '#2563eb',       // Blue
             'Individual Stocks': '#8b5cf6',  // Purple
-            'Cash': '#10b981',        // Green
+            'Cash': '#087f65',        // Green
         };
 
         chartColors = labels.map(label => categoryBaseColors[label] || '#9ca3af');
@@ -3177,7 +3638,7 @@ function updateAllocationChart(holdings, view = 'assets') {
             'Crypto': ['#92400e', '#b45309', '#d97706', '#f59e0b', '#fbbf24', '#fcd34d'],
             'Index': ['#1e3a8a', '#1e40af', '#1d4ed8', '#2563eb', '#3b82f6', '#60a5fa'],
             'Individual Stocks': ['#581c87', '#6b21a8', '#7c3aed', '#8b5cf6', '#a78bfa', '#c4b5fd'],
-            'Cash': ['#065f46', '#047857', '#059669', '#10b981', '#34d399', '#6ee7b7'],
+            'Cash': ['#065f46', '#047857', '#059669', '#087f65', '#34d399', '#6ee7b7'],
         };
 
         // Track color index per category for gradient effect
@@ -3564,7 +4025,7 @@ async function loadPerformanceData(period) {
 
         const [multidayData, summary, dailyPnlData] = await Promise.all([
             fetchIntradayMultiday(interval, days),
-            fetchSummary(),
+            fetchPositions(),
             fetchDailyPnl(false)
         ]);
 
@@ -3606,12 +4067,6 @@ async function loadPerformanceData(period) {
     }
 }
 
-// Update the read-only interval badge in the Intraday card header
-function updateIntradayIntervalBadge(interval) {
-    const badge = document.getElementById('intradayIntervalBadge');
-    if (badge) badge.textContent = interval || '--';
-}
-
 // Try intervals in order (finest first) and return the first that has data
 async function fetchIntradayAutoInterval(date = null, useCache = true) {
     const intervals = ['1m', '5m', '15m', '30m'];
@@ -3624,21 +4079,35 @@ async function fetchIntradayAutoInterval(date = null, useCache = true) {
     return { data: null, interval: '1m' };
 }
 
+// Every replacement/invalidation must take ownership of the overlay as well as
+// the response. Live refresh never blocks the page, even if it replaces a date load.
+function beginIntradayRequest(showOverlay = false) {
+    const requestId = ++intradayLoadRequestId;
+    const overlay = document.getElementById('intradayLoadingOverlay');
+    if (overlay) overlay.style.display = showOverlay ? 'flex' : 'none';
+    return requestId;
+}
+
 // Load intraday data for a given date, auto-selecting the finest available interval
 async function loadIntradayData(date = undefined, useCache = true) {
+    syncMarketDay();
     if (date !== undefined) currentIntradayDate = date;
-    const requestId = ++intradayLoadRequestId;
+    updateIntradayDateNavigation();
+    const requestedMarketDate = marketTodayStr();
+    const selectedDate = currentIntradayDate;
+    const requestId = beginIntradayRequest(date !== undefined || transactionUpdateState === 'updating');
 
-    // Show blocking overlay only when the user explicitly switches date
     const overlay = document.getElementById('intradayLoadingOverlay');
-    if (date !== undefined && overlay) overlay.style.display = 'flex';
 
     try {
-        const { data, interval } = await fetchIntradayAutoInterval(currentIntradayDate, useCache);
-        if (requestId !== intradayLoadRequestId) return;
+        const { data, interval } = await fetchIntradayAutoInterval(selectedDate, useCache);
+        if (requestId !== intradayLoadRequestId || requestedMarketDate !== marketTodayStr()) return;
+        if (data && data.date !== (selectedDate || requestedMarketDate)) return;
+        // Keep an already visible snapshot on a transient fetch failure.
+        if (!data && renderedIntraday?.date === (selectedDate || requestedMarketDate)) return false;
         currentInterval = interval;
-        updateIntradayIntervalBadge(interval);
         updateIntradayChart(data, interval);
+        return !!data;
     } finally {
         if (requestId === intradayLoadRequestId && overlay) overlay.style.display = 'none';
     }
@@ -3665,6 +4134,20 @@ function offsetIsoDate(dateStr, dayOffset) {
     return shifted.toISOString().slice(0, 10);
 }
 
+function syncMarketDay() {
+    const today = marketTodayStr();
+    if (observedMarketDate === today) return false;
+    observedMarketDate = today;
+    apiCache.clear({ invalidatePending: true });
+    latestTodaySnapshot = null;
+    dashboardLoadRequestId++;
+    beginIntradayRequest();
+    updateIntradayDateNavigation();
+    if (currentIntradayDate === null) updateIntradayChart(null, currentInterval);
+    updateHoldingsTable(baseHoldingsData);
+    return true;
+}
+
 function updateIntradayDateNavigation() {
     const datePicker = document.getElementById('intradayDatePicker');
     const previousButton = document.getElementById('intradayPrevDate');
@@ -3673,6 +4156,7 @@ function updateIntradayDateNavigation() {
 
     const todayStr = marketTodayStr();
     datePicker.max = todayStr;
+    datePicker.value = currentIntradayDate || todayStr;
     if (previousButton) previousButton.disabled = !datePicker.value;
     if (nextButton) nextButton.disabled = !datePicker.value || datePicker.value >= todayStr;
 }
@@ -3683,7 +4167,7 @@ function selectIntradayDate(dateStr) {
 
     const todayStr = marketTodayStr();
     const selectedDate = !dateStr || dateStr > todayStr ? todayStr : dateStr;
-    datePicker.value = selectedDate;
+    currentIntradayDate = selectedDate === todayStr ? null : selectedDate;
     updateIntradayDateNavigation();
 
     // null means today (uses the live endpoint without a date parameter).
@@ -3710,6 +4194,7 @@ function marketTimeStr() {
 // Full transaction browser with per-row delete, so mistaken records can be removed.
 let allTransactions = [];          // last-fetched full list
 let transactionsLoaded = false;    // lazy-load guard (fetched on first tab open)
+let transactionsLoadRequestId = 0;
 
 const TXN_ACTION_BADGE = {
     BUY: 'bg-success', SELL: 'bg-danger', DIV: 'bg-info text-dark',
@@ -3728,13 +4213,17 @@ async function loadTransactions(force = false) {
     if (transactionsLoaded && !force) return;
     const body = document.getElementById('txnBody');
     if (!body) return;
+    const requestId = ++transactionsLoadRequestId;
     body.innerHTML = `<tr><td colspan="10" class="text-center text-muted py-4">
         <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading transactions...</td></tr>`;
     try {
-        allTransactions = await fetchAllTransactions();
+        const transactions = await fetchAllTransactions();
+        if (requestId !== transactionsLoadRequestId) return;
+        allTransactions = transactions;
         transactionsLoaded = true;
         renderTransactions();
     } catch (e) {
+        if (requestId !== transactionsLoadRequestId) return;
         body.innerHTML = `<tr><td colspan="10" class="text-center text-danger py-4">
             Failed to load transactions: ${escapeHtml(e.message)}</td></tr>`;
     }
@@ -3789,7 +4278,7 @@ function renderTransactions() {
             <td class="text-end">${amount}</td>
             <td>${escapeHtml(t.broker || '--')}</td>
             <td class="text-muted small">${escapeHtml(t.source || '')}</td>
-            <td class="text-muted small">${escapeHtml(t.comment || '')}</td>
+            <td class="text-muted small">${escapeHtml(t.comment || '')}${t.action === 'SELL' ? `<div class="small text-muted">${escapeHtml(SaleLots.labels[t.cost_basis_method] || 'FIFO (legacy)')}${(t.lot_allocations || []).length ? ` · ${(t.lot_allocations || []).map(a => `#${a.lot_id}: ${escapeHtml(a.quantity)}`).join(', ')}` : ''}</div>` : ''}</td>
             <td class="text-end">
                 <button class="btn btn-sm btn-outline-danger txn-delete-btn" data-txn-id="${t.id}"
                         title="Delete this transaction">
@@ -3817,7 +4306,8 @@ async function deleteTransaction(txnId, btn) {
         // Drop locally and re-render immediately, then refresh portfolio-wide numbers.
         allTransactions = allTransactions.filter(t => String(t.id) !== String(txnId));
         renderTransactions();
-        loadAllData();
+        applySavedTransaction();
+        refreshAfterTransaction();
     } catch (e) {
         alert(`Failed to delete: ${e.message}`);
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-trash"></i>'; }
@@ -3846,7 +4336,7 @@ function initTransactionsTab() {
 }
 
 // ---- Today's Top Movers -----------------------------------------------------
-// Per-holding daily P&L: top 10 gainers (left) and top 10 losers (right).
+// Per-holding daily P&L: top 10 overall by absolute P&L, split into gainers/losers.
 // Replaces the old news panel under the Intraday P&L chart.
 const TOP_MOVERS_LIMIT = 10;
 
@@ -3859,17 +4349,20 @@ function _fillMoverTables(items) {
     const row = (it) => {
         const cls = it.amt >= 0 ? 'text-success' : 'text-danger';
         const sign = it.amt >= 0 ? '+' : '';
-        return `<tr>
-            <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong></td>
-            <td class="text-end">${it.price != null ? formatPrice(it.symbol, it.price, true) : '--'}</td>
+        return `<tr class="mover-detail-row" data-mover-symbol="${escapeHtml(it.symbol)}" tabindex="0" role="button" aria-haspopup="dialog" aria-controls="tickerTechnicalsModal" aria-label="View ${escapeHtml(displaySymbol(it.symbol))} moving averages">
+            <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong><i class="bi bi-graph-up mover-detail-icon" aria-hidden="true"></i>${buildTradeActivityHtml(it)}</td>
+            <td class="text-end">${buildPositionPriceHtml(it)}</td>
             <td class="text-end ${cls}">${sign}${formatCurrencyAlways(it.amt)}</td>
             <td class="text-end ${cls}">${it.pct != null ? formatPercent(it.pct) : '--'}</td>
         </tr>`;
     };
     const empty = '<tr><td colspan="4" class="text-center text-muted py-3">None.</td></tr>';
 
-    const gainers = items.filter(i => i.amt > 0).sort((a, b) => b.amt - a.amt).slice(0, TOP_MOVERS_LIMIT);
-    const losers = items.filter(i => i.amt < 0).sort((a, b) => a.amt - b.amt).slice(0, TOP_MOVERS_LIMIT);
+    const topMovers = [...items]
+        .sort((a, b) => Math.abs(b.amt) - Math.abs(a.amt))
+        .slice(0, TOP_MOVERS_LIMIT);
+    const gainers = topMovers.filter(i => i.amt > 0).sort((a, b) => b.amt - a.amt);
+    const losers = topMovers.filter(i => i.amt < 0).sort((a, b) => a.amt - b.amt);
     gainersBody.innerHTML = gainers.length ? gainers.map(row).join('') : empty;
     losersBody.innerHTML = losers.length ? losers.map(row).join('') : empty;
 }
@@ -3887,26 +4380,40 @@ function _setTopMoversHeader(amt, pct, timeLabel) {
     }
 }
 
+function renderCoveredCallMover(point) {
+    const item = document.getElementById('coveredCallMover');
+    if (!item) return;
+    const view = TodayPnl.valuation(point);
+    item.hidden = !view.hasOptions;
+    item.innerHTML = view.hasOptions
+        ? `<span class="fw-semibold">Covered Call</span><span>${coveredCallPnlValue(view)}</span>` : '';
+}
+
 // Default view: current (end-of-day / live) per-holding daily moves.
 function renderTopMovers(holdings) {
     const items = (holdings || [])
         .filter(h => h.symbol !== 'CASH' && h.daily_change_amount != null && h.daily_change_amount !== 0)
-        .map(h => ({ symbol: h.symbol, amt: h.daily_change_amount, pct: h.daily_change_percent, price: h.current_price }));
+        .map(h => ({ ...h, amt: h.daily_change_amount, pct: h.daily_change_percent }));
 
     // % is vs the start-of-day value (market value minus today's change).
     const totalDaily = (holdings || []).reduce((s, h) => s + (h.daily_change_amount || 0), 0);
     const totalMV = (holdings || []).reduce((s, h) => s + (h.market_value || 0), 0);
     const startVal = totalMV - totalDaily;
     _setTopMoversHeader(totalDaily, startVal > 0 ? (totalDaily / startVal * 100) : null, '');
+    renderCoveredCallMover(null);
     _fillMoverTables(items);
 }
 
 // Hover view: movers as of a specific intraday time point.
-function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges) {
+function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges, selected = true, sourcePoint = null) {
+    const point = sourcePoint || {time: timeLabel, daily_pnl: pnl, daily_pnl_percent: pnlPercent};
+    const view = TodayPnl.valuation(point);
+    updateIntradaySpotlight({intraday: [point]}, selected ? point : null);
     const items = (assetChanges || [])
         .filter(a => a.symbol !== 'CASH' && a.pnl != null && Math.abs(a.pnl) >= 0.01)
-        .map(a => ({ symbol: a.symbol, amt: a.pnl, pct: a.pnl_percent, price: a.current_price }));
-    _setTopMoversHeader(pnl || 0, pnlPercent != null ? pnlPercent : null, timeLabel);
+        .map(a => ({ ...a, amt: a.pnl, pct: a.pnl_percent }));
+    _setTopMoversHeader(view.display ?? 0, view.percent, timeLabel);
+    renderCoveredCallMover(point);
     _fillMoverTables(items);
 }
 
@@ -3919,159 +4426,410 @@ function renderTopMoversDefault() {
         && ds.assetChangesData && ds.assetChangesData[ds.lastDataIndex]) {
         const i = ds.lastDataIndex;
         renderTopMoversAtTime(intradayChart.data.labels[i], ds.data[i],
-            ds.pnlPercentData ? ds.pnlPercentData[i] : null, ds.assetChangesData[i]);
+            ds.pnlPercentData ? ds.pnlPercentData[i] : null, ds.assetChangesData[i], false, ds.pointData?.[i]);
     } else {
+        updateIntradaySpotlight(renderedIntraday);
         renderTopMovers(holdingsData);
     }
 }
 
-// Main data loading function
-async function loadAllData() {
-    // Snapshot date at function start to guard against mid-flight date changes
-    const snapshotDate = currentIntradayDate;
+function slicePerformance(data, period) {
+    const { start_date, end_date } = getDateRangeForPeriod(period);
+    return { ...data, performance: (data.performance || []).filter(point =>
+        (!start_date || point.date >= start_date) && (!end_date || point.date <= end_date)) };
+}
 
-    // Fetch targets alongside other data
-    fetchTargets();
+function setDashboardStatus(id, text) {
+    const element = document.getElementById(id);
+    if (element) element.textContent = text;
+}
 
-    // Fetch all data in parallel; intraday auto-selects the finest available interval
-    const fetchList = [
-        fetchSummary(),
-        fetchPerformance('ALL'),  // Fetch all data for annual table
-        fetchDividends(),
-        fetchSoldAssets(),
-        fetchIntradayAutoInterval(snapshotDate)   // returns {data, interval}
-    ];
+function pendingValueHtml() {
+    return transactionUpdateState === 'updating'
+        ? '<span title="Updating"><span class="value-spinner" aria-hidden="true"></span><span class="visually-hidden">Updating</span></span>'
+        : '--';
+}
 
-    // For 3D/1W the P&L chart is built from dailyPnl + intraday (fetched below).
-    // For other periods fetch the regular performance data.
-    const useIntradayForPnl = currentPeriod === '3D' || currentPeriod === '1W';
-    if (!useIntradayForPnl) {
-        fetchList.push(fetchPerformance(currentPeriod));
+function setTransactionUpdateState(state) {
+    transactionUpdateState = state;
+    const notice = document.getElementById('transactionUpdateNotice');
+    if (!notice) return;
+    notice.classList.toggle('d-none', state === 'idle');
+    notice.classList.toggle('is-error', state === 'error');
+    document.getElementById('transactionUpdateMessage').textContent = state === 'error'
+        ? 'Changes saved. Some values could not update. Retry the update without submitting again.'
+        : 'Changes saved. Updating portfolio values…';
+    document.getElementById('transactionUpdateRetry').classList.toggle('d-none', state !== 'error');
+}
+
+function applySavedTransaction(result = {}) {
+    apiCache.clear({ invalidatePending: true });
+    dashboardLoadRequestId++;
+    beginIntradayRequest();
+    transactionsLoadRequestId++;
+    tickerHistoryRequestId++;
+    tickerHistoryInitialized = false;
+    Object.keys(transactionCache).forEach(key => delete transactionCache[key]);
+    latestTodaySnapshot = null;
+    setTransactionUpdateState('updating');
+    const projected = TransactionUpdates.project(baseHoldingsData, result.transaction, marketTodayStr(), holdingsLedgerKnown);
+    updateIntradayChart(null, currentInterval);
+    updateHoldingsTable(projected);
+    ['summaryStrip', 'summaryCardsCollapse'].forEach(id => document.getElementById(id)?.classList.add('is-updating'));
+    ['summaryDataStatus', 'holdingsDataStatus', 'performanceDataStatus', 'dailyPnlDataStatus', 'monthlyPnlDataStatus']
+        .forEach(id => setDashboardStatus(id, 'Updating after saved transaction…'));
+    if (result.transaction && transactionsLoaded) {
+        const txn = result.transaction;
+        allTransactions = [txn, ...allTransactions.filter(item => item.id !== txn.id)]
+            .sort((a, b) => new Date(b.executed_at || b.date) - new Date(a.executed_at || a.date) || b.id - a.id);
+        renderTransactions();
     } else {
-        fetchList.push(Promise.resolve(null)); // placeholder to keep index alignment
+        transactionsLoaded = false;
     }
+}
 
-    // Add separate fetch for portfolio chart if period is different from ALL
-    const needsSeparatePortfolioFetch = portfolioPeriod !== 'ALL';
-    if (needsSeparatePortfolioFetch) {
-        fetchList.push(fetchPerformance(portfolioPeriod));
+function refreshAfterTransaction() {
+    setTransactionUpdateState('updating');
+    window.coveredCallsUI?.load().catch(() => {});
+    const pending = loadAllData({ prioritizeIntraday: false });
+    const requestId = dashboardLoadRequestId;
+    pending.then(() => {
+        if (requestId === dashboardLoadRequestId) loadTickerHistory(true);
+    }).catch(error => {
+        console.error('Post-save update failed:', error);
+        if (requestId !== dashboardLoadRequestId) return;
+        setTransactionUpdateState('error');
+        updateHoldingsTable(baseHoldingsData);
+    });
+    if (document.getElementById('trackerTransactions')?.classList.contains('active')) loadTransactions(true);
+    return pending;
+}
+
+function snapshotStatus(data, label) {
+    const time = data?.computed_at
+        ? new Date(data.computed_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})
+        : '';
+    return `${label}${time ? ` as of ${time}` : ''}${data?.cache_status === 'stale' ? ' · Updating…' : ''}`;
+}
+
+async function fetchPositions() {
+    try {
+        const response = await fetch('/api/positions');
+        if (!response.ok) throw new Error('Positions could not be loaded');
+        return await response.json();
+    } catch (error) {
+        console.error('Error loading positions:', error);
+        return null;
     }
+}
 
-    // Fetch daily P&L list (EST midnight boundary for crypto)
-    fetchList.push(fetchDailyPnl());
+// Main data loading function: each panel paints as soon as its data arrives.
+async function loadAllData({ skipIntraday = false, prioritizeIntraday = true } = {}) {
+    if (syncMarketDay()) skipIntraday = false;
+    const requestId = ++dashboardLoadRequestId;
+    const requestedMarketDate = marketTodayStr();
+    const isCurrent = () => requestId === dashboardLoadRequestId && requestedMarketDate === marketTodayStr();
+    const failedPanels = [];
+    let pricedHoldingsRendered = false;
+    const positionsTask = fetchPositions().then(data => {
+        if (!isCurrent() || pricedHoldingsRendered) return;
+        if (!data) { failedPanels.push('Positions'); return; }
+        holdingsLedgerKnown = true;
+        const sameLedger = holdingsData.length === data.holdings.length && data.holdings.every(position =>
+            holdingsData.some(holding => !holding.prices_pending && holding.symbol === position.symbol &&
+                holding.quantity === position.quantity && holding.cost_basis === position.cost_basis));
+        if (sameLedger) return;
+        updateHoldingsTable(data.holdings);
+        setDashboardStatus('holdingsDataStatus', 'Positions ready · Updating prices…');
+    });
 
-    // Kick off monthly P&L fetch in parallel (larger dataset, separate cache key)
-    const monthlyPnlPromise = fetchMonthlyPnlData();
+    // After a save, panels start independently so slow Today/history cannot delay
+    // the confirmed ledger or live summary. Ordinary page loads prioritize Today.
+    const intradayTask = (async () => {
+        if (!skipIntraday && await loadIntradayData() === false) failedPanels.push('Today P&L');
+        if (!isCurrent()) return;
+        if (currentIntradayDate !== null && !TodayPnl.latest(latestTodaySnapshot, marketTodayStr())) {
+            const { data } = await fetchIntradayAutoInterval(null, false);
+            if (!isCurrent()) return;
+            if (TodayPnl.latest(data, marketTodayStr())) {
+                latestTodaySnapshot = data;
+                updateHoldingsTable(baseHoldingsData);
+            } else failedPanels.push('Today P&L');
+        }
+    })();
+    if (prioritizeIntraday) await intradayTask;
+    if (!isCurrent()) return;
 
-    const results = await Promise.all(fetchList);
-    const [summary, allPerformance, dividends, sold, intradayResult, pnlData] = results;
-    const portfolioPerformance = needsSeparatePortfolioFetch ? results[6] : allPerformance;
-    const dailyPnlData = results[results.length - 1];
-
-    // Unpack auto-detected intraday result
-    const intraday = intradayResult?.data ?? null;
-    const detectedInterval = intradayResult?.interval ?? '1m';
-
-    if (summary) {
-        updateSummaryCards(summary);
-        updateHoldingsTable(summary.holdings);
-        updateAllocationChart(summary.holdings, allocationView);
-    }
-
-    // Only update the chart if the user hasn't switched date mid-flight
-    if (intraday && currentIntradayDate === snapshotDate) {
-        currentInterval = detectedInterval;
-        updateIntradayIntervalBadge(detectedInterval);
-        updateIntradayChart(intraday, detectedInterval);
-    }
-
-    // Handle P&L chart - always delegate to loadPerformanceData for consistent behavior
-    if (useIntradayForPnl) {
-        loadPerformanceData(currentPeriod);
-    } else if (pnlData) {
-        updatePnlChart(pnlData);
-    }
-
-    // Update daily P&L list
-    if (dailyPnlData) {
-        updateDailyPnlList(dailyPnlData, intraday);
-    }
-
-    // Update monthly P&L list (awaits the parallel fetch started above)
-    const monthlyPnlData = await monthlyPnlPromise;
-    if (monthlyPnlData) {
-        updateMonthlyPnlList(monthlyPnlData);
-    }
-
-    // Update Portfolio Value chart based on portfolioPeriod
-    if (portfolioPerformance) {
-        currentPerformanceData = portfolioPerformance;
-        if (portfolioChartView === 'value') {
-            updatePerformanceChart(portfolioPerformance);
-        } else {
-            updateInvestmentChart(null, portfolioPeriod);
+    async function paint(fetcher, render, statusId, label) {
+        try {
+            const data = await fetcher(false);
+            if (!isCurrent()) return;
+            if (!data) throw new Error(`${label || 'Data'} unavailable`);
+            render(data);
+            if (statusId) setDashboardStatus(statusId, snapshotStatus(data, label));
+            if (data.cache_status === 'stale') {
+                const fresh = await fetcher(true);
+                if (!isCurrent()) return;
+                if (!fresh) throw new Error(`${label || 'Data'} refresh failed`);
+                render(fresh);
+                if (statusId) setDashboardStatus(statusId, snapshotStatus(fresh, label));
+            }
+        } catch (error) {
+            console.error('Dashboard panel failed:', error);
+            failedPanels.push(label || 'Data');
+            if (isCurrent() && statusId) {
+                setDashboardStatus(statusId, `${label} update failed · Refresh to retry`);
+                if (statusId === 'summaryDataStatus') setDashboardStatus('holdingsDataStatus', 'Price update failed · Refresh to retry');
+            }
         }
     }
 
-    if (allPerformance) {
-        updateAnnualTable(allPerformance);
-    }
+    const summaryTask = paint(
+        fresh => fetchSummary(!fresh, fresh),
+        summary => {
+            pricedHoldingsRendered = true;
+            holdingsLedgerKnown = true;
+            updateSummaryCards(summary);
+            updateHoldingsTable(summary.holdings);
+            updateAllocationChart(summary.holdings, allocationView);
+            setDashboardStatus('holdingsDataStatus', snapshotStatus(summary, 'Prices'));
+        }, 'summaryDataStatus', 'Prices'
+    );
+    const targetsTask = fetchTargets().then(() => {
+        if (isCurrent()) renderHoldingsTable(holdingsData);
+    });
 
-    if (sold) {
-        updateSoldTable(sold);
-    }
+    // Transaction-derived cards never wait for historical prices.
+    const investmentsTask = portfolioChartView === 'investment'
+        ? updateInvestmentChart(null, portfolioPeriod) : Promise.resolve();
+    const soldTask = paint(() => fetchSoldAssets(), updateSoldTable);
+    const dividendsTask = paint(() => fetchDividends(), updateDividendsTable);
 
-    if (dividends) {
-        updateDividendsTable(dividends);
+    const shortTask = currentPeriod === '3D' || currentPeriod === '1W'
+        ? loadPerformanceData(currentPeriod) : Promise.resolve();
+    const performanceTask = paint(
+        fresh => fetchPerformance('ALL', !fresh, fresh),
+        all => {
+            updateAnnualTable(all);
+            const shortPeriod = currentPeriod === '3D' || currentPeriod === '1W';
+            if (!shortPeriod) updatePnlChart(slicePerformance(all, currentPeriod));
+            if (portfolioChartView === 'value') {
+                currentPerformanceData = slicePerformance(all, portfolioPeriod);
+                updatePerformanceChart(currentPerformanceData);
+            }
+        }, 'performanceDataStatus', 'Performance'
+    );
+    const dailyTask = paint(
+        fresh => fetchDailyPnl(!fresh, fresh),
+        data => updateDailyPnlList(data, currentIntradayDate === null ? renderedIntraday : null),
+        'dailyPnlDataStatus', 'Daily P&L'
+    );
+    const monthlyTask = paint(
+        fresh => fetchMonthlyPnlData(!fresh, fresh), updateMonthlyPnlList,
+        'monthlyPnlDataStatus', 'Monthly P&L'
+    );
+    const results = await Promise.allSettled([intradayTask, positionsTask, summaryTask, targetsTask, investmentsTask,
+        soldTask, dividendsTask, shortTask, performanceTask, dailyTask, monthlyTask]);
+    if (!isCurrent()) return;
+    if (results.some(result => result.status === 'rejected')) failedPanels.push('Data');
+    if (transactionUpdateState !== 'idle') {
+        setTransactionUpdateState(failedPanels.length ? 'error' : 'idle');
+        updateHoldingsTable(baseHoldingsData);
     }
+    return { failedPanels };
 }
 
 async function refreshData() {
-    // Clear cache and reload data
+    syncMarketDay();
+    updateIntradayDateNavigation();
+    const requestedMarketDate = marketTodayStr();
+    const snapshotDate = currentIntradayDate;
+    const requestId = beginIntradayRequest();
+    let data;
+    let interval = '1m';
+    if (snapshotDate === null) {
+        const response = await fetch('/api/intraday/refresh', { method: 'POST' });
+        if (!response.ok) throw new Error('Today data could not be refreshed');
+        data = await response.json();
+        if (!data?.intraday?.length) throw new Error('No intraday data available');
+    } else {
+        ({ data, interval } = await fetchIntradayAutoInterval(snapshotDate, false));
+        if (!data) throw new Error('Intraday data could not be loaded');
+    }
+    // A newer refresh or date navigation owns both the chart and its cache.
+    if (requestId !== intradayLoadRequestId || currentIntradayDate !== snapshotDate
+            || requestedMarketDate !== marketTodayStr()) return null;
+    if (data.date !== (snapshotDate || requestedMarketDate)) throw new Error('Intraday date changed; refresh to retry');
+    if (data.refresh_skipped) {
+        apiCache.set(`intraday_${snapshotDate || requestedMarketDate}_${interval}`, data);
+        // A new page still needs to draw the server's cached chart. A repeated
+        // click on an already-rendered snapshot needs neither redraw nor a
+        // second round of slower dashboard requests.
+        if (renderedIntraday?.computed_at !== data.computed_at
+                || renderedIntraday?.date !== data.date || currentInterval !== interval) {
+            currentInterval = interval;
+            updateIntradayChart(data, interval);
+        }
+        return data;
+    }
+    // Invalidate other browser caches, but do not wait for other pages.
     apiCache.clear();
+    apiCache.set(`intraday_${snapshotDate || requestedMarketDate}_${interval}`, data);
     Object.keys(transactionCache).forEach(k => delete transactionCache[k]);
-    await loadAllData();
+    currentInterval = interval;
+    updateIntradayChart(data, interval);
+    // Coalesce slower refreshes when the button is clicked repeatedly.
+    if (!secondaryRefreshTask) {
+        secondaryRefreshTask = new Promise(resolve => setTimeout(resolve, 0))
+            .then(() => loadAllData({ skipIntraday: true }))
+            .then(() => tickerHistoryInitialized ? loadTickerHistory(true) : undefined)
+            .catch(error => console.error('Secondary refresh failed:', error))
+            .finally(() => { secondaryRefreshTask = null; });
+    }
+    return data;
 }
 
 // Event handlers
-let manualRefreshInProgress = false;
+let refreshInProgress = false;
+let lastRefreshStartedAt = 0;
+let liveRefreshTimer = null;
+let liveRefreshExpiryTimer = null;
+let liveRefreshExpiresAt = 0;
+const LIVE_REFRESH_INTERVAL_MS = 60000;
+const LIVE_REFRESH_DURATION_MS = 3 * 60 * 60 * 1000;
+const LIVE_REFRESH_STORAGE_KEY = 'liveRefreshEnabled';
+const LIVE_REFRESH_EXPIRY_KEY = 'liveRefreshExpiresAt';
 
-function setManualRefreshState(isRefreshing) {
-    const btn = document.getElementById('refreshBtn');
+function clearLiveRefreshTimers() {
+    clearInterval(liveRefreshTimer);
+    clearTimeout(liveRefreshExpiryTimer);
+    liveRefreshTimer = liveRefreshExpiryTimer = null;
+}
+
+function stopLiveRefresh({ expired = false, persist = true } = {}) {
+    clearLiveRefreshTimers();
+    liveRefreshExpiresAt = 0;
+    document.getElementById('liveRefreshSwitch').checked = false;
+    try {
+        if (persist) {
+            portfolioStorage.setItem(LIVE_REFRESH_STORAGE_KEY, 'false');
+            portfolioStorage.removeItem(LIVE_REFRESH_EXPIRY_KEY);
+        }
+    } catch (_) { /* The current tab still stops when storage is unavailable. */ }
+    if (expired) showToast('Live turned off after 3 hours.', 'info');
+}
+
+function isLiveRefreshActive() {
+    if (!document.getElementById('liveRefreshSwitch').checked) return false;
+    if (!liveRefreshExpiresAt || Date.now() >= liveRefreshExpiresAt) {
+        stopLiveRefresh({ expired: true });
+        return false;
+    }
+    return true;
+}
+
+function setRefreshState(isRefreshing) {
+    const buttons = ['refreshBtn', 'intradayRefreshBtn'].map(id => document.getElementById(id)).filter(Boolean);
     const card = document.getElementById('portfolioRefreshCard');
 
-    btn.disabled = isRefreshing;
-    btn.setAttribute('aria-label', isRefreshing ? 'Refreshing data' : 'Refresh portfolio data');
-    btn.setAttribute('title', isRefreshing ? 'Loading latest snapshot' : 'Load the latest precomputed portfolio snapshot');
-    btn.innerHTML = isRefreshing
-        ? '<i class="bi bi-arrow-clockwise spin" aria-hidden="true"></i><span class="refresh-label">Refreshing</span>'
-        : '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>';
+    for (const btn of buttons) {
+        btn.disabled = isRefreshing;
+        btn.setAttribute('aria-busy', String(isRefreshing));
+        btn.setAttribute('aria-label', isRefreshing ? 'Updating intraday chart' : 'Refresh intraday chart');
+        btn.setAttribute('title', isRefreshing ? 'Updating intraday chart' : 'Fetch minute prices and update the intraday chart');
+        btn.innerHTML = isRefreshing
+            ? '<i class="bi bi-arrow-clockwise spin" aria-hidden="true"></i><span class="refresh-label">Refreshing</span>'
+            : '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>';
+    }
 
     card.classList.toggle('is-refreshing', isRefreshing);
     card.setAttribute('aria-busy', isRefreshing ? 'true' : 'false');
     card.setAttribute('aria-disabled', isRefreshing ? 'true' : 'false');
-    card.setAttribute('aria-label', isRefreshing ? 'Refreshing portfolio market data' : 'Refresh portfolio market data');
-    card.setAttribute('title', isRefreshing ? 'Loading latest portfolio snapshot' : 'Click to load the latest precomputed portfolio snapshot');
+    card.setAttribute('aria-label', isRefreshing ? 'Updating intraday chart' : 'Refresh intraday chart');
+    card.setAttribute('title', isRefreshing ? 'Updating intraday chart' : 'Click to update the intraday chart');
 }
 
-async function runManualRefresh() {
-    if (manualRefreshInProgress) return;
+async function runRefresh({ automatic = false } = {}) {
+    // Check the wall-clock deadline before any request, including after sleep.
+    if (automatic && !isLiveRefreshActive()) return;
+    if (refreshInProgress) return;
 
-    manualRefreshInProgress = true;
-    setManualRefreshState(true);
+    refreshInProgress = true;
+    lastRefreshStartedAt = Date.now();
+    setRefreshState(true);
 
     try {
-        await refreshData();
-        showToast('Latest snapshot loaded', 'success');
+        const data = await refreshData();
+        if (!data || automatic) return;
+        showToast(data.refresh_skipped ? 'Already checked this minute' : data.stale_symbols?.length
+            ? `Chart updated; cached prices used for ${data.stale_symbols.join(', ')}`
+            : 'Intraday chart updated', data.stale_symbols?.length ? 'warning' : 'success');
     } catch (error) {
-        showToast('Error refreshing data', 'error');
+        if (automatic) console.error('Live refresh failed:', error);
+        else showToast('Error refreshing data', 'error');
     } finally {
-        manualRefreshInProgress = false;
-        setManualRefreshState(false);
+        refreshInProgress = false;
+        setRefreshState(false);
     }
 }
 
+function runManualRefresh() {
+    return runRefresh();
+}
+
+function initLiveRefresh() {
+    const toggle = document.getElementById('liveRefreshSwitch');
+    const updateTimer = () => {
+        clearLiveRefreshTimers();
+        if (isLiveRefreshActive()) {
+            lastRefreshStartedAt = Date.now();
+            liveRefreshTimer = setInterval(() => runRefresh({ automatic: true }), LIVE_REFRESH_INTERVAL_MS);
+            liveRefreshExpiryTimer = setTimeout(() => stopLiveRefresh({ expired: true }), liveRefreshExpiresAt - Date.now());
+        }
+    };
+    const restore = () => {
+        let enabled = false, expiresAt = 0;
+        try {
+            enabled = portfolioStorage.getItem(LIVE_REFRESH_STORAGE_KEY) === 'true';
+            expiresAt = Number(portfolioStorage.getItem(LIVE_REFRESH_EXPIRY_KEY));
+        } catch (_) { /* Default off if the saved deadline cannot be read. */ }
+        // Old preferences without a deadline must not resume indefinitely.
+        if (!enabled || !Number.isFinite(expiresAt) || expiresAt <= Date.now()
+                || expiresAt > Date.now() + LIVE_REFRESH_DURATION_MS) {
+            stopLiveRefresh({ persist: false });
+            return;
+        }
+        toggle.checked = true;
+        liveRefreshExpiresAt = expiresAt;
+        updateTimer();
+    };
+    toggle.addEventListener('change', () => {
+        if (!toggle.checked) {
+            stopLiveRefresh();
+            return;
+        }
+        liveRefreshExpiresAt = Date.now() + LIVE_REFRESH_DURATION_MS;
+        try {
+            portfolioStorage.setItem(LIVE_REFRESH_EXPIRY_KEY, String(liveRefreshExpiresAt));
+            portfolioStorage.setItem(LIVE_REFRESH_STORAGE_KEY, 'true');
+        } catch (_) { /* Keep the current session working without persistence. */ }
+        updateTimer();
+    });
+    // Synchronize the same deadline across tabs, never extending it on reload.
+    window.addEventListener('storage', event => {
+        if (event.key === null || event.key === LIVE_REFRESH_STORAGE_KEY || event.key === LIVE_REFRESH_EXPIRY_KEY) restore();
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && isLiveRefreshActive() && Date.now() - lastRefreshStartedAt >= LIVE_REFRESH_INTERVAL_MS) {
+            runRefresh({ automatic: true });
+        }
+    });
+    restore();
+}
+
 document.getElementById('refreshBtn').addEventListener('click', runManualRefresh);
+document.getElementById('intradayRefreshBtn').addEventListener('click', runManualRefresh);
+document.getElementById('transactionUpdateRetry').addEventListener('click', refreshAfterTransaction);
 
 const portfolioRefreshCard = document.getElementById('portfolioRefreshCard');
 portfolioRefreshCard.addEventListener('click', runManualRefresh);
@@ -4089,7 +4847,8 @@ document.getElementById('fileInput').addEventListener('change', async (event) =>
     try {
         const result = await uploadFile(file);
         showToast(`Uploaded ${result.transactions_count} transactions`, 'success');
-        await loadAllData();
+        applySavedTransaction();
+        refreshAfterTransaction();
     } catch (error) {
         showToast(error.message || 'Error uploading file', 'error');
     }
@@ -4188,6 +4947,7 @@ async function addTransaction(payload) {
         );
         fillDropdown(brokerSelect, brokerOther, recentDistinct(txns, 'broker'), { placeholder: null });
         renderTradePreview();
+        saleLots.refresh();
     }
 
     // Reveal the free-text input only when "Other…" is chosen.
@@ -4414,7 +5174,7 @@ async function addTransaction(payload) {
     }
 
     function setTransactionMode(mode) {
-        transactionMode = mode === 'preview' ? 'preview' : 'record';
+        transactionMode = isDemoPortfolio || mode === 'preview' ? 'preview' : 'record';
         const isPreview = transactionMode === 'preview';
 
         recordModeBtn.classList.toggle('btn-primary', !isPreview);
@@ -4431,7 +5191,7 @@ async function addTransaction(payload) {
         showField('tradePreviewNotice', isPreview);
         previewPanel.classList.toggle('d-none', !isPreview);
         submitBtn.classList.toggle('d-none', isPreview);
-        previewContinueBtn.classList.toggle('d-none', !isPreview);
+        previewContinueBtn.classList.toggle('d-none', !isPreview || isDemoPortfolio);
         cancelBtn.textContent = isPreview ? 'Close' : 'Cancel';
         modalTitle.innerHTML = isPreview
             ? '<i class="bi bi-calculator me-1"></i>Trade Preview'
@@ -4462,12 +5222,17 @@ async function addTransaction(payload) {
             clearDerivedField();
             applyActionLayout(actionSelect ? actionSelect.value : 'BUY');
         }
+        saleLots.refresh();
     }
 
     // Show/hide fields based on the action. CASH is a cash-balance snapshot, so
     // it only needs an Amount (asset is fixed to "CASH") — hide symbol, broker,
     // quantity and price to avoid confusion.
     const actionSelect = form.elements['action'];
+    const saleLots = SaleLots.create({
+        form, modal: modalEl, assetSelect, assetOther, brokerSelect, brokerOther,
+        isActive: () => transactionMode === 'record' && actionSelect.value === 'SELL',
+    });
     function applyActionLayout(action) {
         if (transactionMode === 'preview') return;
         const isCash = action === 'CASH';
@@ -4511,6 +5276,7 @@ async function addTransaction(payload) {
 
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (submitBtn.disabled) return;
         errBox.classList.add('d-none');
         if (transactionMode === 'preview') {
             renderTradePreview();
@@ -4557,20 +5323,38 @@ async function addTransaction(payload) {
             comment: str(fd.get('comment')),
         };
 
+        if (action === 'SELL') {
+            try {
+                Object.assign(payload, saleLots.selection());
+            } catch (error) {
+                errBox.textContent = error.message;
+                errBox.classList.remove('d-none');
+                return;
+            }
+        }
         submitBtn.disabled = true;
-        submitBtn.textContent = 'Adding…';
+        submitBtn.textContent = 'Saving…';
+        let result;
         try {
-            const result = await addTransaction(payload);
-            bootstrap.Modal.getInstance(modalEl).hide();
-            form.reset();
-            showToast(result.message || 'Transaction added', 'success');
-            await loadAllData();
+            result = await addTransaction(payload);
         } catch (error) {
             errBox.textContent = error.message || 'Error adding transaction';
             errBox.classList.remove('d-none');
+            return;
         } finally {
             submitBtn.disabled = false;
             submitBtn.textContent = 'Add';
+        }
+        bootstrap.Modal.getInstance(modalEl).hide();
+        form.reset();
+        showToast(result.message || 'Transaction saved', 'success');
+        // Errors after this point are update failures, never save failures.
+        try {
+            applySavedTransaction(result);
+            refreshAfterTransaction();
+        } catch (error) {
+            console.error('Post-save rendering failed:', error);
+            setTransactionUpdateState('error');
         }
     });
 })();
@@ -4582,6 +5366,7 @@ function resizeTrackerCharts() {
         performanceChart,
         investmentChart,
         allocationChart,
+        tickerHistoryChart,
         simPerfChart,
         simDriftChart,
     ].forEach(chart => {
@@ -4594,12 +5379,13 @@ function resizeTrackerCharts() {
 
 // Initial load and event handlers setup
 document.addEventListener('DOMContentLoaded', () => {
-    const storedTrackerTab = localStorage.getItem('trackerActiveTab');
+    initLiveRefresh();
+    const storedTrackerTab = portfolioStorage.getItem('trackerActiveTab');
     const savedTrackerTab = storedTrackerTab === '#trackerIncome'
         ? '#trackerPerformance'
         : storedTrackerTab;
     if (storedTrackerTab === '#trackerIncome') {
-        localStorage.setItem('trackerActiveTab', savedTrackerTab);
+        portfolioStorage.setItem('trackerActiveTab', savedTrackerTab);
     }
     if (savedTrackerTab) {
         const tabButton = document.querySelector(`[data-bs-target="${savedTrackerTab}"]`);
@@ -4611,16 +5397,43 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('#trackerTabs [data-bs-toggle="pill"]').forEach(btn => {
         btn.addEventListener('shown.bs.tab', (event) => {
             const target = event.target.dataset.bsTarget;
-            localStorage.setItem('trackerActiveTab', target);
+            portfolioStorage.setItem('trackerActiveTab', target);
             requestAnimationFrame(resizeTrackerCharts);
             // Lazy-load the transactions list the first time its tab is opened.
             if (target === '#trackerTransactions') loadTransactions();
+            if (target === '#trackerPerformance') loadTickerHistory();
         });
     });
 
     initTransactionsTab();
+    window.coveredCallsUI = window.CoveredCalls.init({
+        demo: isDemoPortfolio, private: () => anonymousMode,
+        money: formatCurrency, today: marketTodayStr, toast: showToast,
+        onSaved: () => { applySavedTransaction(); return refreshAfterTransaction(); },
+    });
+    window.TickerTechnicalsUI.init();
+    document.getElementById('tickerHistorySymbol')?.addEventListener('change', () => {
+        tickerHistoryInitialized = false;
+        loadTickerHistory(true);
+    });
+    document.querySelectorAll('.ticker-history-period-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            tickerHistoryPeriod = btn.dataset.period;
+            document.querySelectorAll('.ticker-history-period-btn').forEach(periodBtn => {
+                const active = periodBtn === btn;
+                periodBtn.classList.toggle('btn-primary', active);
+                periodBtn.classList.toggle('active', active);
+                periodBtn.classList.toggle('btn-outline-secondary', !active);
+            });
+            tickerHistoryInitialized = false;
+            loadTickerHistory(true);
+        });
+    });
+    if (portfolioStorage.getItem('trackerActiveTab') === '#trackerPerformance') {
+        loadTickerHistory();
+    }
     // If the transactions tab was the last-active tab (restored above), load it now.
-    if (localStorage.getItem('trackerActiveTab') === '#trackerTransactions') {
+    if (portfolioStorage.getItem('trackerActiveTab') === '#trackerTransactions') {
         loadTransactions();
     }
 
@@ -4632,6 +5445,19 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+
+    const resumeMarketDay = () => {
+        if (document.hidden) return;
+        updateIntradayTimestamp();
+        if (syncMarketDay()) loadAllData();
+    };
+    // Keep the age label current without fetching prices or enabling Live.
+    setInterval(() => {
+        if (!document.hidden) updateIntradayTimestamp();
+    }, 15000);
+    window.addEventListener('focus', resumeMarketDay);
+    document.addEventListener('visibilitychange', resumeMarketDay);
+    setInterval(resumeMarketDay, 60000);
 
     // Date picker for intraday chart
     const datePicker = document.getElementById('intradayDatePicker');
@@ -4673,6 +5499,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Holdings row expand/collapse transaction detail
     document.getElementById('holdingsBody').addEventListener('click', (e) => {
+        if (e.target.closest('[data-cc-coverage]')) return;
         // Handle target % inline editing
         const targetCell = e.target.closest('.target-pct-cell');
         if (targetCell && !targetCell.querySelector('input')) {
@@ -4901,7 +5728,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     // Load saved prefs (default: all visible)
-    let hiddenCols = JSON.parse(localStorage.getItem('holdingsHiddenCols') || '[]');
+    let hiddenCols = JSON.parse(portfolioStorage.getItem('holdingsHiddenCols') || '[]');
 
     function applyColumnVisibility() {
         const style = document.getElementById('col-visibility-style') || (() => {
@@ -4933,7 +5760,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 hiddenCols.push(def.col);
             }
-            localStorage.setItem('holdingsHiddenCols', JSON.stringify(hiddenCols));
+            portfolioStorage.setItem('holdingsHiddenCols', JSON.stringify(hiddenCols));
             applyColumnVisibility();
         });
         label.appendChild(cb);
@@ -4954,7 +5781,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const target = document.getElementById(targetId);
             if (!target) return;
             const STORAGE_KEY = `cardCollapsed:${targetId}`;
-            const collapsed = localStorage.getItem(STORAGE_KEY) === '1';
+            const savedState = portfolioStorage.getItem(STORAGE_KEY);
+            const collapsed = savedState === null ? btn.dataset.defaultCollapsed === 'true' : savedState === '1';
 
             function applyState(isCollapsed) {
                 target.style.display = isCollapsed ? 'none' : '';
@@ -4966,12 +5794,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             applyState(collapsed);
+            if (targetId === 'tickerHistoryBody' && !collapsed &&
+                document.getElementById('trackerPerformance')?.classList.contains('active')) {
+                loadTickerHistory();
+            }
 
             btn.addEventListener('click', (ev) => {
                 ev.stopPropagation();
                 const willCollapse = target.style.display !== 'none';
                 applyState(willCollapse);
-                localStorage.setItem(STORAGE_KEY, willCollapse ? '1' : '0');
+                portfolioStorage.setItem(STORAGE_KEY, willCollapse ? '1' : '0');
+                if (targetId === 'tickerHistoryBody' && !willCollapse) loadTickerHistory();
                 // Charts inside collapsed panels should resize when re-shown
                 if (!willCollapse && window.Chart) {
                     setTimeout(() => {
@@ -4993,7 +5826,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const label = document.getElementById('summaryToggleLabel');
         if (!btn || !panel) return;
         const STORAGE_KEY = 'summaryCardsExpanded';
-        const expanded = localStorage.getItem(STORAGE_KEY) === '1';
+        const expanded = portfolioStorage.getItem(STORAGE_KEY) === '1';
 
         function applyState(isOpen) {
             panel.classList.toggle('show', isOpen);
@@ -5009,7 +5842,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.addEventListener('click', () => {
             const nowOpen = !panel.classList.contains('show');
             applyState(nowOpen);
-            localStorage.setItem(STORAGE_KEY, nowOpen ? '1' : '0');
+            portfolioStorage.setItem(STORAGE_KEY, nowOpen ? '1' : '0');
         });
     })();
 
@@ -5017,10 +5850,11 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAllData();
 
     // -----------------------------------------------------------------------
-    // Simulator event listeners
+    // Only initialize tools currently exposed by the page.
     // -----------------------------------------------------------------------
-    initSimulator();
-    initAnalysis();
+    document.getElementById('pageTrackerBtn')?.addEventListener('click', () => switchPage('tracker'));
+    if (!document.getElementById('simulatorPage').hidden) initSimulator();
+    if (!document.getElementById('analysisPage').hidden) initAnalysis();
 });
 
 
@@ -5100,7 +5934,6 @@ function initSimulator() {
     document.getElementById('simRunBtn').addEventListener('click', runSimulation);
 
     // Page toggle
-    document.getElementById('pageTrackerBtn').addEventListener('click', () => switchPage('tracker'));
     document.getElementById('pageSimulatorBtn').addEventListener('click', () => switchPage('simulator'));
 }
 
@@ -5116,11 +5949,16 @@ function switchPage(page) {
         analysis: document.getElementById('pageAnalysisBtn'),
     };
 
+    // A paused tool must not become visible through an older navigation callback.
+    if (!pageElements[page] || pageElements[page].hidden) page = 'tracker';
+
     Object.entries(pageElements).forEach(([name, element]) => {
         element.style.display = name === page ? '' : 'none';
-        pageButtons[name].className = name === page
-            ? 'btn btn-light btn-sm px-3'
-            : 'btn btn-outline-light btn-sm px-3';
+        if (pageButtons[name]) {
+            pageButtons[name].className = name === page
+                ? 'btn btn-light btn-sm px-3'
+                : 'btn btn-outline-light btn-sm px-3';
+        }
     });
 
     if (page === 'analysis' && !analysisReportsLoaded) {
@@ -5281,6 +6119,10 @@ async function loadAnalysisReport(reportId) {
 }
 
 async function createAnalysisReport() {
+    if (isDemoPortfolio) {
+        await loadAnalysisHistory(true);
+        return;
+    }
     const button = document.getElementById('generateAnalysisBtn');
     const label = button.querySelector('span');
     const errorElement = document.getElementById('analysisGenerateError');

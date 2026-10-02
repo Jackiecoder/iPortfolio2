@@ -13,6 +13,12 @@ from app.price_service import PriceService, cache_service
 
 class ApiCacheTests(unittest.TestCase):
     def setUp(self):
+        # These tests isolate stock refresh/caching; option replay has its own suite.
+        for method, kwargs in (("collect", {"return_value": {"complete": True}}),
+                               ("decorate", {"side_effect": lambda points, *args, **kw: points})):
+            option_patch = patch.object(main.option_pnl_service, method, **kwargs)
+            option_patch.start()
+            self.addCleanup(option_patch.stop)
         with main._api_cache_lock:
             main._api_cache.clear()
             main._api_refreshing.clear()
@@ -170,7 +176,7 @@ class MarketRefreshLoopTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "MARKET_REFRESH_INTERVAL_SECONDS", 60),
             patch.object(main.asyncio, "get_running_loop", return_value=fake_loop),
             patch.object(main.asyncio, "sleep", side_effect=fake_sleep),
-            patch.object(main.asyncio, "to_thread", side_effect=fake_to_thread),
+            patch.object(main, "_refresh_today_snapshot", side_effect=fake_to_thread),
         ):
             with self.assertRaises(asyncio.CancelledError):
                 await main._market_refresh_loop()

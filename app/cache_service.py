@@ -66,6 +66,24 @@ class CacheService:
             ).fetchall()
         return {r[0]: r[1] for r in rows}
 
+    def get_historical_prices_batch(
+        self, symbols: list[str], start_date: date, end_date: date
+    ) -> dict[str, dict[date, Decimal]]:
+        """Read a complete symbol batch in one database round trip."""
+        results = {symbol: {} for symbol in symbols}
+        effective_end = min(end_date, self._get_cache_cutoff_date() - timedelta(days=1))
+        if not symbols or start_date > effective_end:
+            return results
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """SELECT symbol, date, close_price FROM historical_prices
+                   WHERE symbol = ANY(%s) AND date >= %s AND date <= %s""",
+                (symbols, start_date, effective_end),
+            ).fetchall()
+        for symbol, price_date, price in rows:
+            results[symbol][price_date] = price
+        return results
+
     def save_historical_price(self, symbol: str, price_date: date, price: Decimal) -> bool:
         """Save a historical price to cache. Returns False if too recent to cache."""
         if not self.is_cacheable_date(price_date):

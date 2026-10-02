@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RefreshContractTests(unittest.TestCase):
-    def test_manual_refresh_reads_snapshot_without_server_reload(self):
+    def test_manual_refresh_does_not_reload_portfolio_or_clear_history(self):
         javascript = (ROOT / "static/js/app.js").read_text(encoding="utf-8")
         template = (ROOT / "templates/index.html").read_text(encoding="utf-8")
 
@@ -15,15 +15,14 @@ class RefreshContractTests(unittest.TestCase):
             javascript,
         )
         self.assertIn("await refreshData();", javascript)
-        self.assertNotIn("startAutoRefresh", javascript)
         self.assertNotIn("auto-refresh-option", template)
         self.assertNotIn("refreshCountdown", template)
 
-    def test_cloud_run_uses_one_instance_for_in_memory_snapshot(self):
+    def test_cloud_run_scales_to_zero_and_retains_single_instance_limit(self):
         deploy_script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
 
         self.assertIn(
-            "--min-instances 1 --max-instances 1 --no-cpu-throttling",
+            "--min 0 --max 1 --min-instances 0 --max-instances 1 --cpu-throttling",
             deploy_script,
         )
 

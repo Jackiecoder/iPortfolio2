@@ -1,0 +1,212 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const TodayPnl = require('../static/js/today-pnl.js');
+const source = fs.readFileSync(require('node:path').join(__dirname, '../static/js/app.js'), 'utf8');
+const date = '2026-09-08';
+const snapshot = { date, intraday: [{ time: '12:00', holdings_complete: true, daily_pnl: 12.03,
+    asset_changes: [{ symbol: 'AAPL', quantity: 2, pnl: 10.02, pnl_percent: 5 },
+        { symbol: 'SOLD', quantity: 0, pnl: 2.01, pnl_percent: 2, current_price: 999,
+            trade_activity: { opening_quantity: 1, bought_quantity: 0, sold_quantity: 1,
+                net_quantity: -1, change_percent: -100, is_closed: true,
+                last_sell_price: 24.99, last_sell_time: '10:22' } }] }] };
+const holdings = [{ symbol: 'AAPL', quantity: 2, cost_basis: 100, market_value: 200, daily_change_amount: 999 },
+    { symbol: 'CASH', quantity: 1, cost_basis: 50, market_value: 50 }];
+const cents = rows => rows.reduce((sum, row) => sum + Math.round((row.daily_change_amount || 0) * 100), 0);
+
+test('all displayed contributions including closed positions sum to chart, without altering current values', () => {
+    const rows = TodayPnl.project(holdings, snapshot, date);
+    assert.equal(cents(rows), Math.round(snapshot.intraday[0].daily_pnl * 100));
+    assert.equal(rows.find(row => row.symbol === 'SOLD').today_only, true);
+    assert.equal(rows.reduce((sum, row) => sum + row.market_value, 0), 250);
+    assert.equal(rows.reduce((sum, row) => sum + row.cost_basis, 0), 150);
+    assert.equal(holdings[0].daily_change_amount, 999);
+});
+
+test('pending prices do not prevent Today reconciliation and late summaries cannot overwrite it', () => {
+    const early = TodayPnl.project(holdings.map(h => ({ ...h, prices_pending: true })), snapshot, date);
+    const late = TodayPnl.project(holdings.map(h => ({ ...h, daily_change_amount: -123 })), snapshot, date);
+    assert.equal(cents(early), 1203);
+    assert.equal(cents(late), 1203);
+    assert.equal(late.filter(row => row.symbol === 'SOLD').length, 1);
+});
+
+test('yesterday or incomplete top-ten data cannot supply Today amounts', () => {
+    for (const data of [null, { ...snapshot, date: '2026-09-07' },
+        { date, intraday: [{ asset_changes: snapshot.intraday[0].asset_changes }] }]) {
+        const rows = TodayPnl.project(holdings, data, date);
+        assert.ok(rows.every(row => row.daily_change_amount === null && row.today_pending));
+        assert.equal(rows.length, holdings.length);
+    }
+});
+
+function navigationContext() {
+    const picker = { value: '2026-09-07', max: '2026-09-07' };
+    const next = {}, prev = {}, events = [];
+    const context = {
+        observedMarketDate: '2026-09-07', currentIntradayDate: null,
+        currentInterval: '1m', dashboardLoadRequestId: 2, intradayLoadRequestId: 2,
+        latestTodaySnapshot: { ...snapshot, date: '2026-09-07' }, baseHoldingsData: holdings,
+        marketTodayStr: () => date, apiCache: { clear: () => events.push('clear') },
+        document: { getElementById: id => ({ intradayDatePicker: picker, intradayNextDate: next, intradayPrevDate: prev })[id] },
+        updateIntradayChart: data => events.push(['chart', data]),
+        updateHoldingsTable: data => events.push(['holdings', data]),
+    };
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function beginIntradayRequest('), source.indexOf('// Load intraday data for a given date')), context);
+    vm.runInContext(source.slice(source.indexOf('function syncMarketDay()'), source.indexOf('function selectIntradayDate(')), context);
+    return { context, picker, next, events };
+}
+
+test('midnight clears live snapshots, advances picker and invalidates in-flight requests exactly once', () => {
+    const { context, picker, next, events } = navigationContext();
+    assert.equal(context.syncMarketDay(), true);
+    assert.equal(picker.value, date);
+    assert.equal(picker.max, date);
+    assert.equal(next.disabled, true);
+    assert.equal(context.latestTodaySnapshot, null);
+    assert.equal(context.intradayLoadRequestId, 3);
+    assert.equal(context.dashboardLoadRequestId, 3);
+    assert.equal(events[1][0], 'chart');
+    assert.equal(events[1][1], null);
+    const count = events.length;
+    assert.equal(context.syncMarketDay(), false);
+    assert.equal(events.length, count);
+});
+
+test('midnight preserves explicit historical date and enables next day', () => {
+    const { context, picker, next, events } = navigationContext();
+    context.currentIntradayDate = '2026-09-05';
+    context.syncMarketDay();
+    assert.equal(picker.value, '2026-09-05');
+    assert.equal(picker.max, date);
+    assert.equal(next.disabled, false);
+    assert.equal(events.filter(e => Array.isArray(e) && e[0] === 'chart').length, 0);
+});
+
+test('the rendered Holdings row, total and category amounts use the displayed snapshot even after stale summaries', () => {
+    const tbody = { innerHTML: '', querySelectorAll: () => [] };
+    const category = { innerHTML: '' };
+    const status = {};
+    const context = {
+        TodayPnl, latestTodaySnapshot: snapshot, marketTodayStr: () => date,
+        baseHoldingsData: [], holdingsData: [], anonymousMode: false,
+        targetAllocations: {}, targetGroups: {}, symbolToGroup: {},
+        holdingsSortColumn: 'symbol', holdingsSortDirection: 'asc', holdingsViewMode: 'category',
+        window: {},
+        document: { getElementById: id => id === 'holdingsBody' ? tbody : category, querySelectorAll: () => [] },
+        setDashboardStatus: (id, text) => status[id] = text,
+        formatCurrencyAlways: n => '$' + Number(n || 0).toFixed(2),
+        formatCurrency: n => '$' + Number(n || 0).toFixed(2),
+        formatPercent: n => Number(n || 0).toFixed(2) + '%',
+        formatNumber: n => String(n), formatPrice: (_symbol, n) => String(n ?? '--'),
+        getCategory: symbol => symbol === 'CASH' ? 'Cash' : 'Individual Stocks',
+        getTargetKey: symbol => symbol, displaySymbol: symbol => symbol, escapeHtml: s => s,
+        getTargetPct: () => null, getAssetIconHtml: () => '', getGroupMarketValue: () => 0,
+        renderTopMoversDefault() {},
+    };
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function sortHoldings('), source.indexOf('async function toggleTransactionDetail(')), context);
+    vm.runInContext(source.slice(source.indexOf('function updateHoldingsTable('), source.indexOf('function updateDividendsTable(')), context);
+    for (const prices_pending of [true, false]) {
+        context.updateHoldingsTable(holdings.map(h => ({ ...h, prices_pending, daily_change_amount: -900 })));
+        assert.match(tbody.innerHTML, /trade-activity-closed/);
+        assert.match(tbody.innerHTML, /24\.99/);
+        assert.match(tbody.innerHTML, /Last sale · 10:22 ET/);
+        assert.match(tbody.innerHTML, /\+\$10\.02/);
+        assert.match(tbody.innerHTML, /\+\$2\.01/);
+        assert.match(tbody.innerHTML, /<strong>\+\$12\.03<\/strong>/);
+        assert.match(category.innerHTML, /<strong>\+\$12\.03<\/strong>/);
+        assert.ok(!tbody.innerHTML.includes('900.00'));
+    }
+    assert.match(status.holdingsTodayStatus, /2026-09-08 12:00 ET/);
+});
+
+
+test('complete option contribution is separate from holding values and missing estimates preserve returns', () => {
+    const stock = {daily_pnl: 1000, daily_pnl_percent: 2, baseline_value: 50000};
+    const known = {...stock, options_present: true, options_complete: true, option_daily_pnl: -150};
+    assert.equal(TodayPnl.valuation(known).display, 850);
+    assert.ok(Math.abs(TodayPnl.valuation(known).percent - 1.7) < 1e-12);
+    for (const price of [null, NaN, Infinity]) {
+        const view = TodayPnl.valuation({...known, options_complete: false, option_daily_pnl: price});
+        assert.equal(view.display, 1000);
+        assert.equal(view.percent, 2);
+        assert.equal(view.complete, false);
+        assert.equal(view.contribution, 0);
+    }
+    const withoutOptions = TodayPnl.valuation(stock);
+    assert.equal(withoutOptions.hasOptions, false);
+    assert.equal(withoutOptions.display, 1000);
+    const zero = TodayPnl.valuation({...known, option_daily_pnl: 0});
+    assert.equal(zero.complete, true);
+    assert.equal(zero.options, 0);
+    assert.equal(zero.percent, 2);
+    assert.equal(TodayPnl.valuation({...known, baseline_value: 0}).percent, null);
+    const withQuotes = {...snapshot, intraday: [{...snapshot.intraday[0], ...known}]};
+    const rows = TodayPnl.project(holdings, withQuotes, date);
+    assert.deepEqual(rows.map(row => row.symbol), ['AAPL', 'CASH', 'SOLD']);
+    assert.equal(rows.reduce((sum, row) => sum + row.market_value, 0), 250);
+});
+
+test('Holdings has exactly one separate option row and Today TOTAL adds its estimate once', () => {
+    const tbody = {innerHTML: '', querySelectorAll: () => []};
+    const basePoint = {time: '12:00', holdings_complete: true, daily_pnl: 1000,
+        baseline_value: 50000, daily_pnl_percent: 2,
+        options_present: true, options_complete: true, option_daily_pnl: -150,
+        asset_changes: [{symbol: 'AAPL', quantity: 100, pnl: 1000, pnl_percent: 2}]};
+    const context = {
+        TodayPnl, latestTodaySnapshot: {date, intraday: [basePoint]}, marketTodayStr: () => date,
+        anonymousMode: false, targetAllocations: {}, targetGroups: {}, symbolToGroup: {},
+        holdingsSortColumn: 'symbol', holdingsSortDirection: 'asc', holdingsViewMode: 'flat',
+        window: {}, document: {getElementById: () => tbody, querySelectorAll: () => []},
+        formatCurrencyAlways: n => '$' + Number(n || 0).toFixed(2),
+        formatCurrency: n => '$' + Number(n || 0).toFixed(2),
+        formatPercent: n => Number(n || 0).toFixed(2) + '%',
+        formatNumber: n => String(n), formatPrice: (_symbol, n) => String(n ?? '--'),
+        getCategory: () => 'Individual Stocks', getTargetKey: symbol => symbol,
+        displaySymbol: symbol => symbol, escapeHtml: s => s,
+        getTargetPct: () => null, getAssetIconHtml: () => '', getGroupMarketValue: () => 0,
+    };
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function sortHoldings('), source.indexOf('async function toggleTransactionDetail(')), context);
+    const stockRows = [{symbol: 'AAPL', quantity: 100, market_value: 51000, cost_basis: 45000,
+        daily_change_amount: 1000, daily_change_percent: 2}];
+    context.renderHoldingsTable(stockRows);
+    assert.equal((tbody.innerHTML.match(/class="covered-call-pnl-row"/g) || []).length, 1);
+    const row = tbody.innerHTML.match(/<tr class="covered-call-pnl-row">[\s\S]*?<\/tr>/)[0];
+    assert.equal((row.match(/data-col=/g) || []).length, 19);
+    assert.match(row, /\$-150\.00/);
+    assert.doesNotMatch(row, /data-symbol|holding-row|target-pct-cell|data-cc-symbol/);
+    assert.ok(tbody.innerHTML.indexOf('covered-call-pnl-row') < tbody.innerHTML.indexOf('class="total-row"'));
+    const total = tbody.innerHTML.match(/<tr class="total-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(total, /data-col="5"[^>]*><strong>\+\$850\.00/);
+    assert.match(total, /data-col="6"><strong>\$51000\.00/);
+    assert.equal(stockRows.length, 1);
+    context.latestTodaySnapshot.intraday[0] = {...basePoint, options_complete: false, option_daily_pnl: null};
+    context.renderHoldingsTable(stockRows);
+    assert.match(tbody.innerHTML, /Pending · not included/);
+    const pendingTotal = tbody.innerHTML.match(/<tr class="total-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(pendingTotal, /data-col="5"[^>]*><strong>\+\$1000\.00/);
+    context.latestTodaySnapshot.intraday[0] = {...basePoint, options_complete: true, option_daily_pnl: 0};
+    context.renderHoldingsTable(stockRows);
+    assert.equal((tbody.innerHTML.match(/class="covered-call-pnl-row"/g) || []).length, 1);
+    context.anonymousMode = true;
+    context.renderHoldingsTable(stockRows);
+    const privateRow = tbody.innerHTML.match(/<tr class="covered-call-pnl-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(privateRow, /\*\*\*/);
+    vm.runInContext(source.slice(source.indexOf('function updateCategoryTable('), source.indexOf('function updateDividendsTable(')), context);
+    context.anonymousMode = false;
+    context.latestTodaySnapshot.intraday[0] = basePoint;
+    context.updateCategoryTable(stockRows);
+    assert.equal((tbody.innerHTML.match(/class="covered-call-category-row"/g) || []).length, 1);
+    const categoryTotal = tbody.innerHTML.match(/<tr class="total-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(categoryTotal, /<strong>\+\$850\.00<\/strong>/);
+    assert.match(categoryTotal, /<strong>\$51000\.00<\/strong>/);
+    context.latestTodaySnapshot.intraday[0] = {...basePoint, options_complete: false, option_daily_pnl: null};
+    context.updateCategoryTable(stockRows);
+    assert.match(tbody.innerHTML, /Pending · not included/);
+    const pendingCategoryTotal = tbody.innerHTML.match(/<tr class="total-row">[\s\S]*?<\/tr>/)[0];
+    assert.match(pendingCategoryTotal, /<strong>\+\$1000\.00<\/strong>/);
+});

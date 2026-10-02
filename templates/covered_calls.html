@@ -1,0 +1,26 @@
+<div class="tab-pane fade" id="trackerCoveredCalls" role="tabpanel" aria-labelledby="covered-calls-tab" tabindex="0">
+  <div class="cc-heading">
+    <div><h2>Covered Call</h2><p>Covered calls only. Record fills from your broker and track the shares committed to each call.</p></div>
+    <button class="btn btn-primary" id="ccOpenBtn" type="button"><i class="bi bi-plus-lg me-1"></i>Record sell to open</button>
+  </div>
+  <div class="cc-metrics" id="ccMetrics" aria-live="polite"></div>
+  <p class="cc-scope">Option cash flows and realized option P&amp;L are tracked here separately from stock performance. Reference quote estimates appear on open calls and are excluded from stock totals. Tax adjustments are not included. Cash balances remain your manual snapshots.</p>
+  <div class="d-flex justify-content-between align-items-center gap-2 mb-3">
+    <label class="d-flex align-items-center gap-2" for="ccFilter">Show <select id="ccFilter" class="form-select form-select-sm"><option value="all">All calls</option><option value="open">Open calls</option><option value="closed">Completed calls</option></select></label>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="ccReloadBtn">Refresh</button>
+  </div>
+  <div id="ccStatus" role="status" class="small mb-3"></div>
+  <div id="ccList" class="cc-list"></div>
+  <section class="oq-browser" aria-labelledby="oqHeading">
+    <h3 id="oqHeading">Call prices</h3>
+    <p class="small text-muted">Look up standard call quotes before recording a broker fill. Quotes may be delayed and are not guaranteed execution prices.</p>
+    <form id="oqForm" class="oq-form">
+      <div><label for="oqSymbol" class="form-label">Ticker</label><input id="oqSymbol" class="form-control" value="MRVL" placeholder="MRVL" maxlength="15" pattern="[A-Za-z][A-Za-z0-9.\-]*" required autocomplete="off"></div>
+      <div><label for="oqExpiry" class="form-label">Expiration</label><select id="oqExpiry" class="form-select"><option value="">Nearest listed date</option></select></div>
+      <div><label for="oqStrike" class="form-label">Strike (optional)</label><input id="oqStrike" class="form-control" type="number" min="0.001" step="any" placeholder="All strikes"></div>
+      <button class="btn btn-outline-primary" type="submit">Get call prices</button>
+    </form>
+    <div id="oqStatus" role="status" class="small my-3"></div>
+    <div id="oqResults"></div>
+  </section>
+</div>

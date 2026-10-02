@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -31,6 +31,20 @@ def default_transaction_time(asset: str, action: ActionType) -> time:
     return time(9, 30)
 
 
+class CostBasisMethod(str, Enum):
+    FIFO = "FIFO"
+    LIFO = "LIFO"
+    HIGH_COST = "HIGH_COST"
+    LOW_COST = "LOW_COST"
+    TAX_OPTIMIZER = "TAX_OPTIMIZER"
+    SPECIFIC = "SPECIFIC"
+
+
+class LotAllocation(BaseModel):
+    lot_id: int = Field(gt=0)
+    quantity: Decimal = Field(gt=0, allow_inf_nan=False)
+
+
 class Transaction(BaseModel):
     """Represents a single portfolio transaction."""
     date: date
@@ -42,6 +56,11 @@ class Transaction(BaseModel):
     source: Optional[str] = None
     comment: Optional[str] = None
     executed_at: Optional[datetime] = None
+    id: Optional[int] = None
+    broker: Optional[str] = None
+    # None identifies historical FIFO records. Explicit sales freeze their lots.
+    cost_basis_method: Optional[CostBasisMethod] = None
+    lot_allocations: list[LotAllocation] = Field(default_factory=list)
 
     @field_validator("asset")
     @classmethod
@@ -56,6 +75,13 @@ class Transaction(BaseModel):
         amount = self.amount
         quantity = self.quantity
         ave_price = self.ave_price
+
+        if action != ActionType.SELL and (self.cost_basis_method or self.lot_allocations):
+            raise ValueError("Cost basis method and lots are only valid for SELL")
+        if self.lot_allocations and not self.cost_basis_method:
+            raise ValueError("Selected lots require a cost basis method")
+        if len({a.lot_id for a in self.lot_allocations}) != len(self.lot_allocations):
+            raise ValueError("A lot can only be selected once")
 
         if action in (ActionType.BUY, ActionType.SELL):
             # Need at least 2 of: amount, quantity, ave_price
@@ -72,6 +98,13 @@ class Transaction(BaseModel):
                     self.quantity = amount / ave_price
                 elif ave_price is None and amount and quantity:
                     self.ave_price = amount / quantity
+            if action == ActionType.SELL and self.cost_basis_method is not None:
+                for name in ("amount", "quantity", "ave_price"):
+                    value = getattr(self, name)
+                    if value is None or not value.is_finite() or value <= 0:
+                        raise ValueError(f"{name} must be positive and finite")
+                if abs(self.amount - self.quantity * self.ave_price) > Decimal("0.01"):
+                    raise ValueError("Amount must match quantity × price (within $0.01)")
 
         elif action == ActionType.DIV:
             if amount is None:

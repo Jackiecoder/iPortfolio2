@@ -4,17 +4,20 @@ import bisect
 import logging
 from collections import defaultdict
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from .models import (
     ActionType,
+    CostBasisMethod,
+    LotAllocation,
     DividendSummary,
     Holding,
     PortfolioSummary,
     Transaction,
 )
+from .tax_lots import broker_key, is_long_term, select_lots
 from .cache_service import cache_service
 from .price_service import price_service
 from .split_service import split_service
@@ -36,10 +39,13 @@ def _market_now() -> datetime:
 class LotInfo:
     """Represents a lot of shares purchased at a specific price."""
 
-    def __init__(self, quantity: Decimal, cost_per_share: Decimal, purchase_date: date):
+    def __init__(self, quantity: Decimal, cost_per_share: Decimal, purchase_date: date,
+                 lot_id: Optional[int] = None, broker: Optional[str] = None):
         self.quantity = quantity
         self.cost_per_share = cost_per_share
         self.purchase_date = purchase_date
+        self.lot_id = lot_id
+        self.broker = broker
 
     @property
     def total_cost(self) -> Decimal:
@@ -108,6 +114,8 @@ class Portfolio:
                 quantity=adjusted_qty,
                 cost_per_share=adjusted_price,
                 purchase_date=txn.date,
+                lot_id=txn.id,
+                broker=txn.broker,
             )
             self._lots[symbol].append(lot)
 
@@ -115,8 +123,19 @@ class Portfolio:
             # Adjust sell quantity and price for splits
             adjusted_qty = txn.quantity * factor
             adjusted_price = txn.ave_price / factor if factor != 0 else txn.ave_price
-            # Remove shares using FIFO and track cost basis (split LT vs ST)
-            remaining = adjusted_qty
+            # Legacy rows retain pooled FIFO. Explicit sales use their frozen
+            # lot IDs and never silently fall back to another account or lot.
+            eligible = self._lots[symbol]
+            if txn.cost_basis_method is not None:
+                eligible = [lot for lot in eligible if broker_key(lot.broker) == broker_key(txn.broker)]
+                allocations = [LotAllocation(lot_id=a.lot_id, quantity=a.quantity * factor)
+                               for a in txn.lot_allocations]
+                slices = select_lots(eligible, adjusted_qty, adjusted_price, txn.date,
+                                     txn.cost_basis_method, allocations)
+            else:
+                available = sum((lot.quantity for lot in eligible), Decimal(0))
+                slices = select_lots(eligible, min(adjusted_qty, available), adjusted_price,
+                                     txn.date, CostBasisMethod.FIFO) if available > 0 else []
             total_cost_basis = Decimal("0")
             qty_sold = Decimal("0")
             lt_cost_basis = Decimal("0")
@@ -124,33 +143,23 @@ class Portfolio:
             lt_proceeds = Decimal("0")
             st_proceeds = Decimal("0")
             lot_slices = []
-            sale_price = adjusted_price  # per share
+            sale_price = adjusted_price
 
-            while remaining > 0 and self._lots[symbol]:
-                lot = self._lots[symbol][0]
+            for lot, slice_qty in slices:
                 purchase_date = lot.purchase_date
                 cost_per_share = lot.cost_per_share
-                # LT if held >= 365 days at sale date
-                is_lt = (txn.date - purchase_date).days >= 365
-                if lot.quantity <= remaining:
-                    # Sell entire lot
-                    slice_qty = lot.quantity
-                    slice_cost = lot.total_cost
-                    total_cost_basis += slice_cost
-                    qty_sold += slice_qty
-                    remaining -= slice_qty
-                    self._lots[symbol].pop(0)
-                else:
-                    # Partial lot sale
-                    slice_qty = remaining
-                    slice_cost = remaining * lot.cost_per_share
-                    total_cost_basis += slice_cost
-                    qty_sold += slice_qty
-                    lot.quantity -= remaining
-                    remaining = Decimal("0")
+                is_lt = is_long_term(purchase_date, txn.date)
+                slice_cost = slice_qty * cost_per_share
+                total_cost_basis += slice_cost
+                qty_sold += slice_qty
+                lot.quantity -= slice_qty
+                if lot.quantity == 0:
+                    self._lots[symbol].remove(lot)
 
                 slice_proceeds = slice_qty * sale_price
                 lot_slices.append({
+                    "lot_id": lot.lot_id,
+                    "broker": lot.broker,
                     "purchase_date": purchase_date,
                     "quantity": slice_qty,
                     "cost_per_share": cost_per_share,
@@ -168,6 +177,7 @@ class Portfolio:
             if qty_sold > 0:
                 self._sales[symbol].append({
                     "date": txn.date,
+                    "cost_basis_method": txn.cost_basis_method or CostBasisMethod.FIFO,
                     "quantity": qty_sold,
                     "cost_basis": total_cost_basis,
                     "proceeds": qty_sold * sale_price,
@@ -189,6 +199,8 @@ class Portfolio:
                 quantity=adjusted_qty,
                 cost_per_share=Decimal("0"),
                 purchase_date=txn.date,
+                lot_id=txn.id,
+                broker=txn.broker,
             )
             self._lots[symbol].append(lot)
 
@@ -229,6 +241,8 @@ class Portfolio:
                     quantity=missing_qty,
                     cost_per_share=Decimal("0"),
                     purchase_date=txn.date,
+                    lot_id=txn.id,
+                    broker=txn.broker,
                 )
                 self._lots[symbol].append(lot)
             elif target_qty < current_qty:
@@ -256,6 +270,38 @@ class Portfolio:
         quantity = (txn.quantity or Decimal("0")) * factor
         price = (txn.ave_price or Decimal("0")) / factor if factor else Decimal("0")
         return quantity, price
+
+    def transaction_history(self, symbol: str, limit: int = 20, actions=None) -> list[dict]:
+        """Authoritative running position after each event, in today's share units.
+
+        Apply every event before filtering/limiting, including GAS and FIX.
+        Frontend history must not reconstruct a second, FIFO-only cost basis.
+        """
+        replay = Portfolio(adjust_splits=self._adjust_splits)
+        rows = []
+        for txn in self._transactions:
+            if txn.asset != symbol:
+                continue
+            replay._process_transaction(txn)
+            if actions is not None and txn.action.value not in actions:
+                continue
+            lots = replay._lots.get(symbol, [])
+            qty = sum((l.quantity for l in lots), Decimal(0))
+            cost = sum((l.total_cost for l in lots), Decimal(0))
+            rows.append({
+                "id": txn.id, "date": txn.date.isoformat(),
+                "executed_at": txn.effective_executed_at.isoformat(),
+                "transaction_time": txn.effective_executed_at.strftime("%H:%M"),
+                "action": txn.action.value, "broker": txn.broker,
+                "quantity": float(txn.quantity) if txn.quantity is not None else None,
+                "ave_price": float(txn.ave_price) if txn.ave_price is not None else None,
+                "amount": float(txn.amount) if txn.amount is not None else None,
+                "cost_basis_method": txn.cost_basis_method,
+                "lot_allocations": [a.model_dump(mode="json") for a in txn.lot_allocations],
+                "running_quantity": float(qty),
+                "running_avg_cost": float(cost / qty) if qty > 0 else 0,
+            })
+        return list(reversed(rows))[:limit]
 
     @staticmethod
     def _apply_intraday_transaction(
@@ -303,6 +349,40 @@ class Portfolio:
             symbol: sum(lot.quantity for lot in lots)
             for symbol, lots in temp._lots.items()
             if sum(lot.quantity for lot in lots) > 0
+        }
+
+    @staticmethod
+    def _record_intraday_trade(activity: dict, txn: Transaction,
+                               quantity: Decimal, execution_price: Decimal) -> None:
+        """Track only executed buys/sells, independently of transfers and P&L."""
+        if txn.action not in (ActionType.BUY, ActionType.SELL):
+            return
+        state = activity.setdefault(txn.asset, {
+            "bought_quantity": Decimal("0"), "sold_quantity": Decimal("0"),
+            "last_sell_price": None, "last_sell_time": None,
+        })
+        if txn.action == ActionType.BUY:
+            state["bought_quantity"] += quantity
+        else:
+            state["sold_quantity"] += quantity
+            state["last_sell_price"] = execution_price
+            state["last_sell_time"] = txn.effective_executed_at.strftime("%H:%M")
+
+    @staticmethod
+    def _intraday_trade_details(activity: dict, symbol: str,
+                                opening_quantity: Decimal, quantity: Decimal) -> Optional[dict]:
+        state = activity.get(symbol)
+        if state is None:
+            return None
+        net = state["bought_quantity"] - state["sold_quantity"]
+        # Copy each point so later trades cannot change earlier hover snapshots.
+        return {
+            **{key: float(value) if isinstance(value, Decimal) else value
+               for key, value in state.items()},
+            "opening_quantity": float(opening_quantity),
+            "net_quantity": float(net),
+            "change_percent": float(net / opening_quantity * 100) if opening_quantity > 0 else None,
+            "is_closed": quantity == 0 and state["sold_quantity"] > 0,
         }
 
     def _apply_transaction_aware_daily_changes(
@@ -396,7 +476,7 @@ class Portfolio:
                     slice_ytd = lot_slice["proceeds"] - baseline
                     ytd_pnl += slice_ytd
                     ytd_basis += baseline
-                    if (sale_date - purchase_date).days >= 365:
+                    if is_long_term(purchase_date, sale_date):
                         lt_ytd += slice_ytd
                     else:
                         st_ytd += slice_ytd
@@ -489,11 +569,10 @@ class Portfolio:
                 st_qty = Decimal("0")
                 lt_unreal = Decimal("0")
                 st_unreal = Decimal("0")
-                one_year_ago = today - timedelta(days=365)
                 for lot in self._lots[holding.symbol]:
                     if lot.quantity <= 0:
                         continue
-                    is_lt = lot.purchase_date <= one_year_ago
+                    is_lt = is_long_term(lot.purchase_date, today)
                     if is_lt:
                         lt_qty += lot.quantity
                     else:
@@ -530,7 +609,7 @@ class Portfolio:
                     lot_ytd = (holding.current_price - baseline) * lot.quantity
                     ytd_pnl += lot_ytd
                     ytd_basis += baseline * lot.quantity
-                    if (today - lot.purchase_date).days >= 365:
+                    if is_long_term(lot.purchase_date, today):
                         lt_ytd += lot_ytd
                     else:
                         st_ytd += lot_ytd
@@ -1066,7 +1145,6 @@ class Portfolio:
                 weighted_annualized_return = weighted_sum / total_cost_basis_weight
 
             # Compute LT / ST unrealized P&L from individual lots
-            one_year_ago = today - timedelta(days=365)
             lt_unrealized_pnl = Decimal("0")
             st_unrealized_pnl = Decimal("0")
             for symbol, lots in self._lots.items():
@@ -1079,7 +1157,7 @@ class Portfolio:
                     if lot.quantity <= 0:
                         continue
                     lot_pnl = (current_price - lot.cost_per_share) * lot.quantity
-                    if lot.purchase_date <= one_year_ago:
+                    if is_long_term(lot.purchase_date, today):
                         lt_unrealized_pnl += lot_pnl
                     else:
                         st_unrealized_pnl += lot_pnl
@@ -1202,7 +1280,6 @@ class Portfolio:
                 break
 
         # Compute LT/ST unrealized P&L at target_date
-        one_year_ago = target_date - timedelta(days=365)
         lt_pnl = Decimal("0")
         st_pnl = Decimal("0")
 
@@ -1218,7 +1295,7 @@ class Portfolio:
                 if lot.quantity <= 0:
                     continue
                 lot_pnl = (price - lot.cost_per_share) * lot.quantity
-                if lot.purchase_date <= one_year_ago:
+                if is_long_term(lot.purchase_date, target_date):
                     lt_pnl += lot_pnl
                 else:
                     st_pnl += lot_pnl
@@ -1534,6 +1611,7 @@ class Portfolio:
             symbol_to_category = {
                 'BTC-USD': 'Crypto', 'ETH-USD': 'Crypto', 'MSTR': 'Crypto', 'CRCL': 'Crypto', 'IBIT': 'Crypto',
                 'VOO': 'Index', 'QQQM': 'Index', 'QQQ': 'Index', 'BRK-B': 'Index',
+                'SOXX': 'Index',
                 'CASH': 'Cash',
             }
             if symbol in symbol_to_category:
@@ -1643,7 +1721,10 @@ class Portfolio:
 
         return results
 
-    def get_intraday_values(self, interval: str = "5m") -> list[dict]:
+    def get_intraday_values(
+        self, interval: str = "5m", *, refresh_prices: bool = False,
+        use_live_quotes: bool = True, refresh_metadata: Optional[dict] = None,
+    ) -> list[dict]:
         """Calculate intraday portfolio values for today.
 
         Args:
@@ -1692,7 +1773,15 @@ class Portfolio:
         logger.info(f"Intraday: Baseline value (prev close): {baseline_value}")
 
         # Fetch intraday prices for all symbols
-        intraday_prices = price_service.get_intraday_prices_batch(symbols, interval)
+        intraday_prices = price_service.get_intraday_prices_batch(
+            symbols, interval, force_refresh=refresh_prices
+        )
+        prices_by_time = {
+            symbol: {bar["time"]: bar["price"] for bar in bars}
+            for symbol, bars in intraday_prices.items()
+        }
+        if refresh_metadata is not None:
+            refresh_metadata["stale_symbols"] = price_service.stale_intraday_symbols(symbols, interval)
 
         # Find all timestamps from intraday data
         all_times = set()
@@ -1741,7 +1830,11 @@ class Portfolio:
         sorted_times = sorted(all_times)
 
         # Get real-time current prices (same as holdings table uses)
-        current_realtime_prices = price_service.get_prices_batch(symbols)
+        # The fast Today path uses minute closes throughout, avoiding a second
+        # quote download after the bars have already arrived.
+        current_realtime_prices = (
+            price_service.get_prices_batch(symbols) if use_live_quotes else {}
+        )
         logger.info(f"Intraday: Real-time prices: {current_realtime_prices}")
 
         events = []
@@ -1767,6 +1860,7 @@ class Portfolio:
         }
         net_trade_cash = defaultdict(Decimal)
         added_capital = defaultdict(Decimal)
+        trade_activity = {}
         event_index = 0
 
         # Use baseline_value (previous close) as the zero point for daily P&L
@@ -1797,12 +1891,9 @@ class Portfolio:
                     last_prices[symbol] = price_at_time
                 else:
                     # Check if we have intraday data for this time
-                    symbol_prices = intraday_prices.get(symbol, [])
-                    for p in symbol_prices:
-                        if p["time"] == time_str:
-                            price_at_time = p["price"]
-                            last_prices[symbol] = price_at_time
-                            break
+                    price_at_time = prices_by_time.get(symbol, {}).get(time_str)
+                    if price_at_time is not None:
+                        last_prices[symbol] = price_at_time
 
                 # Use last known price (starts with previous close)
                 if price_at_time is None:
@@ -1820,6 +1911,7 @@ class Portfolio:
                     txn, qty, execution_price, market_price,
                     quantities, net_trade_cash, added_capital,
                 )
+                self._record_intraday_trade(trade_activity, txn, qty, execution_price)
                 event_index += 1
 
             # Revalue after applying transactions at this timestamp.
@@ -1855,7 +1947,11 @@ class Portfolio:
                         )
                         asset_changes.append({
                             "symbol": symbol,
-                            "pnl": float(asset_pnl),
+                            "quantity": float(quantities[symbol]),
+                            "trade_activity": self._intraday_trade_details(
+                                trade_activity, symbol, opening_quantities.get(symbol, Decimal("0")),
+                                quantities[symbol]),
+                            "pnl": float(asset_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
                             "pnl_percent": float(asset_pnl_percent),
                             "prev_price": float(prev_price) if prev_price is not None else None,
                             "current_price": float(current_price),
@@ -1864,13 +1960,19 @@ class Portfolio:
                 # Sort by absolute P&L (largest movers first)
                 asset_changes.sort(key=lambda x: abs(x["pnl"]), reverse=True)
 
+                # The visible total is the sum of visible cents, including positions
+                # sold today. Retain every contribution at the latest point; the
+                # historical hover payload can stay limited to the top movers.
+                daily_pnl = sum((Decimal(str(a["pnl"])) for a in asset_changes), Decimal("0"))
+                daily_pnl_percent = daily_pnl / daily_basis * 100 if daily_basis > 0 else Decimal("0")
                 results.append({
                     "time": time_str,
                     "value": float(total_value),
                     "baseline_value": float(daily_basis),
                     "daily_pnl": float(daily_pnl),
                     "daily_pnl_percent": float(daily_pnl_percent),
-                    "asset_changes": asset_changes[:10],  # Top 10 movers
+                    "asset_changes": asset_changes if is_last_time_point else asset_changes[:10],
+                    "holdings_complete": is_last_time_point,
                 })
 
         logger.info(f"Intraday: Returning {len(results)} data points")
@@ -1968,6 +2070,7 @@ class Portfolio:
             ))
         net_trade_cash = defaultdict(Decimal)
         added_capital = defaultdict(Decimal)
+        trade_activity = {}
         event_index = 0
 
         for time_str in sorted_times:
@@ -1995,6 +2098,7 @@ class Portfolio:
                     txn, qty, execution_price, market_price,
                     quantities, net_trade_cash, added_capital,
                 )
+                self._record_intraday_trade(trade_activity, txn, qty, execution_price)
                 event_index += 1
 
             total_value = sum(
@@ -2027,6 +2131,10 @@ class Portfolio:
                         )
                         asset_changes.append({
                             "symbol": symbol,
+                            "quantity": float(quantities[symbol]),
+                            "trade_activity": self._intraday_trade_details(
+                                trade_activity, symbol, opening_quantities.get(symbol, Decimal("0")),
+                                quantities[symbol]),
                             "pnl": float(asset_pnl),
                             "pnl_percent": float(asset_pnl_pct),
                             "prev_price": float(prev_price) if prev_price is not None else None,
