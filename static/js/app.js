@@ -1239,7 +1239,7 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
         return `<tr>${columns.map(col => {
             if (col === 0) return `<td data-col="0"><strong>${escapeHtml(displaySymbol(h.symbol))}</strong>${buildTradeActivityHtml(h) || `<div class="text-muted small">${label}</div>`}</td>`;
             if (col === 4 && h.trade_activity?.is_closed) return `<td data-col="4">${buildPositionPriceHtml(h)}</td>`;
-            if (col === 5) return `<td data-col="5" class="${amount >= 0 ? 'text-success' : 'text-danger'}">${amount >= 0 ? '+' : ''}${formatCurrencyAlways(amount)}</td>`;
+            if (col === 5) return `<td data-col="5" class="${amount == null ? 'text-muted' : (amount >= 0 ? 'text-success' : 'text-danger')}">${amount == null ? 'Unavailable' : `${amount >= 0 ? '+' : ''}${formatCurrencyAlways(amount)}`}</td>`;
             return `<td data-col="${col}" class="text-muted">—</td>`;
         }).join('')}</tr>`;
     }
@@ -1368,6 +1368,13 @@ function buildCoveredCallPnlRowHtml(point) {
     return `<tr class="covered-call-pnl-row">${columns.map(col => `<td data-col="${col}">${col === 0 ? '<strong>Covered Call</strong>' : col === 5 ? coveredCallPnlValue(view) : '—'}</td>`).join('')}</tr>`;
 }
 
+function dailyPnlAmountHtml(view, alwaysShow = false) {
+    const amount = view.display;
+    if (amount == null) return 'Unavailable';
+    const value = alwaysShow ? formatCurrencyAlways(amount) : formatCurrency(amount);
+    return `${amount >= 0 ? '+' : ''}${value}${view.partial ? ' <small class="text-muted">(partial)</small>' : ''}`;
+}
+
 function buildTotalRowHtml(holdings, totalInvValue) {
     const totalMV = holdings.reduce((s, h) => s + (h.market_value || 0), 0);
     const totalCost = holdings.reduce((s, h) => s + (h.cost_basis || 0), 0);
@@ -1378,8 +1385,10 @@ function buildTotalRowHtml(holdings, totalInvValue) {
     const totalLtReal = holdings.reduce((s, h) => s + (h.lt_realized_pnl || 0), 0);
     const totalStReal = holdings.reduce((s, h) => s + (h.st_realized_pnl || 0), 0);
     const totalTotalPnl = totalPnl + totalRealized;
-    const optionView = TodayPnl.valuation(TodayPnl.latest(latestTodaySnapshot, marketTodayStr()));
-    const totalDaily = holdings.reduce((s, h) => s + (h.daily_change_amount || 0), 0) + optionView.contribution;
+    const todayPoint = TodayPnl.latest(latestTodaySnapshot, marketTodayStr());
+    const optionView = TodayPnl.valuation(todayPoint);
+    const dailyView = todayPoint ? optionView : TodayPnl.holdingsView(holdings);
+    const totalDaily = dailyView.display;
     const totalYtd = holdings.reduce((s, h) => s + (h.ytd_pnl || 0), 0);
     const totalLtYtd = holdings.reduce((s, h) => s + (h.lt_ytd_pnl || 0), 0);
     const totalStYtd = holdings.reduce((s, h) => s + (h.st_ytd_pnl || 0), 0);
@@ -1416,8 +1425,7 @@ function buildTotalRowHtml(holdings, totalInvValue) {
     const netDeltaHtml = hasAnyTarget
         ? `<span class="${netDeltaClass}">${netDeltaSign}${formatCurrencyAlways(netDelta)}</span>` : '--';
 
-    const totalDailyClass = totalDaily >= 0 ? 'text-success' : 'text-danger';
-    const totalDailySign = totalDaily >= 0 ? '+' : '';
+    const totalDailyClass = totalDaily == null ? 'text-muted' : (totalDaily >= 0 ? 'text-success' : 'text-danger');
     const totalYtdClass = totalYtd >= 0 ? 'text-success' : 'text-danger';
     const totalYtdSign = totalYtd >= 0 ? '+' : '';
     const totalPnlClass = totalPnl >= 0 ? 'text-success' : 'text-danger';
@@ -1429,7 +1437,7 @@ function buildTotalRowHtml(holdings, totalInvValue) {
             <td data-col="0"><strong>TOTAL</strong></td>
             <td data-col="1"></td><td data-col="2"></td>
             <td data-col="4"></td>
-            <td data-col="5" class="${totalDailyClass}"><strong>${totalDailySign}${formatCurrencyAlways(totalDaily)}</strong></td>
+            <td data-col="5" class="${totalDailyClass}"><strong>${dailyPnlAmountHtml(dailyView, true)}</strong></td>
             <td data-col="17" class="${totalYtdClass}"><strong>${totalYtdSign}${formatCurrencyAlways(totalYtd)}</strong>${buildLtStBreakdownHtml(totalLtYtd, totalStYtd)}</td>
             <td data-col="18" class="${totalYtdClass}"><strong>${formatPercent(totalYtdPct)}</strong></td>
             <td data-col="3"><strong>${formatCurrency(totalCost)}</strong><div class="text-muted" style="font-size:0.75em;line-height:1.3;">100.0%</div></td>
@@ -1459,7 +1467,8 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
     const ltReal = catHoldings.reduce((s, h) => s + (h.lt_realized_pnl || 0), 0);
     const stReal = catHoldings.reduce((s, h) => s + (h.st_realized_pnl || 0), 0);
     const totalCatPnl = pnl + realized;
-    const daily = catHoldings.reduce((s, h) => s + (h.daily_change_amount || 0), 0);
+    const dailyView = TodayPnl.holdingsView(catHoldings);
+    const daily = dailyView.display;
     const ytd = catHoldings.reduce((s, h) => s + (h.ytd_pnl || 0), 0);
     const ltYtd = catHoldings.reduce((s, h) => s + (h.lt_ytd_pnl || 0), 0);
     const stYtd = catHoldings.reduce((s, h) => s + (h.st_ytd_pnl || 0), 0);
@@ -1482,8 +1491,7 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
         catDeltaHtml = `<div class="delta-target-wrap"><span class="delta-target-amt">${formatCurrencyAlways(catTargetMV)}</span><strong><span class="${dtClass}">${dtSign}${formatCurrencyAlways(catDelta)}</span></strong></div>`;
     }
 
-    const dailyClass = daily >= 0 ? 'text-success' : 'text-danger';
-    const dailySign = daily >= 0 ? '+' : '';
+    const dailyClass = daily == null ? 'text-muted' : (daily >= 0 ? 'text-success' : 'text-danger');
     const ytdClass = ytd >= 0 ? 'text-success' : 'text-danger';
     const ytdSign = ytd >= 0 ? '+' : '';
     const pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
@@ -1494,8 +1502,8 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
         <tr class="category-header-row" style="background-color: #fef9e7; border-left: 4px solid ${color};">
             <td data-col="0"><span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px;margin-right:6px;"></span><strong>${displayName}</strong> <span class="text-muted">(${catHoldings.length})</span></td>
             <td data-col="1"></td><td data-col="2"></td>
-            <td data-col="4" class="${dailyClass}"><strong>${formatPercent(mv > 0 ? (daily / (mv - daily) * 100) : 0)}</strong></td>
-            <td data-col="5" class="${dailyClass}"><strong>${dailySign}${formatCurrencyAlways(daily)}</strong></td>
+            <td data-col="4" class="${dailyClass}"><strong>${dailyView.percent == null ? '--' : formatPercent(dailyView.percent)}</strong></td>
+            <td data-col="5" class="${dailyClass}"><strong>${dailyPnlAmountHtml(dailyView, true)}</strong></td>
             <td data-col="17" class="${ytdClass}"><strong>${ytdSign}${formatCurrencyAlways(ytd)}</strong>${buildLtStBreakdownHtml(ltYtd, stYtd)}</td>
             <td data-col="18" class="${ytdClass}"><strong>${formatPercent(ytdPct)}</strong></td>
             <td data-col="3"><strong>${formatCurrency(cost)}</strong><div class="text-muted" style="font-size:0.75em;line-height:1.3;">${totalInvestedCost > 0 ? (cost / totalInvestedCost * 100).toFixed(1) : '0.0'}%</div></td>
@@ -1707,7 +1715,7 @@ function updateHoldingsTable(holdings) {
     holdingsData = TodayPnl.project(baseHoldingsData, latestTodaySnapshot, marketTodayStr());
     const point = TodayPnl.latest(latestTodaySnapshot, marketTodayStr());
     setDashboardStatus('holdingsTodayStatus', point
-        ? `Today ${latestTodaySnapshot.date} ${point.time} ET · Same snapshot as Intraday P&L${latestTodaySnapshot.stale_symbols?.length ? ' · Some prices are cached' : ''}`
+        ? `Today ${latestTodaySnapshot.date} ${point.time} ET · Same snapshot as Intraday P&L${point.missing_baseline_symbols?.length ? ` · ${missingBaselineMessage(point.missing_baseline_symbols)}` : ''}${latestTodaySnapshot.stale_symbols?.length ? ' · Some prices are cached' : ''}`
         : 'Today P&L updating…');
     renderHoldingsTable(holdingsData);
     // Also update category table
@@ -1767,7 +1775,8 @@ function updateCategoryTable(holdings) {
                 cost_basis: 0,
                 market_value: 0,
                 daily_change: 0,
-                pnl: 0
+                pnl: 0,
+                holdings: [],
             };
         }
 
@@ -1775,6 +1784,7 @@ function updateCategoryTable(holdings) {
         categoryData[category].market_value += h.market_value || 0;
         categoryData[category].daily_change += h.daily_change_amount || 0;
         categoryData[category].pnl += h.unrealized_pnl || 0;
+        categoryData[category].holdings.push(h);
     });
 
     // Calculate total market value first for percentage calculation
@@ -1785,6 +1795,7 @@ function updateCategoryTable(holdings) {
         .map(([name, data]) => ({
             name,
             ...data,
+            daily_view: TodayPnl.holdingsView(data.holdings),
             pnl_percent: data.cost_basis > 0 ? (data.pnl / data.cost_basis) * 100 : 0,
             allocation_percent: totalMarketValue > 0 ? (data.market_value / totalMarketValue) * 100 : 0
         }))
@@ -1802,15 +1813,14 @@ function updateCategoryTable(holdings) {
     // Generate table rows
     let rows = categories.map(cat => {
         const isCash = cat.name === 'Cash';
-        const dailyClass = cat.daily_change >= 0 ? 'text-success' : 'text-danger';
-        const dailySign = cat.daily_change >= 0 ? '+' : '';
+        const dailyClass = cat.daily_view.display == null ? 'text-muted' : (cat.daily_view.display >= 0 ? 'text-success' : 'text-danger');
         const pnlClass = cat.pnl >= 0 ? 'text-success' : 'text-danger';
         const pnlSign = cat.pnl >= 0 ? '+' : '';
         const color = categoryColors[cat.name] || '#6b7280';
 
         const dailyChangeCell = isCash
             ? `<td class="text-muted">—</td>`
-            : `<td class="${dailyClass}">${dailySign}${formatCurrency(cat.daily_change)}</td>`;
+            : `<td class="${dailyClass}">${dailyPnlAmountHtml(cat.daily_view)}</td>`;
         const pnlCells = isCash
             ? `<td class="text-muted">—</td><td class="text-muted">—</td>`
             : `<td class="${pnlClass}">${pnlSign}${formatCurrency(cat.pnl)}</td><td class="${pnlClass}">${pnlSign}${cat.pnl_percent.toFixed(2)}%</td>`;
@@ -1830,15 +1840,16 @@ function updateCategoryTable(holdings) {
         `;
     }).join('');
 
-    const optionView = TodayPnl.valuation(TodayPnl.latest(latestTodaySnapshot, marketTodayStr()));
+    const todayPoint = TodayPnl.latest(latestTodaySnapshot, marketTodayStr());
+    const optionView = TodayPnl.valuation(todayPoint);
     if (optionView.hasOptions) {
         rows += `<tr class="covered-call-category-row"><td><strong>Covered Call</strong></td><td>—</td><td>${coveredCallPnlValue(optionView)}</td><td>—</td><td>—</td><td>—</td></tr>`;
-        totals.daily_change += optionView.contribution;
     }
+    const dailyView = todayPoint ? optionView : TodayPnl.holdingsView(holdings);
+    totals.daily_change = dailyView.display;
 
     // Add total row
-    const totalDailyClass = totals.daily_change >= 0 ? 'text-success' : 'text-danger';
-    const totalDailySign = totals.daily_change >= 0 ? '+' : '';
+    const totalDailyClass = totals.daily_change == null ? 'text-muted' : (totals.daily_change >= 0 ? 'text-success' : 'text-danger');
     const totalPnlClass = totals.pnl >= 0 ? 'text-success' : 'text-danger';
     const totalPnlSign = totals.pnl >= 0 ? '+' : '';
 
@@ -1846,7 +1857,7 @@ function updateCategoryTable(holdings) {
         <tr class="total-row">
             <td><strong>Total</strong></td>
             <td><strong>${formatCurrency(totals.cost_basis)}</strong></td>
-            <td class="${totalDailyClass}"><strong>${totalDailySign}${formatCurrency(totals.daily_change)}</strong></td>
+            <td class="${totalDailyClass}"><strong>${dailyPnlAmountHtml(dailyView)}</strong></td>
             <td><strong>${formatCurrency(totals.market_value)}</strong></td>
             <td class="${totalPnlClass}"><strong>${totalPnlSign}${formatCurrency(totals.pnl)}</strong></td>
             <td class="${totalPnlClass}"><strong>${totalPnlSign}${totals.pnl_percent.toFixed(2)}%</strong></td>
@@ -2327,16 +2338,11 @@ function updateDailyPnlList(dailyPnlData, intraday) {
     const container = document.getElementById('dailyPnlList');
     if (!container) return;
 
-    // Get today's P&L from intraday data (EST midnight baseline, same as chart)
-    let todayDailyPnl = null;
-    let todayDailyPnlPct = null;
-    if (intraday && intraday.intraday && intraday.intraday.length > 0) {
-        const lastPoint = intraday.intraday[intraday.intraday.length - 1];
-        todayDailyPnl = lastPoint.daily_pnl;
-        todayDailyPnlPct = lastPoint.daily_pnl_percent;
-    }
-
     const todayStr = marketTodayStr();
+    const todayPoint = TodayPnl.latest(intraday, todayStr);
+    const todayView = TodayPnl.valuation(todayPoint);
+    const todayDailyPnl = todayView.display;
+    const todayDailyPnlPct = todayView.percent;
 
     // Build days list from the /api/daily-pnl response (need ~35 days for 5 weeks)
     const rawDays = (dailyPnlData && dailyPnlData.daily_pnl) ? [...dailyPnlData.daily_pnl].reverse() : [];
@@ -2346,21 +2352,21 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         let change = entry.daily_pnl;
         let changePct = entry.daily_pnl_percent;
         let assetChanges = entry.asset_changes || [];
+        let missingSymbols = entry.missing_baseline_symbols || [];
 
         // Use intraday data for today if available (consistent header + breakdown)
-        if (dateStr === todayStr && intraday?.intraday?.length) {
-            const lastPoint = intraday.intraday[intraday.intraday.length - 1];
-            if (lastPoint.asset_changes?.length) assetChanges = lastPoint.asset_changes;
-            if (todayDailyPnl !== null) {
-                change = todayDailyPnl;
-                changePct = todayDailyPnlPct;
-            }
+        if (dateStr === todayStr && todayPoint) {
+            assetChanges = todayPoint.asset_changes || [];
+            missingSymbols = todayView.missingSymbols;
+            // An explicit unavailable value overrides an older daily snapshot too.
+            change = todayDailyPnl;
+            changePct = todayDailyPnlPct;
         }
 
         // Skip today if no data yet
-        if (change === 0 && dateStr === todayStr && todayDailyPnl === null) return null;
+        if (change === 0 && dateStr === todayStr && todayDailyPnl === null && !missingSymbols.length) return null;
 
-        return { date: dateStr, change, changePct, assetChanges };
+        return { date: dateStr, change, changePct, assetChanges, missingSymbols };
     }).filter(Boolean);
 
     if (days.length === 0) {
@@ -2402,9 +2408,11 @@ function updateDailyPnlList(dailyPnlData, intraday) {
 
     const columnsHtml = weekKeys.map((wkKey, wkIdx) => {
         const wkDays = weekMap.get(wkKey).slice().sort((a, b) => a.date.localeCompare(b.date));
-        const weekSum = wkDays.reduce((s, d) => s + (d.change || 0), 0);
-        const weekSign = weekSum >= 0 ? '+' : '';
-        const weekClass = weekSum >= 0 ? 'text-success' : 'text-danger';
+        const knownDays = wkDays.filter(d => d.change != null);
+        const weekSum = knownDays.length ? knownDays.reduce((s, d) => s + d.change, 0) : null;
+        const weekIncomplete = wkDays.some(d => d.change == null || d.missingSymbols.length);
+        const weekSign = weekSum != null && weekSum >= 0 ? '+' : '';
+        const weekClass = weekSum == null ? 'text-muted' : (weekSum >= 0 ? 'text-success' : 'text-danger');
 
         // Aggregate per-asset for the week
         const assetAgg = {};
@@ -2436,13 +2444,15 @@ function updateDailyPnlList(dailyPnlData, intraday) {
         const dayRowsHtml = wkDays.map((d, di) => {
             const [yy, mm, dd] = d.date.split('-').map(Number);
             const label = `${monthNames[mm - 1]} ${dd}`;
-            const colorClass = d.change >= 0 ? 'text-success' : 'text-danger';
-            const sign = d.change >= 0 ? '+' : '';
-            const amountStr = `${sign}${formatCurrencyAlways(d.change)}`;
-            const pctStr = `${sign}${(d.changePct ?? 0).toFixed(2)}%`;
+            const colorClass = d.change == null ? 'text-muted' : (d.change >= 0 ? 'text-success' : 'text-danger');
+            const sign = d.change != null && d.change >= 0 ? '+' : '';
+            const amountStr = d.change == null ? 'Unavailable' : `${sign}${formatCurrencyAlways(d.change)}`;
+            const pctStr = d.changePct == null ? null : `${d.changePct >= 0 ? '+' : ''}${d.changePct.toFixed(2)}%`;
             const dow = new Date(yy, mm - 1, dd).getDay();
             const weekendClass = (dow === 0 || dow === 6) ? ' weekend' : '';
 
+            const missingNotice = d.missingSymbols.length
+                ? `<div class="text-muted small py-1">${escapeHtml(missingBaselineMessage(d.missingSymbols))}</div>` : '';
             const dayBreakdownRows = [...(d.assetChanges || [])]
                 .filter(a => Math.abs(a.pnl || 0) > 0.005)
                 .sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl))
@@ -2453,17 +2463,17 @@ function updateDailyPnlList(dailyPnlData, intraday) {
                         <span class="breakdown-symbol">${getAssetIconHtml(a.symbol)}${a.symbol}</span>
                         <span class="${aClass}">${anonymousMode ? '***' : aSign + formatCurrencyAlways(a.pnl)}</span>
                     </div>`;
-                }).join('') || `<div class="text-muted small text-center py-1">No moves</div>`;
+                }).join('') || (missingNotice ? '' : `<div class="text-muted small text-center py-1">No moves</div>`);
 
             return `<div class="daily-pnl-item${weekendClass}" data-wk="${wkIdx}" data-di="${di}" style="cursor:pointer;flex-direction:column;align-items:stretch;">
                 <div class="daily-pnl-item-row">
                     <span class="date"><i class="bi bi-chevron-right daily-pnl-chevron me-1"></i>${label}</span>
                     <span class="values ${colorClass}">
-                        <span class="pnl-amount">${amountStr}</span>
-                        ${anonymousMode ? '' : `<span class="pnl-percent">(${pctStr})</span>`}
+                        <span class="pnl-amount">${amountStr}${d.change != null && d.missingSymbols.length ? ' <span class="small">(partial)</span>' : ''}</span>
+                        ${anonymousMode || pctStr == null ? '' : `<span class="pnl-percent">(${pctStr})</span>`}
                     </span>
                 </div>
-                <div class="daily-pnl-breakdown" style="display:none;">${dayBreakdownRows}</div>
+                <div class="daily-pnl-breakdown" style="display:none;">${dayBreakdownRows}${missingNotice}</div>
             </div>`;
         }).join('');
 
@@ -2471,9 +2481,9 @@ function updateDailyPnlList(dailyPnlData, intraday) {
             <div class="weekly-pnl-header">${headerLabel}</div>
             <div class="weekly-pnl-days">${dayRowsHtml}</div>
             <div class="weekly-pnl-summary" data-wk-summary>
-                <span class="date"><i class="bi bi-chevron-right weekly-pnl-chevron me-1"></i>Weekly</span>
+                <span class="date"><i class="bi bi-chevron-right weekly-pnl-chevron me-1"></i>Weekly${weekIncomplete ? ' (partial)' : ''}</span>
                 <span class="values ${weekClass}">
-                    <span class="pnl-amount">${weekSign}${formatCurrencyAlways(weekSum)}</span>
+                    <span class="pnl-amount">${weekSum == null ? 'Unavailable' : weekSign + formatCurrencyAlways(weekSum)}</span>
                 </span>
             </div>
             <div class="weekly-pnl-breakdown" style="display:none;">${breakdownRows}</div>
@@ -3178,7 +3188,7 @@ const marketHoursPlugin = {
         if (dataset.lastDataIndex !== undefined && dataset.lastDataIndex >= 0) {
             const lastIndex = dataset.lastDataIndex;
             const lastValue = data[lastIndex];
-            if (lastValue !== null) {
+            if (lastValue != null) {
                 const x = xAxis.getPixelForValue(lastIndex);
                 const y = yAxis.getPixelForValue(lastValue);
 
@@ -3191,7 +3201,8 @@ const marketHoursPlugin = {
 
                 // Draw P&L label (always show amount, hide percentage in anonymous mode)
                 const sign = lastValue >= 0 ? '+' : '';
-                const pnlText = `${sign}${formatCurrencyAlways(lastValue)}`;
+                const partial = dataset.pointData?.[lastIndex]?.missing_baseline_symbols?.length;
+                const pnlText = `${partial ? 'Partial: ' : ''}${sign}${formatCurrencyAlways(lastValue)}`;
 
                 ctx.font = 'bold 12px sans-serif';
                 ctx.fillStyle = lastValue >= 0 ? '#087f65' : '#bd4663';
@@ -3246,14 +3257,16 @@ function generateFullDayLabels(interval) {
 
 function updateIntradaySpotlight(intraday, selectedPoint = null) {
     const points = intraday?.intraday || [];
-    const latest = selectedPoint || [...points].reverse().find(point => point.daily_pnl != null);
+    const latest = selectedPoint || points.at(-1);
     const view = TodayPnl.valuation(latest);
     const value = document.getElementById('intradayLatestPnl');
     const percent = document.getElementById('intradayLatestReturn');
     const label = document.getElementById('intradayPnlLabel');
-    if (label) label.textContent = selectedPoint ? `Daily P&L · ${selectedPoint.time} ET` : 'Latest daily P&L';
+    if (label) label.textContent = selectedPoint
+        ? `${view.partial ? 'Partial daily P&L' : 'Daily P&L'} · ${selectedPoint.time} ET`
+        : `Latest ${view.partial && view.display != null ? 'partial daily' : 'daily'} P&L`;
     if (!value || !percent) return;
-    value.textContent = view.display !== null ? `${view.display >= 0 && !anonymousMode ? '+' : ''}${formatCurrency(view.display)}` : '--';
+    value.textContent = view.display !== null ? `${view.display >= 0 && !anonymousMode ? '+' : ''}${formatCurrency(view.display)}` : (latest ? 'Unavailable' : '--');
     percent.textContent = view.percent !== null ? formatPercent(view.percent) : '--';
     for (const element of [value, percent]) {
         element.classList.toggle('text-success', view.display !== null && view.display >= 0);
@@ -3371,7 +3384,7 @@ function updateIntradayChart(intraday, interval = '5m') {
         data: {
             labels: fullDayLabels,
             datasets: [{
-                label: "Daily P&L",
+                label: rawData.some(d => d.missing_baseline_symbols?.length) ? 'Partial Daily P&L' : 'Daily P&L',
                 data: pnlData,
                 pointData: pointData,
                 pnlPercentData: pnlPercentData,
@@ -3390,7 +3403,8 @@ function updateIntradayChart(intraday, interval = '5m') {
                 tension: 0.2,
                 pointRadius: 0,
                 pointHoverRadius: 4,
-                spanGaps: true
+                // Missing reference prices are gaps, never an inferred zero.
+                spanGaps: !rawData.some(d => TodayPnl.valuation(d).display == null)
             }]
         },
         options: {
@@ -3407,7 +3421,7 @@ function updateIntradayChart(intraday, interval = '5m') {
                 if (activeElements && activeElements.length > 0) {
                     const idx = activeElements[0].index;
                     const ac = ds.assetChangesData ? ds.assetChangesData[idx] : null;
-                    if (ac != null && ds.data[idx] != null) {
+                    if (ac != null) {
                         renderTopMoversAtTime(chart.data.labels[idx], ds.data[idx],
                             ds.pnlPercentData ? ds.pnlPercentData[idx] : null, ac, true, ds.pointData[idx]);
                         return;
@@ -4368,15 +4382,26 @@ function _fillMoverTables(items) {
 }
 
 // Header: optional time label + total daily P&L ($ and %).
-function _setTopMoversHeader(amt, pct, timeLabel) {
+function missingBaselineMessage(symbols) {
+    return `Daily P&L unavailable: ${symbols.map(displaySymbol).join(', ')} (missing reference price)`;
+}
+
+function _setTopMoversHeader(amt, pct, timeLabel, missingSymbols = [], partial = missingSymbols.length > 0) {
     const timeEl = document.getElementById('topMoversTime');
     const totalEl = document.getElementById('topMoversDailyTotal');
+    const labelEl = document.getElementById('topMoversDailyLabel');
+    const missingEl = document.getElementById('topMoversMissingPrices');
     if (timeEl) timeEl.textContent = timeLabel ? `${timeLabel} · ` : '';
+    if (labelEl) labelEl.textContent = partial && amt != null ? 'Partial Daily P&L' : 'Daily P&L';
+    if (missingEl) {
+        missingEl.hidden = missingSymbols.length === 0;
+        missingEl.textContent = missingSymbols.length ? missingBaselineMessage(missingSymbols) : '';
+    }
     if (totalEl) {
-        const sign = amt >= 0 ? '+' : '';
-        const pctText = pct != null ? ` (${sign}${pct.toFixed(2)}%)` : '';
-        totalEl.textContent = `${sign}${formatCurrencyAlways(amt)}${pctText}`;
-        totalEl.className = `fw-semibold ${amt >= 0 ? 'text-success' : 'text-danger'}`;
+        const sign = amt != null && amt >= 0 ? '+' : '';
+        const pctText = pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)` : '';
+        totalEl.textContent = amt == null ? 'Unavailable' : `${sign}${formatCurrencyAlways(amt)}${pctText}`;
+        totalEl.className = `fw-semibold ${amt == null ? 'text-muted' : (amt >= 0 ? 'text-success' : 'text-danger')}`;
     }
 }
 
@@ -4395,11 +4420,8 @@ function renderTopMovers(holdings) {
         .filter(h => h.symbol !== 'CASH' && h.daily_change_amount != null && h.daily_change_amount !== 0)
         .map(h => ({ ...h, amt: h.daily_change_amount, pct: h.daily_change_percent }));
 
-    // % is vs the start-of-day value (market value minus today's change).
-    const totalDaily = (holdings || []).reduce((s, h) => s + (h.daily_change_amount || 0), 0);
-    const totalMV = (holdings || []).reduce((s, h) => s + (h.market_value || 0), 0);
-    const startVal = totalMV - totalDaily;
-    _setTopMoversHeader(totalDaily, startVal > 0 ? (totalDaily / startVal * 100) : null, '');
+    const view = TodayPnl.holdingsView(holdings);
+    _setTopMoversHeader(view.display, view.percent, '', view.missingSymbols, view.partial);
     renderCoveredCallMover(null);
     _fillMoverTables(items);
 }
@@ -4412,7 +4434,7 @@ function renderTopMoversAtTime(timeLabel, pnl, pnlPercent, assetChanges, selecte
     const items = (assetChanges || [])
         .filter(a => a.symbol !== 'CASH' && a.pnl != null && Math.abs(a.pnl) >= 0.01)
         .map(a => ({ ...a, amt: a.pnl, pct: a.pnl_percent }));
-    _setTopMoversHeader(view.display ?? 0, view.percent, timeLabel);
+    _setTopMoversHeader(view.display, view.percent, timeLabel, view.missingSymbols, view.partial);
     renderCoveredCallMover(point);
     _fillMoverTables(items);
 }

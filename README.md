@@ -4,7 +4,7 @@ A Python-based portfolio tracking application that reads transaction data from C
 
 ## Features
 
-- **Holdings Summary**: View all current positions with live market prices from Yahoo Finance
+- **Holdings Summary**: Live stock and option prices from Yahoo Finance and Crypto prices from Coinbase Exchange
 - **Performance Charts**: Track portfolio value over time with interactive charts
 - **Asset Allocation**: Visualize portfolio distribution with a pie chart
 - **Dividend Tracking**: Monitor dividend income by asset
@@ -68,6 +68,12 @@ service account uses short-lived Google-signed OIDC tokens, checked for signatur
 expiry, issuer, audience and verified account email. This identity can only
 trigger refresh; it receives no holdings or transaction data and cannot call
 the normal user APIs. Existing app-token authentication stays in place.
+
+Deployment creates a fresh revision without moving production traffic. The
+script verifies that exact revision is ready and configures Scheduler before
+promoting it, then confirms that it receives 100% of traffic. `DEPLOY_TAG`
+deployments verify the tagged preview while retaining production traffic and
+the existing rollback snapshot. Rollback records the actual serving revision.
 
 In scheduler mode there is no in-process timer and startup warms minute caches
 from Postgres without fetching live prices. Cache misses/expired snapshots are
@@ -424,3 +430,12 @@ credentials. Intraday candles are paginated and cached; daily historical charts
 retain UTC daily closes, while daily P&L uses the America/New_York midnight
 hourly open, falling back to the previous hour close when necessary. Stock and
 option market data continue to use yfinance.
+
+If an existing position has no valid opening price, its available market value
+is retained while its daily P&L remains unknown. New purchases can use their
+execution cost; gifts and position corrections need a price at the time of
+transfer. Today's totals and percentages include only contributions with usable
+reference prices. The dashboard identifies missing assets and labels partial
+totals; fully unavailable totals are shown as `Unavailable`, not zero.
+This also protects historical intraday charts. Missing holding P&L stays unknown
+when option estimates are added, and never appears as a gainer or loser.
