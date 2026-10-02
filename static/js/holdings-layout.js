@@ -1,9 +1,10 @@
-// Mobile Holdings: one vertical scroll surface, with the real table headings
-// following the page beneath the sticky tabs. No duplicate tables or touch traps.
+// Holdings: one vertical scroll surface, with the real table headings following
+// the page beneath sticky navigation. No duplicate tables or touch traps.
 document.addEventListener('DOMContentLoaded', () => {
     const page = document.getElementById('trackerPage');
     const pane = document.getElementById('trackerHoldings');
     const tabs = document.getElementById('trackerTabs');
+    const navbar = document.querySelector('.app-navbar');
     const table = document.getElementById('holdingsTable');
     const scroller = table?.closest('.holdings-table-scroll');
     const toggle = document.getElementById('holdingsOverviewToggle');
@@ -13,13 +14,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function alignHeadings() {
         frame = 0;
-        if (!mobile.matches || !pane.classList.contains('active')) {
+        if (!pane.classList.contains('active')) {
             scroller.style.removeProperty('--holdings-header-offset');
             return;
         }
         const bounds = table.getBoundingClientRect();
         const headingHeight = table.tHead.getBoundingClientRect().height;
-        const top = tabs.getBoundingClientRect().bottom;
+        let top = mobile.matches ? tabs.getBoundingClientRect().bottom : 0;
+        if (!mobile.matches && navbar) {
+            const navBounds = navbar.getBoundingClientRect();
+            const scrollBounds = scroller.getBoundingClientRect();
+            const position = getComputedStyle(navbar).position;
+            // A sidebar does not cover this table; a sticky workspace bar does.
+            if (['sticky', 'fixed'].includes(position) &&
+                navBounds.right > scrollBounds.left && navBounds.left < scrollBounds.right) {
+                top = Math.max(0, navBounds.bottom);
+            }
+        }
         const offset = Math.max(0, Math.min(top - bounds.top, bounds.height - headingHeight));
         scroller.style.setProperty('--holdings-header-offset', `${offset}px`);
     }
@@ -35,7 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const active = pane.classList.contains('active');
         page.classList.toggle('holdings-focused', active);
         closeOverview();
-        if (active && mobile.matches) scroller.scrollTop = 0;
+        if (active) scroller.scrollTop = 0;
         scheduleAlignment();
     }
     tabs.addEventListener('shown.bs.tab', () => {
@@ -57,11 +68,12 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('scroll', scheduleAlignment, { passive: true });
     window.addEventListener('resize', scheduleAlignment, { passive: true });
     mobile.addEventListener('change', () => {
-        if (mobile.matches) scroller.scrollTop = 0;
+        scroller.scrollTop = 0;
         scheduleAlignment();
     });
     const resize = new ResizeObserver(scheduleAlignment);
-    [table, table.tHead, tabs].forEach(element => resize.observe(element));
+    [table, table.tHead, tabs, navbar, pane.querySelector('.holdings-card-header')]
+        .filter(Boolean).forEach(element => resize.observe(element));
 
     // Keep one concise timestamp visible; retain both source timestamps and the
     // snapshot explanation inside native, keyboard-accessible update details.

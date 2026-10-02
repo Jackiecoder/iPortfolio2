@@ -1,7 +1,7 @@
 """Synthetic option-day-P&L browser acceptance; never reads personal APIs.
 
 Run with the project Python environment. Defaults to Chromium and WebKit at
-320/390/430/1440px. Set IPORTFOLIO_QA_BROWSERS or IPORTFOLIO_QA_WIDTHS to focus
+320/390/430/1024/1440/2048px. Set IPORTFOLIO_QA_BROWSERS or IPORTFOLIO_QA_WIDTHS to focus
 an iteration. All financial/API responses are synthetic; static app code is real.
 """
 import json
@@ -111,7 +111,7 @@ def run():
     output = Path(os.environ.get('IPORTFOLIO_QA_OUTPUT', '/tmp/option-intraday-minimal-qa'))
     output.mkdir(parents=True, exist_ok=True)
     engines = os.environ.get('IPORTFOLIO_QA_BROWSERS', 'chromium,webkit').split(',')
-    widths = [int(x) for x in os.environ.get('IPORTFOLIO_QA_WIDTHS', '320,390,430,1440').split(',')]
+    widths = [int(x) for x in os.environ.get('IPORTFOLIO_QA_WIDTHS', '320,390,430,1024,1440,2048').split(',')]
     template = Environment(loader=FileSystemLoader(ROOT / 'templates'),
         autoescape=select_autoescape()).get_template('index.html')
     adapter = (ROOT / 'static/js/demo-portfolio.js').read_text()
@@ -229,17 +229,20 @@ def run():
                     assert abs(sum(amount(value) for value in rows) - 1000) < .01, rows
                     assert abs(sum(amount(value) for value in rows) + amount(row.locator('[data-col="5"]').inner_text().replace('est.','').strip()) - 850) < .01
                     no_overflow(page, f'{engine} {width} Holdings')
-                    if width < 768:
-                        page.evaluate("window.scrollBy(0, document.querySelector('#holdingsTable').getBoundingClientRect().top + 160)")
-                        page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().top - document.querySelector('#trackerTabs').getBoundingClientRect().bottom) < 2")
-                        assert page.evaluate("document.querySelector('.holdings-table-scroll').scrollTop === 0"), 'Nested mobile vertical scroll'
-                        page.evaluate("document.querySelector('.holdings-table-scroll').scrollLeft = 180")
-                        page.wait_for_function("Math.abs(document.querySelector('#holdingsBody .holding-row [data-col=\"0\"]').getBoundingClientRect().left - document.querySelector('.holdings-table-scroll').getBoundingClientRect().left) < 2")
-                        page.evaluate("document.querySelector('.holdings-table-scroll').scrollLeft = 0; window.scrollTo(0,0)")
-                    else:
-                        page.locator('.holdings-table-scroll').evaluate('(element) => element.scrollTop = 150')
-                        page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().top - document.querySelector('.holdings-table-scroll').getBoundingClientRect().top) < 2")
-                        page.locator('.holdings-table-scroll').evaluate('(element) => element.scrollTop = 0')
+                    assert page.locator('.holdings-table-scroll').evaluate('e => e.scrollHeight - e.clientHeight <= 1'), 'Holdings must show every row without an inner vertical scrollbar'
+                    page.evaluate("window.scrollBy(0, document.querySelector('#holdingsTable').getBoundingClientRect().top + 160)")
+                    page.wait_for_function("""mobile => {
+                        const nav = document.querySelector('.app-navbar');
+                        const rect = nav.getBoundingClientRect();
+                        const top = mobile ? document.querySelector('#trackerTabs').getBoundingClientRect().bottom
+                            : (['fixed','sticky'].includes(getComputedStyle(nav).position) && rect.top <= 0 && rect.bottom > 0 ? rect.bottom : 0);
+                        return Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().top - top) < 2;
+                    }""", arg=width < 768)
+                    assert page.evaluate("scrollY > 0 && document.querySelector('.holdings-table-scroll').scrollTop === 0"), 'Holdings must scroll with the page'
+                    page.evaluate("document.querySelector('.holdings-table-scroll').scrollLeft = 180")
+                    page.wait_for_function("Math.abs(document.querySelector('#holdingsBody .holding-row [data-col=\"0\"]').getBoundingClientRect().left - document.querySelector('.holdings-table-scroll').getBoundingClientRect().left) < 2")
+                    page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th[data-col=\"4\"]').getBoundingClientRect().left - document.querySelector('#holdingsBody .holding-row [data-col=\"4\"]').getBoundingClientRect().left) < 2")
+                    page.evaluate("document.querySelector('.holdings-table-scroll').scrollLeft = 0; window.scrollTo(0,0)")
                     capture(page, path=str(output / f'{engine}-{width}-holdings.png'), full_page=True, animations='disabled')
                     page.locator('#anonymousBtn').click()
                     expect(row.locator('[data-col="5"]')).to_contain_text('***')

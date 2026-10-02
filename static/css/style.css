@@ -2669,14 +2669,14 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .weekly-pnl-grid, .monthly-pnl-grid { border-radius: 10px; }
 #holdingsTable, #txnTable { font-variant-numeric: tabular-nums; }
 #holdingsTable > :is(thead, tbody) > tr > [data-col="0"] { min-width: 120px; width: 1%; white-space: nowrap; }
-/* Keep position names and column headings visible in the same scroll area. */
+/* Let every holding expand into the page; keep horizontal scrolling local. */
 .holdings-table-scroll {
-    max-height: 70vh;
-    max-height: 70dvh;
-    overflow: auto;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
     position: relative;
     isolation: isolate;
-    scroll-padding-top: 3.25rem;
+    scroll-padding-top: 0;
 }
 .holdings-table-scroll:focus-visible {
     outline: 2px solid var(--cobalt);
@@ -2687,6 +2687,9 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     top: 0;
     z-index: 2;
     box-shadow: inset 0 -1px var(--slate-200);
+    /* Horizontal overflow captures native sticky positioning. Move the real
+       headings with page scroll, retaining sorting and shared column widths. */
+    transform: translateY(var(--holdings-header-offset, 0px));
 }
 #holdingsTable > tbody > tr > td[data-col="0"] {
     position: sticky;
@@ -2976,7 +2979,7 @@ body[data-secondary-tools="hidden"] { padding-left: 0; }
     [data-secondary-tools="hidden"] .app-shell { padding-top: 24px !important; }
 }
 
-/* Holdings uses the page for vertical scrolling on phones. */
+/* Compact Holdings controls and overview on phones. */
 .holdings-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 #holdingsOverviewToggle { display: none; }
 .holdings-update-details { color: var(--slate-600); font-size: 11px; margin-top: 8px; }
@@ -3006,15 +3009,6 @@ body[data-secondary-tools="hidden"] { padding-left: 0; }
     #trackerHoldings .holdings-controls .btn-group { flex-wrap: nowrap; flex-shrink: 0; gap: 0; }
     .holdings-update-details { font-size: 10px; margin-top: 6px; }
     .holdings-update-details summary { min-height: 28px; padding-block: 6px; }
-    .holdings-table-scroll {
-        max-height: none;
-        overflow-x: auto;
-        overflow-y: hidden;
-        scroll-padding-top: 0;
-    }
-    /* Horizontal overflow captures native sticky positioning. Translate the real
-       headings with page scroll so sorting and column widths stay in one table. */
-    #holdingsTable > thead > tr > th { transform: translateY(var(--holdings-header-offset, 0px)); }
 }
 
 /* Sale lot selection stays usable on a narrow phone screen. */
