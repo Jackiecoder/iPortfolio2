@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import threading
 import unittest
@@ -126,13 +126,14 @@ class MinutePersistenceTests(unittest.TestCase):
         service._intraday_cache['BTC-USD_2026-09-05_1m_1'] = (old, datetime.now())
         with (
             patch('app.price_service._market_today', return_value=today),
-            patch.object(service, '_fetch_intraday_from_yfinance', return_value=[tail, *old, new]) as fetch,
+            patch.object(service.crypto, 'get_intraday_prices', return_value=[tail, *old, new]) as fetch,
             patch.object(service, '_save_intraday_if_valid') as save,
         ):
             self.assertEqual(service.get_intraday_prices('BTC-USD', '1m'), old)
             fetch.assert_not_called()
             result = service.get_intraday_prices('BTC-USD', '1m', force_refresh=True)
         self.assertEqual(result, [*old, new])
+        fetch.assert_called_once_with('BTC-USD', '1m', 2, today)
         self.assertEqual(save.call_count, 2)
         save.assert_any_call('BTC-USD', '2026-09-04', '1m', [tail], overwrite=True)
         save.assert_any_call('BTC-USD', today.isoformat(), '1m', [*old, new], overwrite=True)
@@ -167,12 +168,13 @@ class MinutePersistenceTests(unittest.TestCase):
         service = PriceService()
         yesterday_bars = 30
         timestamps = pd.date_range('2026-09-04 23:30', periods=yesterday_bars + 2, freq='min', tz='America/New_York')
-        history = pd.DataFrame({'Close': [100.0] * len(timestamps)}, index=timestamps)
-        ticker = MagicMock()
-        ticker.history.return_value = history
+        candles = [[int(timestamp.timestamp()), 100, 100, 100, 100, 1]
+                   for timestamp in timestamps]
         with (
             patch('app.price_service._market_today', return_value=date(2026, 9, 5)),
-            patch('app.price_service.yf.Ticker', return_value=ticker),
+            patch.object(service.crypto, '_get_json', return_value=candles),
+            patch('app.crypto_price_service._utc_now', return_value=datetime(2026, 9, 5, 4, 2, tzinfo=timezone.utc)),
+            patch('app.price_service.yf.Ticker') as yahoo,
             patch.object(cache_service, 'save_intraday_prices') as save,
         ):
             bars = service.get_intraday_prices('BTC-USD', '1m', force_refresh=True)
@@ -182,6 +184,7 @@ class MinutePersistenceTests(unittest.TestCase):
         self.assertEqual(len(calls['2026-09-04']), 30)
         self.assertEqual(calls['2026-09-04'][-1]['time'], '23:59')
         self.assertEqual(len(calls['2026-09-05']), 2)
+        yahoo.assert_not_called()
 
 
 class MinuteReuseTests(unittest.IsolatedAsyncioTestCase):

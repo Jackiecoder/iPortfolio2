@@ -7,6 +7,8 @@ from typing import Optional
 
 import yfinance as yf
 
+from .crypto_price_service import is_crypto_symbol
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,6 +35,9 @@ class SplitService:
         Returns:
             Dictionary mapping split dates to split ratios
         """
+        if is_crypto_symbol(symbol):
+            return {}
+
         # Check cache first
         if symbol in self._splits_cache:
             splits, cached_at = self._splits_cache[symbol]

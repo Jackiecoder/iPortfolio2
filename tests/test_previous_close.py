@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import unittest
 from unittest.mock import patch
@@ -175,36 +175,47 @@ class CryptoPreviousCloseTests(unittest.TestCase):
         )
 
     def fetch(self, bars, target_date=None):
+        day = target_date or self.today
+        payload = [
+            [int(timestamp.timestamp()), 0, 0,
+             row.get("Open", row["Close"]), row["Close"], 0]
+            for timestamp, row in bars.iterrows()
+        ]
         with (
-            patch("app.price_service._market_today", return_value=target_date or self.today),
-            patch("app.price_service.yf.Ticker") as ticker,
+            patch("app.price_service._market_today", return_value=day),
+            patch("app.crypto_price_service._utc_now", return_value=datetime.combine(
+                day + timedelta(days=1), datetime.min.time(), timezone.utc
+            )),
+            patch.object(self.service.crypto, "_get_json", return_value=payload),
         ):
-            ticker.return_value.history.return_value = bars
             return self.service.get_previous_close_batch(["BTC-USD"])["BTC-USD"]
 
-    def test_midnight_uses_completed_hour_not_first_hour_of_new_day(self):
-        self.assertEqual(self.fetch(self.bars), Decimal("81105.03"))
+    def test_midnight_uses_hour_open_not_first_hour_close(self):
+        self.assertEqual(self.fetch(self.bars), Decimal("81105.05"))
+
+    def test_completed_hour_close_is_used_when_midnight_open_is_missing(self):
+        self.assertEqual(self.fetch(self.bars.iloc[:1]), Decimal("81105.03"))
 
     def test_fresh_yesterday_cache_cannot_be_locked_as_todays_baseline(self):
         yesterday = self.bars.copy()
         yesterday.index -= pd.Timedelta(days=1)
         yesterday["Close"] = [77496.26, 77520.0]
+        yesterday["Open"] = [77400.0, 77496.26]
         self.assertEqual(self.fetch(yesterday, date(2026, 9, 18)), Decimal("77496.26"))
         stocks = grouped_closes({"MU": [1015.8]}, ["2026-09-18"])
         with (
             patch("app.price_service._market_today", return_value=self.today),
-            patch("app.price_service.yf.Ticker") as ticker,
+            patch.object(self.service.crypto, "get_midnight_prices", return_value={self.today: Decimal("81105.05")}) as midnight,
             patch("app.price_service.yf.download", return_value=stocks),
             patch.object(self.service, "_get_previous_market_session", return_value=date(2026, 9, 18)),
         ):
-            ticker.return_value.history.return_value = self.bars
             first = self.service.get_previous_close_batch(["BTC-USD", "MU"])
             # A later fetch in the same day must retain the verified baseline.
-            ticker.return_value.history.return_value = pd.DataFrame()
+            midnight.return_value = {}
             second = self.service.get_previous_close_batch(["MU", "BTC-USD"])
-        self.assertEqual(first["BTC-USD"], Decimal("81105.03"))
+        self.assertEqual(first["BTC-USD"], Decimal("81105.05"))
         self.assertEqual(first, second)
-        self.assertEqual(ticker.return_value.history.call_count, 1)
+        self.assertEqual(midnight.call_count, 1)
 
     def test_midnight_open_is_allowed_if_completed_hour_is_missing(self):
         self.assertEqual(self.fetch(self.bars.iloc[1:]), Decimal("81105.05"))
@@ -235,7 +246,7 @@ class CryptoPreviousCloseTests(unittest.TestCase):
             with self.subTest(day=day):
                 self.service = PriceService()
                 bars = pd.DataFrame(
-                    {"Close": [81105.03, 81001.68]},
+                    {"Open": [81000.0, 81105.03], "Close": [81105.03, 81001.68]},
                     index=pd.date_range(f"{day} {utc_hour:02d}:00", periods=2, freq="h", tz="UTC"),
                 )
                 self.assertEqual(self.fetch(bars, day), Decimal("81105.03"))
@@ -243,11 +254,26 @@ class CryptoPreviousCloseTests(unittest.TestCase):
     def test_clear_cache_removes_crypto_day_metadata(self):
         self.fetch(self.bars)
         self.service.clear_cache()
-        with patch("app.price_service.yf.Ticker") as ticker:
-            ticker.return_value.history.return_value = pd.DataFrame()
+        with patch.object(self.service.crypto, "get_midnight_prices", return_value={}) as midnight:
             with patch("app.price_service._market_today", return_value=self.today):
                 self.assertIsNone(self.service.get_previous_close("BTC-USD"))
-        ticker.return_value.history.assert_called_once()
+        midnight.assert_called_once_with("BTC-USD", self.today, self.today)
+
+    def test_successful_midnight_baseline_remains_locked_after_ttl(self):
+        self.assertEqual(self.fetch(self.bars), Decimal("81105.05"))
+        key = str(["BTC-USD"])
+        data, _ = self.service._crypto_midnight_cache[key]
+        self.service._crypto_midnight_cache[key] = (data, datetime.min)
+        with patch.object(self.service.crypto, "get_midnight_prices") as midnight:
+            result = self.service._get_crypto_est_midnight_price_batch(["BTC-USD"], self.today)
+        self.assertEqual(result["BTC-USD"], Decimal("81105.05"))
+        midnight.assert_not_called()
+
+    def test_incomplete_midnight_result_is_retried(self):
+        with patch.object(self.service.crypto, "get_midnight_prices", side_effect=[{}, {self.today: Decimal("100")}]) as midnight:
+            self.assertIsNone(self.service._get_crypto_est_midnight_price_batch(["BTC-USD"], self.today)["BTC-USD"])
+            self.assertEqual(self.service._get_crypto_est_midnight_price_batch(["BTC-USD"], self.today)["BTC-USD"], Decimal("100"))
+        self.assertEqual(midnight.call_count, 2)
 
 
 if __name__ == "__main__":

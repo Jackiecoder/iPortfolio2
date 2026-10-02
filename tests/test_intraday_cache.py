@@ -269,19 +269,19 @@ class PriceCacheTests(unittest.TestCase):
             patch("app.price_service._market_today", return_value=today),
             patch.object(cache_service, "get_intraday_prices", return_value=incomplete),
             patch.object(
-                service, "_fetch_intraday_from_yfinance", return_value=completed
+                service, "_fetch_intraday_from_coinbase", return_value=completed
             ) as fetch,
             patch.object(service, "_save_intraday_if_valid") as save,
         ):
             result = service.get_intraday_prices("BTC-USD", "1m", 2)
 
         self.assertEqual(result, completed)
-        fetch.assert_called_once_with("BTC-USD", "1m", 2, today, True)
+        fetch.assert_called_once_with("BTC-USD", "1m", 2, today, raise_errors=False)
         save.assert_called_once_with(
             "BTC-USD", "2026-08-02", "1m", completed, overwrite=True
         )
 
-    def test_complete_cached_crypto_day_does_not_expand_yfinance_range(self):
+    def test_complete_cached_crypto_day_does_not_expand_provider_range(self):
         service = PriceService()
         today = datetime(2026, 8, 3).date()
         completed = [
@@ -293,13 +293,13 @@ class PriceCacheTests(unittest.TestCase):
             patch("app.price_service._market_today", return_value=today),
             patch.object(cache_service, "get_intraday_prices", return_value=completed),
             patch.object(
-                service, "_fetch_intraday_from_yfinance", return_value=[]
+                service, "_fetch_intraday_from_coinbase", return_value=[]
             ) as fetch,
         ):
             result = service.get_intraday_prices("BTC-USD", "1m", 2)
 
         self.assertEqual(result, completed)
-        fetch.assert_called_once_with("BTC-USD", "1m", 1, today, True)
+        fetch.assert_called_once_with("BTC-USD", "1m", 1, today, raise_errors=False)
 
     def test_prime_cache_uses_shared_postgres_bars(self):
         service = PriceService()

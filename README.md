@@ -344,7 +344,7 @@ and rejects all network API requests.
 
 - **Backend**: Python with FastAPI
 - **Frontend**: HTML/CSS/JavaScript with Chart.js
-- **Market Data**: yfinance
+- **Market Data**: yfinance for stocks and options; public Coinbase Exchange data for crypto
 - **Data Processing**: Pandas, Pydantic
 
 
@@ -416,3 +416,11 @@ valuation. No option price or estimate creates a transaction.
 Browser regression: `scripts/check_option_intraday_ui.py` uses synthetic fixtures
 for known/missing baselines, past points, the unchanged layout, privacy and desktop/mobile
 Holdings reconciliation in Chromium and WebKit.
+
+## Crypto market data
+
+Crypto quotes and candles use the public Coinbase Exchange API without account
+credentials. Intraday candles are paginated and cached; daily historical charts
+retain UTC daily closes, while daily P&L uses the America/New_York midnight
+hourly open, falling back to the previous hour close when necessary. Stock and
+option market data continue to use yfinance.
