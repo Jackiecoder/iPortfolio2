@@ -153,18 +153,25 @@ def run():
                 page.locator('#ccHoldingReload').click()
                 expect(page.locator('#ccHoldingDetails')).to_contain_text('100')
                 page.locator('#holdingCoverageModal .btn-close').click()
-                for width in [320, 390, 430, 1440]:
+                for width in [320, 390, 430, 1024, 1440, 2048]:
                     page.set_viewport_size({'width': width, 'height': 844})
                     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'Coverage overflow at {width}'
                     expect(badge).to_be_visible()
                     page.screenshot(path=str(output / f'holdings-coverage-{width}.png'), full_page=True, animations='disabled')
-                    if width < 768:
-                        page.evaluate('window.scrollBy(0, 350)')
-                        page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().top - document.querySelector('#trackerTabs').getBoundingClientRect().bottom) < 2")
-                        assert page.evaluate('document.querySelector(".holdings-table-scroll").scrollTop === 0'), 'Nested vertical scroll'
-                        page.evaluate('document.querySelector(".holdings-table-scroll").scrollLeft = 180')
-                        page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().left - document.querySelector('#holdingsBody .holding-row td').getBoundingClientRect().left) < 2")
-                        page.evaluate('document.querySelector(".holdings-table-scroll").scrollLeft = 0; window.scrollTo(0, 0)')
+                    assert page.locator('.holdings-table-scroll').evaluate('e => e.scrollHeight - e.clientHeight <= 1'), 'Holdings must show every row without an inner vertical scrollbar'
+                    page.evaluate("window.scrollBy(0, document.querySelector('#holdingsTable').getBoundingClientRect().top + 160)")
+                    page.wait_for_function("""mobile => {
+                        const nav = document.querySelector('.app-navbar');
+                        const rect = nav.getBoundingClientRect();
+                        const top = mobile ? document.querySelector('#trackerTabs').getBoundingClientRect().bottom
+                            : (['fixed','sticky'].includes(getComputedStyle(nav).position) && rect.top <= 0 && rect.bottom > 0 ? rect.bottom : 0);
+                        return Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().top - top) < 2;
+                    }""", arg=width < 768)
+                    assert page.evaluate('scrollY > 0 && document.querySelector(".holdings-table-scroll").scrollTop === 0'), 'Holdings must scroll with the page'
+                    page.evaluate('document.querySelector(".holdings-table-scroll").scrollLeft = 180')
+                    page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th').getBoundingClientRect().left - document.querySelector('#holdingsBody .holding-row td').getBoundingClientRect().left) < 2")
+                    page.wait_for_function("Math.abs(document.querySelector('#holdingsTable th[data-col=\"4\"]').getBoundingClientRect().left - document.querySelector('#holdingsBody .holding-row [data-col=\"4\"]').getBoundingClientRect().left) < 2")
+                    page.evaluate('document.querySelector(".holdings-table-scroll").scrollLeft = 0; window.scrollTo(0, 0)')
 
                 page.set_viewport_size({'width': 390, 'height': 844})
                 page.locator('#anonymousBtn').click()
