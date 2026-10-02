@@ -13,7 +13,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -30,7 +30,10 @@ from .analysis_service import (
 from .cache_service import cache_service
 from .csv_parser import CSVParseError, parse_csv_content
 from .db import init_schema
-from .models import ActionType, Transaction, default_transaction_time
+from .models import ActionType, CostBasisMethod, LotAllocation, Transaction, default_transaction_time
+from .sale_service import preview_sale
+from . import covered_call_repository
+from .covered_calls import CallOpen, CallEvent
 from .portfolio import Portfolio
 from .price_service import price_service
 from .split_service import split_service
@@ -926,6 +929,48 @@ async def get_sold_assets():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/covered-calls")
+async def get_covered_calls():
+    return await asyncio.to_thread(covered_call_repository.list_calls)
+
+
+@app.post("/api/covered-calls/preview")
+async def preview_covered_call(request: CallOpen):
+    try:
+        return await asyncio.to_thread(covered_call_repository.preview_open, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/covered-calls")
+async def create_covered_call(request: CallOpen):
+    try:
+        call = await _commit_ledger_write(covered_call_repository.create_call, request)
+        return {"call": call, "message": "Covered call recorded", "refresh_pending": True}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/covered-calls/{call_id}/events")
+async def record_covered_call_event(call_id: int, request: CallEvent):
+    try:
+        call = await _commit_ledger_write(covered_call_repository.record_event, call_id, request)
+        return {"call": call, "message": "Covered-call event recorded", "refresh_pending": True}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/covered-calls/{call_id}")
+async def delete_covered_call(call_id: int):
+    try:
+        deleted = await _commit_ledger_write(covered_call_repository.delete_call, call_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Covered call not found")
+    return {"message": "Covered call removed", "refresh_pending": True}
+
+
 class TransactionCreate(BaseModel):
     """Request body for adding a single transaction."""
     date: date_type
@@ -938,11 +983,36 @@ class TransactionCreate(BaseModel):
     comment: Optional[str] = None
     broker: Optional[str] = None
     transaction_time: Optional[time_type] = None
+    cost_basis_method: Optional[CostBasisMethod] = None
+    lot_allocations: list[LotAllocation] = Field(default_factory=list)
 
     @field_validator("broker")
     @classmethod
     def canonical_broker(cls, value: Optional[str]) -> Optional[str]:
         return normalize_broker(value)
+
+
+class SalePreviewRequest(BaseModel):
+    date: date_type
+    asset: str
+    transaction_time: Optional[time_type] = None
+    broker: Optional[str] = None
+    quantity: Optional[Decimal] = Field(default=None, gt=0, allow_inf_nan=False)
+    ave_price: Optional[Decimal] = Field(default=None, gt=0, allow_inf_nan=False)
+    amount: Optional[Decimal] = Field(default=None, gt=0, allow_inf_nan=False)
+    cost_basis_method: CostBasisMethod = CostBasisMethod.FIFO
+    lot_allocations: list[LotAllocation] = Field(default_factory=list)
+
+
+@app.post("/api/transactions/preview-sale")
+async def preview_sale_transaction(request: SalePreviewRequest):
+    """Read-only, as-of-time lot inventory and estimated realized gains."""
+    def build():
+        return preview_sale(repository.get_all_transactions(), request)
+    try:
+        return await asyncio.to_thread(build)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/transactions")
@@ -962,6 +1032,10 @@ async def create_transaction(txn_in: TransactionCreate):
             ave_price=txn_in.ave_price,
             source=txn_in.source,
             comment=txn_in.comment,
+            broker=txn_in.broker,
+            cost_basis_method=(txn_in.cost_basis_method or CostBasisMethod.FIFO)
+                if txn_in.action == ActionType.SELL else txn_in.cost_basis_method,
+            lot_allocations=txn_in.lot_allocations,
             executed_at=datetime.combine(
                 txn_in.date, execution_time, tzinfo=MARKET_TZ
             ),
@@ -972,6 +1046,8 @@ async def create_transaction(txn_in: TransactionCreate):
 
     try:
         new_id = await _commit_ledger_write(repository.insert_transaction, txn, broker=txn_in.broker)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error adding transaction: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -983,7 +1059,7 @@ async def create_transaction(txn_in: TransactionCreate):
             f"{txn.effective_executed_at.strftime('%Y-%m-%d %H:%M')} ET"
         ),
         "transaction": {
-            **txn.model_dump(mode="json"), "id": new_id, "broker": txn_in.broker,
+            **txn.model_dump(mode="json"), "id": new_id,
             "amount": float(txn.amount) if txn.amount is not None else None,
             "quantity": float(txn.quantity) if txn.quantity is not None else None,
             "ave_price": float(txn.ave_price) if txn.ave_price is not None else None,
@@ -1018,6 +1094,8 @@ async def upload_csv(file: UploadFile = File(...)):
             status_code=400,
             detail="File encoding error. Please use UTF-8 encoding.",
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error uploading file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1070,6 +1148,8 @@ async def delete_transaction(txn_id: int):
     """Permanently delete a single transaction by id, then reload the portfolio."""
     try:
         deleted = await _commit_ledger_write(repository.delete_transaction, txn_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error deleting transaction {txn_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1091,29 +1171,9 @@ async def get_transactions(
 
     try:
         action_filter = {a.strip().upper() for a in actions.split(",")} if actions else None
-        txns = sorted(
-            [
-                t for t in portfolio._transactions
-                if t.asset == symbol.upper()
-                and (action_filter is None or t.action.value in action_filter)
-            ],
-            key=lambda t: t.effective_executed_at,
-            reverse=True,
-        )[:limit]
         result = {
             "symbol": symbol.upper(),
-            "transactions": [
-                {
-                    "date": t.date.isoformat(),
-                    "executed_at": t.effective_executed_at.isoformat(),
-                    "transaction_time": t.effective_executed_at.strftime("%H:%M"),
-                    "action": t.action.value,
-                    "quantity": float(t.quantity) if t.quantity is not None else None,
-                    "ave_price": float(t.ave_price) if t.ave_price is not None else None,
-                    "amount": float(t.amount) if t.amount is not None else None,
-                }
-                for t in txns
-            ],
+            "transactions": portfolio.transaction_history(symbol.upper(), limit, action_filter),
         }
         return result
     except Exception as e:

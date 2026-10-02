@@ -13,32 +13,22 @@ from .db import get_pool
 from .models import ActionType, MARKET_TZ, Transaction
 
 
-def get_all_transactions() -> list[Transaction]:
-    """Load every transaction from the DB as Transaction objects, sorted by date."""
-    with get_pool().connection() as conn:
-        rows = conn.execute(
-            """SELECT date, asset, action, amount, quantity, ave_price, source, comment,
-                      executed_at
-               FROM transactions
-               ORDER BY executed_at, id"""
-        ).fetchall()
+def _read_transactions(conn) -> list[Transaction]:
+    rows = conn.execute(
+        """SELECT date, asset, action, amount, quantity, ave_price, source, comment,
+                  executed_at, id, broker, cost_basis_method, lot_allocations
+           FROM transactions ORDER BY executed_at, id"""
+    ).fetchall()
+    return [Transaction(date=r[0], asset=r[1], action=ActionType(r[2]), amount=r[3],
+                        quantity=r[4], ave_price=r[5], source=r[6], comment=r[7],
+                        executed_at=r[8], id=r[9], broker=r[10], cost_basis_method=r[11],
+                        lot_allocations=r[12] or []) for r in rows]
 
-    transactions: list[Transaction] = []
-    for r in rows:
-        transactions.append(
-            Transaction(
-                date=r[0],
-                asset=r[1],
-                action=ActionType(r[2]),
-                amount=r[3],
-                quantity=r[4],
-                ave_price=r[5],
-                source=r[6],
-                comment=r[7],
-                executed_at=r[8],
-            )
-        )
-    return transactions
+
+def get_all_transactions() -> list[Transaction]:
+    """Load the ledger including stable acquisition IDs and frozen sale lots."""
+    with get_pool().connection() as conn:
+        return _read_transactions(conn)
 
 
 def get_all_transactions_with_meta() -> list[dict]:
@@ -52,7 +42,7 @@ def get_all_transactions_with_meta() -> list[dict]:
     with get_pool().connection() as conn:
         rows = conn.execute(
             """SELECT id, date, asset, action, amount, quantity, ave_price,
-                      source, comment, broker, created_at, executed_at
+                      source, comment, broker, created_at, executed_at, cost_basis_method, lot_allocations
                FROM transactions
                ORDER BY executed_at DESC, id DESC"""
         ).fetchall()
@@ -72,6 +62,8 @@ def get_all_transactions_with_meta() -> list[dict]:
             "source": r[7],
             "comment": r[8],
             "broker": r[9],
+            "cost_basis_method": r[12],
+            "lot_allocations": r[13] or [],
             "created_at": r[10].isoformat() if r[10] is not None else None,
             "executed_at": r[11].isoformat() if r[11] is not None else None,
             "transaction_time": (
@@ -82,64 +74,77 @@ def get_all_transactions_with_meta() -> list[dict]:
     ]
 
 
+def _lock_ledger(conn):
+    # All writers take this lock before reading or mutating. It serializes even
+    # simultaneous requests/processes and protects the entire validation+commit.
+    conn.execute("LOCK TABLE transactions IN SHARE ROW EXCLUSIVE MODE")
+
+
 def delete_transaction(txn_id: int) -> bool:
-    """Permanently delete a transaction by id. Returns True if a row was removed."""
+    from .sale_service import validate_frozen_sales
+    from .covered_call_repository import read_calls, validate_stock_write
     with get_pool().connection() as conn:
+        _lock_ledger(conn)
+        transactions = _read_transactions(conn)
+        if any(e.get("stock_transaction_id") == txn_id for c in read_calls(conn) for e in c["events"]):
+            raise ValueError("This sale is linked to a covered-call assignment and cannot be deleted separately")
+        if any(a.lot_id == txn_id for t in transactions for a in t.lot_allocations):
+            raise ValueError("This purchase is used by a saved sale. Remove the dependent sale first")
+        validate_frozen_sales([t for t in transactions if t.id != txn_id])
+        validate_stock_write(conn, [t for t in transactions if t.id != txn_id])
         cur = conn.execute("DELETE FROM transactions WHERE id = %s", (txn_id,))
         conn.commit()
         return cur.rowcount > 0
 
 
-def insert_transaction(txn: Transaction, broker: Optional[str] = None) -> int:
-    """Insert one transaction; returns its new id."""
-    broker = normalize_broker(broker)
-    with get_pool().connection() as conn:
-        row = conn.execute(
-            """INSERT INTO transactions
-                   (date, asset, action, amount, quantity, ave_price, source, comment, broker,
-                    executed_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-               RETURNING id""",
-            (
-                txn.date,
-                txn.asset,
-                txn.action.value,
-                txn.amount,
-                txn.quantity,
-                txn.ave_price,
-                txn.source,
-                txn.comment,
-                broker,
-                txn.effective_executed_at,
-            ),
-        ).fetchone()
-        conn.commit()
+def _insert_row(conn, txn, broker):
+    row = conn.execute(
+        """INSERT INTO transactions
+               (date, asset, action, amount, quantity, ave_price, source, comment, broker,
+                executed_at, cost_basis_method, lot_allocations)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+           RETURNING id""",
+        (txn.date, txn.asset, txn.action.value, txn.amount, txn.quantity, txn.ave_price,
+         txn.source, txn.comment, broker, txn.effective_executed_at,
+         txn.cost_basis_method.value if txn.cost_basis_method else None,
+         json.dumps([a.model_dump(mode="json") for a in txn.lot_allocations])),
+    ).fetchone()
     return row[0]
 
 
+def insert_transaction(txn: Transaction, broker: Optional[str] = None) -> int:
+    """Validate and insert a trade atomically, freezing the chosen sale lots."""
+    from .sale_service import prepare_sale, validate_frozen_sales
+    from .covered_call_repository import validate_stock_write
+    with get_pool().connection() as conn:
+        _lock_ledger(conn)
+        transactions = _read_transactions(conn)
+        txn.broker = normalize_broker(broker if broker is not None else txn.broker)
+        if txn.action == ActionType.SELL:
+            prepare_sale(transactions, txn)
+        txn.id = _insert_row(conn, txn, txn.broker)
+        validate_frozen_sales(transactions + [txn])
+        validate_stock_write(conn, transactions + [txn])
+        conn.commit()
+    return txn.id
+
+
 def insert_transactions(transactions: list[Transaction], broker: Optional[str] = None) -> int:
-    """Bulk-insert transactions (used by CSV upload and the migration script)."""
+    """Import legacy CSV rows, without changing or invalidating saved lot choices."""
+    from .sale_service import validate_frozen_sales
+    from .covered_call_repository import validate_stock_write
     if not transactions:
         return 0
-    broker = normalize_broker(broker)
-    params = [
-        (
-            t.date, t.asset, t.action.value, t.amount, t.quantity,
-            t.ave_price, t.source, t.comment, broker, t.effective_executed_at,
-        )
-        for t in transactions
-    ]
     with get_pool().connection() as conn:
-        with conn.cursor() as cur:
-            cur.executemany(
-                """INSERT INTO transactions
-                       (date, asset, action, amount, quantity, ave_price, source, comment, broker,
-                        executed_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                params,
-            )
+        _lock_ledger(conn)
+        existing = _read_transactions(conn)
+        for txn in transactions:
+            txn.broker = normalize_broker(broker if broker is not None else txn.broker)
+            txn.id = _insert_row(conn, txn, txn.broker)
+        validate_frozen_sales(existing + transactions)
+        validate_stock_write(conn, existing + transactions)
         conn.commit()
-    return len(params)
+    return len(transactions)
 
 
 def get_targets() -> dict[str, float]:

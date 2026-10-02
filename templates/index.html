@@ -24,7 +24,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=57">
+    <link rel="stylesheet" href="/static/css/style.css?v=60">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
@@ -182,6 +182,26 @@
                   <input type="text" class="form-control" name="comment">
                 </div>
               </div>
+              <section id="saleLotsPanel" class="sale-lots-panel d-none" aria-label="Sell tax lots">
+                <label class="form-label fw-semibold" for="sellCostBasisMethod">Cost Basis Method</label>
+                <select id="sellCostBasisMethod" class="form-select">
+                  <option value="FIFO">First In First Out (FIFO)</option>
+                  <option value="LIFO">Last In First Out (LIFO)</option>
+                  <option value="HIGH_COST">High Cost — highest purchase cost first</option>
+                  <option value="LOW_COST">Low Cost — lowest purchase cost first</option>
+                  <option value="TAX_OPTIMIZER">Tax Optimizer — losses first, gains last</option>
+                  <option value="SPECIFIC">Specified Lots — choose quantities yourself</option>
+                </select>
+                <p id="saleLotsMethodHelp" class="form-text mb-3"></p>
+                <div class="sale-lots-heading">
+                  <strong id="saleLotsAccount">Available lots</strong>
+                  <button type="button" id="saleLotsCustomize" class="btn btn-sm btn-outline-secondary" disabled>Specify these lots</button>
+                </div>
+                <div id="saleLotsStatus" class="small my-2" role="status" aria-live="polite"></div>
+                <div id="saleLotsList" class="sale-lots-list"></div>
+                <div id="saleLotsSummary" class="sale-lots-summary d-none" aria-live="polite"></div>
+                <p class="form-text mb-0 mt-3">Preview only until you click Add. Match these lots in your broker's sell order. Estimates exclude wash-sale adjustments and personal tax rates; Tax Optimizer does not guarantee the lowest tax.</p>
+              </section>
               <section id="tradePreviewPanel" class="trade-preview-panel d-none" aria-live="polite">
                 <div class="trade-preview-heading">
                   <div>
@@ -329,6 +349,7 @@
             </div>
         </div>
 
+        <p id="ccScopeNote" class="small text-muted d-none">Stock, crypto and cash totals exclude option valuations. See Covered Calls for option cash flows and realized P&amp;L.</p>
         <ul class="nav nav-pills tracker-tabs mb-3" id="trackerTabs" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="today-tab" data-bs-toggle="pill" data-bs-target="#trackerToday" type="button" role="tab" aria-controls="trackerToday" aria-selected="true">
@@ -350,9 +371,13 @@
                     <i class="bi bi-list-ul me-1"></i>Transactions
                 </button>
             </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="covered-calls-tab" data-bs-toggle="pill" data-bs-target="#trackerCoveredCalls" type="button" role="tab" aria-controls="trackerCoveredCalls" aria-selected="false"><i class="bi bi-shield-check me-1"></i>Covered Calls</button>
+            </li>
         </ul>
 
         <div class="tab-content tracker-tab-content" id="trackerTabContent">
+            {% include 'covered_calls.html' %}
             <div class="tab-pane fade show active" id="trackerToday" role="tabpanel" aria-labelledby="today-tab" tabindex="0">
 
         <!-- Intraday P&L Chart -->
@@ -766,7 +791,7 @@
                 </div>
             </div>
             <div class="card-body p-0">
-                <div class="table-responsive">
+                <div class="table-responsive holdings-table-scroll" tabindex="0" role="region" aria-label="Holdings table">
                     <table class="table table-hover mb-0" id="holdingsTable">
                         <thead class="table-light">
                             <tr>
@@ -1199,6 +1224,7 @@
         </div>
     </div>
 
+    {% include 'covered_call_modal.html' %}
     <!-- Toast notification -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3">
         <div id="toast" class="toast align-items-center border-0" role="alert">
@@ -1222,11 +1248,13 @@
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/js/trade-preview.js?v=1"></script>
+    <script src="/static/js/sale-lots.js?v=1"></script>
     <script src="/static/js/today-pnl.js?v=2"></script>
     <script src="/static/js/transaction-updates.js?v=1"></script>
     <script src="/static/js/ticker-technicals.js?v=2"></script>
     {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=1"></script>{% endif %}
-    <script src="/static/js/app.js?v=153"></script>
+    <script src="/static/js/covered-calls.js?v=1"></script>
+    <script src="/static/js/app.js?v=155"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

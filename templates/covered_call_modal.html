@@ -1,0 +1,42 @@
+<div class="modal fade" id="coveredCallModal" tabindex="-1" aria-labelledby="ccModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <form id="ccForm" class="modal-content">
+      <div class="modal-header"><h5 class="modal-title" id="ccModalTitle">Record sell to open</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+      <div class="modal-body">
+        <p id="ccFormIntro" class="text-muted small">Record a completed broker fill. This saves a portfolio record; it does not place a brokerage order.</p>
+        <div id="ccError" class="alert alert-danger d-none" role="alert"></div>
+        <div class="row g-3">
+          <div class="col-sm-6" data-cc-opening><label for="ccHolding" class="form-label">Stock &amp; broker/account</label><select id="ccHolding" class="form-select" required></select></div>
+          <div class="col-sm-6" data-cc-event hidden><label for="ccEventAction" class="form-label">Broker outcome</label><select id="ccEventAction" class="form-select"><option value="CLOSE">Buy to close</option><option value="EXPIRE">Expired worthless — confirmed</option><option value="ASSIGN">Assigned — shares sold</option><option value="ROLL">Roll — close &amp; open</option></select></div>
+          <div class="col-6 col-sm-3"><label for="ccDate" class="form-label">Trade date</label><input id="ccDate" class="form-control" type="date" required></div>
+          <div class="col-6 col-sm-3"><label for="ccTime" class="form-label">Time (ET)</label><input id="ccTime" class="form-control" type="time" step="60" required></div>
+          <div class="col-6" data-cc-opening><label for="ccExpiration" class="form-label">Expiration</label><input id="ccExpiration" class="form-control" type="date" required></div>
+          <div class="col-6" data-cc-opening><label for="ccStrike" class="form-label">Strike ($ / share)</label><input id="ccStrike" class="form-control" type="number" min="0.001" step="any" required></div>
+          <div class="col-4"><label for="ccContracts" class="form-label">Contracts</label><input id="ccContracts" class="form-control" type="number" min="1" step="1" value="1" required></div>
+          <div class="col-4"><label for="ccPremium" class="form-label" id="ccPremiumLabel">Fill ($ / share)</label><input id="ccPremium" class="form-control" type="number" min="0" step="any" required></div>
+          <div class="col-4"><label for="ccFees" class="form-label">Total fees ($)</label><input id="ccFees" class="form-control" type="number" min="0" step="any" value="0" required></div>
+          <div class="col-12" id="ccReplacement" hidden>
+            <fieldset class="cc-replacement"><legend>Replacement call — same shares &amp; account</legend><div class="row g-3">
+              <div class="col-6"><label for="ccNewExpiry" class="form-label">New expiration</label><input id="ccNewExpiry" class="form-control" type="date" required></div>
+              <div class="col-6"><label for="ccNewStrike" class="form-label">New strike ($)</label><input id="ccNewStrike" class="form-control" type="number" min="0.001" step="any" required></div>
+              <div class="col-6"><label for="ccNewPremium" class="form-label">New fill ($ / share)</label><input id="ccNewPremium" class="form-control" type="number" min="0" step="any" required></div>
+              <div class="col-6"><label for="ccNewFees" class="form-label">New total fees ($)</label><input id="ccNewFees" class="form-control" type="number" min="0" step="any" value="0" required></div>
+            </div></fieldset>
+          </div>
+          <div class="col-12" id="ccAssignment" hidden>
+            <label for="ccLotMethod" class="form-label">Stock cost basis method</label>
+            <select id="ccLotMethod" class="form-select"><option value="FIFO">FIFO</option><option value="LIFO">LIFO</option><option value="HIGH_COST">High Cost</option><option value="LOW_COST">Low Cost</option><option value="TAX_OPTIMIZER">Tax Optimizer</option><option value="SPECIFIC">Specified lots</option></select>
+            <div id="ccLotRows" class="mt-3"></div>
+            <div id="ccSalePreview" class="small mt-2" role="status"></div>
+            <p class="form-text">This also records a stock sale at the strike. Match the broker's actual lots; do not enter that sale again in Transactions. Fees here apply to the option event; tax treatment of assigned premiums is not calculated.</p>
+          </div>
+          <div class="col-12"><label for="ccComment" class="form-label">Note (optional)</label><input id="ccComment" class="form-control" maxlength="1000"></div>
+        </div>
+        <div id="ccEstimate" class="cc-estimate mt-3" aria-live="polite"></div>
+        <div id="ccCoverage" class="small mt-2" role="status"></div>
+        <label class="form-check mt-3"><input id="ccConfirmed" class="form-check-input" type="checkbox" required><span class="form-check-label" id="ccConfirmLabel">This trade has filled at my broker; these are the actual execution details.</span></label>
+      </div>
+      <div class="modal-footer"><button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button><button class="btn btn-primary" id="ccSaveBtn" type="submit">Save filled call</button></div>
+    </form>
+  </div>
+</div>

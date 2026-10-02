@@ -89,11 +89,7 @@ echo ">>> Deploying $SERVICE to Cloud Run (region $REGION) from source..."
 # Keep at most one instance for process-local ledger/cache consistency. Clear
 # BOTH service- and revision-level minimums; CPU is allocated only for requests.
 # Scheduler owns the timer, and its response waits for persisted minute bars.
-DEPLOY_ARGS=()
-if [ -n "${DEPLOY_TAG:-}" ]; then
-  DEPLOY_ARGS+=(--no-traffic --tag "$DEPLOY_TAG")
-fi
-gcloud run deploy "$SERVICE" "${DEPLOY_ARGS[@]}" --source . --project="$PROJECT_ID" --region "$REGION" \
+gcloud run deploy "$SERVICE" --source . --project="$PROJECT_ID" --region "$REGION" \
     --min 0 --max 1 --min-instances 0 --max-instances 1 --cpu-throttling \
     --timeout=240s \
     --update-env-vars="MARKET_REFRESH_MODE=scheduler,SCHEDULER_SERVICE_ACCOUNT=${SCHEDULER_SERVICE_ACCOUNT},SCHEDULER_AUDIENCE=${SCHEDULER_AUDIENCE}"
