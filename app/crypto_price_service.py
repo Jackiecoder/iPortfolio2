@@ -1,4 +1,4 @@
-"""Public Coinbase Exchange market data; no account or API key is required."""
+"""Public crypto market data, with explicit aliases for non-Coinbase assets."""
 
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -11,6 +11,7 @@ import time
 from zoneinfo import ZoneInfo
 
 import requests
+import yfinance as yf
 
 
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -32,7 +33,7 @@ def _midnight(day: date) -> datetime:
 def _positive_price(value) -> Decimal:
     price = Decimal(str(value))
     if not price.is_finite() or price <= 0:
-        raise ValueError("Coinbase returned an invalid price")
+        raise ValueError("Market data returned an invalid price")
     return price
 
 
@@ -44,7 +45,7 @@ class Candle:
 
 
 class CryptoPriceService:
-    """Fetch USD prices and paginate candles under Coinbase's 300-bar limit.
+    """Fetch USD prices and paginate Coinbase candles under its 300-bar limit.
 
     Completed UTC pages are reused in memory; only the current page expires.
     Requests share a rate limiter across portfolio worker threads.
@@ -54,6 +55,10 @@ class CryptoPriceService:
     MAX_CANDLES = 300
     MAX_CACHED_PAGES = 256
     GRANULARITIES = {60, 300, 900, 3600, 21600, 86400}
+    # Yahoo's NIGHT-USD identifies Midnight (midnight.vip), a different asset.
+    # Cardano's Midnight NIGHT launched in December 2025 and has this ticker.
+    # Keep the application/ledger symbol unchanged and route every price path.
+    YAHOO_PRODUCTS = {"NIGHT-USD": "NIGHT39064-USD"}
 
     def __init__(self, live_ttl_seconds: int = 60):
         self.live_ttl_seconds = live_ttl_seconds
@@ -92,6 +97,17 @@ class CryptoPriceService:
 
     def get_current_price(self, symbol: str) -> Decimal:
         product = self._product(symbol)
+        if product in self.YAHOO_PRODUCTS:
+            history = yf.Ticker(self.YAHOO_PRODUCTS[product]).history(
+                period="1d", interval="1m", auto_adjust=False, raise_errors=True,
+            )
+            if not history.empty:
+                for value in reversed(history.sort_index()["Close"].tolist()):
+                    try:
+                        return _positive_price(value)
+                    except (ValueError, TypeError, InvalidOperation):
+                        continue
+            raise ValueError(f"No valid Yahoo quote for {symbol}")
         return _positive_price(self._get_json(f"/products/{product}/ticker")["price"])
 
     def _candles(
@@ -102,6 +118,9 @@ class CryptoPriceService:
             raise ValueError(f"Unsupported Coinbase granularity: {granularity}")
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("Candle bounds must include a timezone")
+
+        if product in self.YAHOO_PRODUCTS:
+            return self._yahoo_candles(product, start, end, granularity)
 
         now = _utc_now().timestamp()
         start_epoch = start.timestamp()
@@ -160,6 +179,60 @@ class CryptoPriceService:
                 if start_epoch <= candle.timestamp < end_epoch:
                     candles[candle.timestamp] = candle
             page_start += span
+        return [candles[timestamp] for timestamp in sorted(candles)]
+
+    def _yahoo_candles(
+        self, symbol: str, start: datetime, end: datetime, granularity: int
+    ) -> list[Candle]:
+        """Normalize the mapped asset's real OHLC bars; never synthesize prices.
+
+        Yahoo minute history is limited to its rolling window. Older collected
+        minutes remain available through PriceService's persistent cache.
+        Missing/empty responses are never cached here, so recovery can retry.
+        """
+        native = {60: "1m", 300: "5m", 900: "15m", 3600: "1h",
+                  21600: "1h", 86400: "1d"}
+        now = _utc_now()
+        start_epoch = start.timestamp()
+        end_epoch = min(end.timestamp(), now.timestamp())
+        if end_epoch <= start_epoch:
+            return []
+        fetch_start = start.astimezone(UTC)
+        if granularity == 60:
+            fetch_start = max(fetch_start, now - timedelta(days=7))
+        elif granularity < 3600:
+            fetch_start = max(fetch_start, now - timedelta(days=59))
+        elif granularity < 86400:
+            fetch_start = max(fetch_start, now - timedelta(days=729))
+        if fetch_start.timestamp() >= end_epoch:
+            return []
+        history = yf.Ticker(self.YAHOO_PRODUCTS[symbol]).history(
+            start=fetch_start, end=datetime.fromtimestamp(end_epoch, UTC),
+            interval=native[granularity], auto_adjust=False, raise_errors=True,
+        )
+        candles: dict[int, Candle] = {}
+        for index, row in history.sort_index(kind="stable").iterrows():
+            timestamp = index.to_pydatetime()
+            if timestamp.tzinfo is None:
+                raise ValueError("Yahoo candle timestamps must include a timezone")
+            epoch = int(timestamp.timestamp())
+            if not start_epoch <= epoch < end_epoch:
+                continue
+            try:
+                opened = _positive_price(row["Open"])
+                closed = _positive_price(row["Close"])
+            except (ValueError, TypeError, InvalidOperation):
+                # Yahoo includes missing OHLC rows, notably at range boundaries.
+                continue
+            # Preserve native timestamps: rounding an off-boundary hourly row
+            # could invent an exact midnight reference. Only 6h needs aggregation.
+            bucket = epoch // granularity * granularity if granularity == 21600 else epoch
+            if bucket < start_epoch:
+                continue
+            existing = candles.get(bucket)
+            candles[bucket] = Candle(bucket, existing.open if existing else opened, closed)
+        if not candles:
+            raise ValueError(f"No valid Yahoo candles for {symbol}")
         return [candles[timestamp] for timestamp in sorted(candles)]
 
     def get_intraday_prices(
