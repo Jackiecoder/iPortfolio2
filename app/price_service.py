@@ -1,4 +1,4 @@
-"""Market prices from Coinbase Exchange (Crypto) and yfinance (stocks)."""
+"""Market prices from Coinbase Exchange and explicit Yahoo ticker mappings."""
 
 import logging
 import random
@@ -78,6 +78,12 @@ class PriceService:
         self._crypto_midnight_cache_market_date: dict[str, date] = {}
         self._intraday_cache: dict[str, tuple[list, datetime]] = {}
         self._stale_intraday_keys: set[str] = set()
+
+    @staticmethod
+    def _cache_symbol(symbol: str) -> str:
+        # Source aliases isolate prices collected for a different same-name coin.
+        # Holdings, API responses and transaction symbols still use NIGHT-USD.
+        return CryptoPriceService.YAHOO_PRODUCTS.get(symbol, symbol)
 
     def get_current_price(self, symbol: str) -> Optional[Decimal]:
         """Get current price for a symbol.
@@ -236,7 +242,7 @@ class PriceService:
                 return data
 
         # Try to get cached prices first (for dates older than 7 days)
-        cached_prices = cache_service.get_historical_prices(symbol, start_d, end_d)
+        cached_prices = cache_service.get_historical_prices(self._cache_symbol(symbol), start_d, end_d)
 
         # Determine which dates we still need to fetch
         # We need to fetch: dates not in cache AND dates within last 7 days
@@ -273,7 +279,7 @@ class PriceService:
 
             # Save newly fetched prices to persistent cache (only dates > 7 days old)
             if fetched_prices:
-                cache_service.save_historical_prices_batch(symbol, fetched_prices)
+                cache_service.save_historical_prices_batch(self._cache_symbol(symbol), fetched_prices)
 
             # Merge cached and fetched prices
             all_prices = {**cached_prices, **fetched_prices}
@@ -434,7 +440,7 @@ class PriceService:
     def _get_crypto_est_midnight_price_batch(
         self, symbols: list[str], target_date: Optional[date] = None
     ) -> dict[str, Optional[Decimal]]:
-        """Use Coinbase's hourly open at Eastern midnight as a stable baseline."""
+        """Use the crypto provider's hourly open at Eastern midnight."""
         target_date = target_date or _market_today()
         cache_key = str(sorted(symbols))
         if cache_key in self._crypto_midnight_cache:
@@ -449,7 +455,7 @@ class PriceService:
                     symbol, target_date, target_date
                 ).get(target_date)
             except Exception as e:
-                logger.error(f"Error fetching Coinbase midnight price for {symbol}: {e}")
+                logger.error(f"Error fetching crypto midnight price for {symbol}: {e}")
                 results[symbol] = None
 
         # A completed day boundary is immutable. Retry incomplete results rather
@@ -464,7 +470,7 @@ class PriceService:
     ) -> dict[str, dict]:
         """Return prices at EST midnight for each of the past num_days days.
 
-        Crypto (24/7): Coinbase hourly open at midnight ET.
+        Crypto (24/7): provider hourly open at midnight ET.
         Stocks: use daily close (market closes ~4 pm ET, well before midnight).
 
         Returns: {symbol: {date: Decimal}}
@@ -482,7 +488,7 @@ class PriceService:
                     symbol, today - timedelta(days=num_days - 1), today
                 )
             except Exception as e:
-                logger.error(f"Error fetching Coinbase midnight history for {symbol}: {e}")
+                logger.error(f"Error fetching crypto midnight history for {symbol}: {e}")
 
         # Stocks: daily close
         if stocks:
@@ -804,7 +810,7 @@ class PriceService:
     ) -> list[dict]:
         """Get intraday prices for a symbol.
 
-        Crypto uses Coinbase's paginated 24/7 candles; stocks use yfinance.
+        Crypto uses public 24/7 candles with explicit source aliases; stocks use yfinance.
         Complete historical days are reused from Postgres. Missing/incomplete
         Crypto days can be refetched beyond Yahoo's rolling history window.
 
@@ -842,7 +848,7 @@ class PriceService:
                 # must still be marked partial so another click can retry.
                 self._stale_intraday_keys.add(intraday_key)
                 if not stale_prices and is_crypto:
-                    stale_prices = cache_service.get_intraday_prices(symbol, today_str, interval)
+                    stale_prices = cache_service.get_intraday_prices(self._cache_symbol(symbol), today_str, interval)
                 return stale_prices
             # The request already covers yesterday as well. Save its final bars
             # too, so a five-minute collector does not lose bars at midnight.
@@ -859,13 +865,19 @@ class PriceService:
                 self._intraday_cache[intraday_key] = (prices, datetime.now())
                 return prices
             if not stale_prices and is_crypto:
-                stale_prices = cache_service.get_intraday_prices(symbol, today_str, interval)
+                stale_prices = cache_service.get_intraday_prices(self._cache_symbol(symbol), today_str, interval)
             if stale_prices:
                 self._stale_intraday_keys.add(intraday_key)
                 logger.warning(
                     "Using stale intraday fallback for %s [%s]", symbol, interval
                 )
                 return stale_prices
+            if is_crypto:
+                # A 24/7 source returning only yesterday is incomplete today.
+                # Keep it retryable and prevent another asset making Scheduler
+                # report a successful collection for this missing current day.
+                self._stale_intraday_keys.add(intraday_key)
+                return []
             self._intraday_cache[intraday_key] = ([], datetime.now())
             self._stale_intraday_keys.discard(intraday_key)
             return []
@@ -884,7 +896,7 @@ class PriceService:
             elif is_crypto or self._is_within_yf_window(check_str, interval):
                 # A live crypto day may have been persisted before midnight. Do not
                 # treat that partial snapshot as a complete historical day.
-                cached = cache_service.get_intraday_prices(symbol, check_str, interval)
+                cached = cache_service.get_intraday_prices(self._cache_symbol(symbol), check_str, interval)
                 cache_is_complete = cached and (
                     not is_crypto
                     or self._cached_crypto_day_is_complete(cached, interval)
@@ -902,7 +914,7 @@ class PriceService:
                     needs_live_dates.append(check_date)
             else:
                 # Beyond yfinance window — DB only
-                cached = cache_service.get_intraday_prices(symbol, check_str, interval)
+                cached = cache_service.get_intraday_prices(self._cache_symbol(symbol), check_str, interval)
                 if cached:
                     db_only_prices.extend(cached)
                     logger.info(f"Intraday DB-only: {symbol} {check_str} [{interval}]")
@@ -957,7 +969,7 @@ class PriceService:
             fetch_days = 2 if days == 1 else days
             return self.crypto.get_intraday_prices(symbol, interval, fetch_days, today)
         except Exception as exc:
-            logger.error("Error fetching Coinbase intraday for %s: %s", symbol, exc)
+            logger.error("Error fetching crypto intraday for %s: %s", symbol, exc)
             if raise_errors:
                 raise
             return []
@@ -985,9 +997,10 @@ class PriceService:
         if any(float(p["price"]) <= 0 for p in prices):
             logger.warning(f"Skipping save for {symbol} {date_str} [{interval}]: non-positive price detected")
             return False
-        if not overwrite and cache_service.has_intraday_prices(symbol, date_str, interval):
+        cache_symbol = self._cache_symbol(symbol)
+        if not overwrite and cache_service.has_intraday_prices(cache_symbol, date_str, interval):
             return False
-        cache_service.save_intraday_prices(symbol, date_str, interval, prices)
+        cache_service.save_intraday_prices(cache_symbol, date_str, interval, prices)
         return True
 
     def _fetch_intraday_from_yfinance(
@@ -1124,7 +1137,7 @@ class PriceService:
         warmed = 0
         now = datetime.now()
         for symbol in symbols:
-            rows = cache_service.get_intraday_prices(symbol, today_str, interval)
+            rows = cache_service.get_intraday_prices(self._cache_symbol(symbol), today_str, interval)
             if not rows:
                 continue
             self._intraday_cache[

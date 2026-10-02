@@ -4,7 +4,7 @@ A Python-based portfolio tracking application that reads transaction data from C
 
 ## Features
 
-- **Holdings Summary**: Live stock and option prices from Yahoo Finance and Crypto prices from Coinbase Exchange
+- **Holdings Summary**: Live stock and option prices from Yahoo Finance; Crypto prices from Coinbase Exchange with an explicit Midnight source mapping
 - **Performance Charts**: Track portfolio value over time with interactive charts
 - **Asset Allocation**: Visualize portfolio distribution with a pie chart
 - **Dividend Tracking**: Monitor dividend income by asset
@@ -350,7 +350,7 @@ and rejects all network API requests.
 
 - **Backend**: Python with FastAPI
 - **Frontend**: HTML/CSS/JavaScript with Chart.js
-- **Market Data**: yfinance for stocks and options; public Coinbase Exchange data for crypto
+- **Market Data**: yfinance for stocks, options and Midnight; public Coinbase Exchange data for other crypto
 - **Data Processing**: Pandas, Pydantic
 
 
@@ -426,7 +426,15 @@ Holdings reconciliation in Chromium and WebKit.
 ## Crypto market data
 
 Crypto quotes and candles use the public Coinbase Exchange API without account
-credentials. Intraday candles are paginated and cached; daily historical charts
+credentials. Midnight (`NIGHT-USD`) is not listed on that API and uses Yahoo's
+explicit `NIGHT39064-USD` ticker for quotes, minutes, daily closes and midnight
+references. Yahoo's `NIGHT-USD` ticker identifies a different same-name asset;
+the application keeps the original ledger/display symbol and isolates its
+persistent price cache under the correct source ticker. Yahoo minute history
+has a rolling seven-day window; older minutes are available if already collected
+by this source, without inventing prices or reusing the other asset's cache.
+
+Coinbase intraday candles are paginated and cached; daily historical charts
 retain UTC daily closes, while daily P&L uses the America/New_York midnight
 hourly open, falling back to the previous hour close when necessary. Stock and
 option market data continue to use yfinance.
