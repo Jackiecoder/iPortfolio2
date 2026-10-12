@@ -1096,3 +1096,168 @@ test('new cross-currency payment accepts no quote, while explicit bad quotes ret
     assert.equal(FinanceUI.validatePayload('payments', { date: '2026-10-02', currency: 'CNY', amount: '700', exchange_rate: null }, movement), '');
     assert.match(FinanceUI.validatePayload('payments', { date: '2026-10-02', currency: 'CNY', amount: '700', exchange_rate: '0' }, movement), /大于 0/);
 });
+
+test('sales before purchase history retain native income and show the missing purchase quantity without negative available stock', () => {
+    const pending = { ...product, quantity: -2, acquired_quantity: 0, sold_quantity: 2, missing_purchase_quantity: 2, inventory_incomplete: true,
+        average_cost: null, inventory_cost: null, realized_profit: null, currency_totals: [{ currency: 'USD', purchase_cost: 0, expense_cost: 0, total_cost: 0, sales_revenue: 1200 }] };
+    const html = FinanceUI.renderProductCards([pending]);
+    assert.match(html, /记录库存/); assert.match(html, /0 箱/); assert.match(html, /待补进货 2 箱/); assert.match(html, /USD 1,200.00/);
+    assert.doesNotMatch(html, /-2 箱|已售利润/);
+    const hidden = FinanceUI.renderProductCards([pending], true);
+    assert.match(hidden, /待补进货 \*\*\* \*\*\*/);
+    for (const secret of ['2 箱', '0 箱', product.name, product.sku, product.location, '1,200.00']) assert.ok(!hidden.includes(secret), secret);
+});
+
+test('pending purchase profiles have their own inventory filter and stop being pending after purchases cover sales', () => {
+    const pending = { ...product, id: 5, quantity: -2, inventory_incomplete: true, missing_purchase_quantity: 2 };
+    const empty = { ...product, id: 6, quantity: 0, inventory_incomplete: false, missing_purchase_quantity: 0 };
+    assert.deepEqual(FinanceUI.filterProducts([product, pending, empty], [], { status: 'inventory_incomplete' }).map(p => p.id), [5]);
+    assert.deepEqual(FinanceUI.filterProducts([product, pending, empty], [], { status: 'empty' }).map(p => p.id), [6]);
+    assert.deepEqual(FinanceUI.filterProducts([product, pending, empty], [], { status: 'stocked' }).map(p => p.id), [3]);
+    assert.doesNotMatch(FinanceUI.renderProductCards([{ ...pending, quantity: 0, inventory_incomplete: false, missing_purchase_quantity: 0 }]), /待补进货/);
+});
+
+test('pending purchase profile and sale details distinguish missing costs from a missing exchange rate', async () => {
+    const pending = { ...product, quantity: -2, acquired_quantity: 0, sold_quantity: 2, missing_purchase_quantity: 2, inventory_incomplete: true,
+        average_cost: null, equivalent_cost: null, inventory_cost: null, realized_profit: null, purchase_cost: 0, expense_cost: 0, total_cost: 0, sales_revenue: 1200,
+        currency_totals: [{ currency: 'USD', purchase_cost: 0, expense_cost: 0, total_cost: 0, sales_revenue: 1200 }] };
+    const sale = { ...movement, kind: 'sale', quantity: 2, unit_price: 600, total: 1200, base_total: 1200, base_currency: 'USD', exchange_rate: 1,
+        cost_of_goods: null, realized_profit: null, inventory_incomplete: true, missing_purchase_quantity: 2, payments: [], paid_amount: 0, remaining_payment: 1200, status: 'unpaid' };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [pending], movements: [sale] }) }));
+    await f.ui.load(); f.click({ financeDetail: 'products', id: '3' });
+    const profile = f.element('financeDetailsBody').innerHTML;
+    assert.match(profile, /待补进货 2 箱/); assert.doesNotMatch(profile, /-2 箱/);
+    for (const field of ['等效单位成本（折算）', '已售利润（折算）', '剩余库存成本（折算）']) assert.ok(profile.includes(`<dt>${field}</dt><dd>待补进货</dd>`), field);
+    assert.match(profile, /USD 1,200.00/); assert.match(profile, /购买日期可以晚于销售/);
+    f.click({ financeDetail: 'movements', id: '4' });
+    const detail = f.element('financeDetailsBody').innerHTML;
+    assert.match(detail, /待补进货 2 箱/);
+    for (const field of ['销售等效成本（折算）', '销售利润（折算）']) assert.ok(detail.includes(`<dt>${field}</dt><dd>待补进货</dd>`), field);
+    assert.doesNotMatch(detail, /<dd>未折算<\/dd>/);
+    const row = FinanceUI.renderRows([sale], 'movements', [pending]);
+    assert.match(row, /成本与利润待补进货后计算/); assert.match(row, /USD 1,200.00/);
+    assert.doesNotMatch(row, /汇率可稍后填写/);
+});
+
+test('empty product sale can save first while known-rate preview postpones profit until purchase history exists', async () => {
+    const empty = { ...product, quantity: 0, acquired_quantity: 0, sold_quantity: 0, average_cost: 0, total_cost: 0, inventory_incomplete: false, missing_purchase_quantity: 0 };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [empty], movements: [] }) }));
+    await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
+    f.fields.get('kind').value = 'sale'; f.fields.get('quantity').value = '2'; f.fields.get('unit_price').value = '600';
+    f.element('financeForm').listeners.change({ target: { name: 'kind' } });
+    assert.match(f.element('financeMovementHint').textContent, /可以先保存销售/);
+    assert.match(f.element('financeMovementConversionHint').textContent, /成本与利润待补进货后计算/);
+    assert.doesNotMatch(f.element('financeMovementConversionHint').textContent, /当前成本预估利润/);
+    await f.submit(); const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.kind, 'sale'); assert.equal(payload.quantity, '2'); assert.equal(payload.unit_price, '600');
+    assert.equal(payload.exchange_rate, '1');
+});
+
+test('sale preview suppresses profit for oversales and removes an edited acquisition from proposed stock', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
+    f.fields.get('kind').value = 'sale'; f.fields.get('quantity').value = '9'; f.fields.get('unit_price').value = '100';
+    f.element('financeForm').listeners.change({ target: { name: 'quantity' } });
+    assert.match(f.element('financeMovementConversionHint').textContent, /待补进货/);
+    assert.doesNotMatch(f.element('financeMovementConversionHint').textContent, /当前成本预估利润/);
+    f.fields.get('quantity').value = '8'; f.element('financeForm').listeners.change({ target: { name: 'quantity' } });
+    assert.match(f.element('financeMovementConversionHint').textContent, /当前成本预估利润 USD 640.00/);
+    const editable = fixture(); editable.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [{ ...movement, payments: [] }] }) }));
+    await editable.ui.load(); editable.click({ financeEdit: 'movements', id: '4' }, true);
+    editable.fields.get('kind').value = 'sale'; editable.fields.get('quantity').value = '1';
+    editable.element('financeForm').listeners.change({ target: { name: 'kind' } });
+    assert.match(editable.element('financeMovementConversionHint').textContent, /待补进货/);
+    assert.doesNotMatch(editable.element('financeMovementConversionHint').textContent, /当前成本预估利润/);
+});
+
+test('quantity transactions can leave prices blank while expenses still require an actual amount', async () => {
+    for (const kind of ['purchase', 'sale', 'opening']) {
+        const f = fixture(); await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
+        f.fields.get('kind').value = kind; f.fields.get('quantity').value = '2';
+        f.element('financeForm').listeners.change({ target: { name: 'kind' } });
+        assert.doesNotMatch(f.element('financeFormFields').innerHTML, /name="unit_price"[^>]*required/);
+        assert.equal(f.fields.get('total_amount').required, false);
+        assert.equal(f.element('financeMovementTotal').textContent, '待补价格（可先保存）');
+        assert.match(f.element('financeMovementConversionHint').textContent, /未填价格不视为零价赠送/);
+        await f.submit(); const payload = JSON.parse(f.requests.at(-1).body);
+        assert.equal(payload.unit_price, null); assert.equal(payload.total_amount, null); assert.equal(payload.quantity, '2');
+    }
+    const f = fixture(); await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
+    f.fields.get('kind').value = 'sale'; f.fields.get('quantity').value = '2'; f.fields.get('price_mode').value = 'total';
+    f.element('financeForm').listeners.change({ target: { name: 'price_mode' } });
+    await f.submit(); const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.total_amount, null); assert.equal(payload.unit_price, null);
+    assert.equal(FinanceUI.validatePayload('movements', { date: '2026-10-01', product_id: 3, kind: 'sale', quantity: '2', unit_price: null, total_amount: null, paid_amount: '20' }), '');
+    assert.match(FinanceUI.validatePayload('movements', { date: '2026-10-01', product_id: 3, kind: 'expense', category: '物流', total_amount: null, paid_amount: '0' }), /费用金额/);
+    f.click({ financeProductTransaction: '', id: '3' }, true); f.fields.get('kind').value = 'expense'; f.element('financeForm').listeners.change({ target: { name: 'kind' } });
+    assert.equal(f.fields.get('total_amount').required, true);
+});
+
+test('editing can clear a known price explicitly and restore an unknown price for exact later backfill', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeEdit: 'movements', id: '4' }, true);
+    f.fields.get('unit_price').value = ''; f.element('financeForm').listeners.change({ target: { name: 'unit_price' } });
+    await f.submit(); let payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.unit_price, null); assert.equal(payload.total_amount, null); assert.equal(payload.version, 2);
+    const unknown = { ...movement, unit_price: null, total: null, base_total: null, price_pending: true, price_basis: 'pending', remaining_payment: null, confirmed_remaining_payment: null, status: 'pending_price', payments: [],
+        request_fields: { date: '2026-10-01', product_id: 3, kind: 'purchase', quantity: '10', unit_price: null, total_amount: null, currency: 'USD', exchange_rate: '1', paid_amount: '30' } };
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [unknown] }) }));
+    await f.ui.load(true); f.click({ financeEdit: 'movements', id: '4' }, true);
+    assert.equal(f.fields.get('unit_price').value, ''); assert.equal(f.fields.get('total_amount').value, '');
+    f.fields.get('unit_price').value = '33.333333'; await f.submit(); payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.unit_price, '33.333333'); assert.equal(payload.total_amount, undefined); assert.equal(payload.paid_amount, '30');
+});
+
+test('an explicit unit price basis is retained when saved request fields have an opposite null price', async () => {
+    const f = fixture(); const record = { ...movement, price_basis: 'unit', request_fields: { ...movement, unit_price: '20', total_amount: null } };
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [record] }) }));
+    await f.ui.load(); f.click({ financeEdit: 'movements', id: '4' }, true);
+    assert.equal(f.fields.get('price_mode').value, 'unit'); assert.equal(f.fields.get('unit_price').value, '20');
+    await f.submit(); const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.unit_price, '20'); assert.equal(payload.total_amount, undefined);
+});
+
+test('unknown sale prices remain pending in the timeline and details without masquerading as gifts or missing FX', async () => {
+    const unknown = { ...movement, kind: 'sale', quantity: 2, unit_price: null, total: null, base_total: null, exchange_rate: 1, price_pending: true, price_basis: 'pending',
+        status: 'pending_price', remaining_payment: null, confirmed_remaining_payment: null, initial_paid_amount: 30, paid_amount: 30, realized_profit: null, cost_of_goods: 40, payments: [] };
+    const row = FinanceUI.renderRows([unknown], 'movements', [product]);
+    assert.match(row, /待补价格/); assert.doesNotMatch(row, /USD 0.00|无需收款|零价出货|已收清|已结清|汇率可稍后填写/);
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [unknown] }) }));
+    await f.ui.load(); f.click({ financeDetail: 'movements', id: '4' });
+    const detail = f.element('financeDetailsBody').innerHTML;
+    assert.match(detail, /<dt>本笔交易总价<\/dt><dd>待补价格<\/dd>/);
+    assert.match(detail, /<dt>待收金额<\/dt><dd>待补价格<\/dd>/);
+    assert.match(detail, /<dt>销售等效成本（折算）<\/dt><dd>USD 40.00<\/dd>/);
+    assert.match(detail, /<dt>销售利润（折算）<\/dt><dd>待补价格<\/dd>/);
+    assert.doesNotMatch(detail, /USD 0.00|有收付待折抵|<dd>未折算<\/dd>/);
+    assert.match(f.element('financeDetailsActions').innerHTML, /data-finance-payment="movements"/);
+    f.click({ financePayment: 'movements', id: '4' }, true);
+    assert.equal(f.fields.get('amount').value, ''); assert.match(f.element('financeFormIntro').textContent, /交易总价待补/);
+    f.fields.get('amount').value = '500'; f.element('financeForm').listeners.change({ target: { name: 'amount' } });
+    assert.match(f.element('financePaymentHint').textContent, /尚未结清金额暂不计算/);
+    await f.submit(); assert.equal(JSON.parse(f.requests.at(-1).body).amount, '500');
+});
+
+test('native totals show known subtotals and pending price counts with privacy masking', async () => {
+    const unknown = { ...product, total_cost: null, average_cost: null, inventory_cost: null, realized_profit: null, sales_revenue: null,
+        price_pending: true, pending_purchase_price_count: 1, pending_sale_price_count: 2,
+        currency_totals: [{ currency: 'USD', purchase_cost: null, expense_cost: 5, total_cost: null, sales_revenue: null,
+            known_purchase_cost: 200, known_expense_cost: 5, known_total_cost: 205, known_sales_revenue: 300,
+            pending_purchase_price_count: 1, pending_sale_price_count: 2 }] };
+    const card = FinanceUI.renderProductCards([unknown]);
+    for (const text of ['USD 205.00', 'USD 300.00', '已知金额', '1 笔待补价格', '2 笔待补价格']) assert.ok(card.includes(text), text);
+    const hidden = FinanceUI.renderProductCards([unknown], true);
+    for (const text of ['205', '300', '1 笔', '2 笔', product.name]) assert.ok(!hidden.includes(text), text);
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [unknown], summary: [{ currency: 'USD', inventory_spend: null, inventory_income: null, known_inventory_spend: 205, known_inventory_income: 300, pending_inventory_spend_count: 1, pending_inventory_income_count: 2, inventory_cost: null, payable: 0, receivable: 0 }] }) }));
+    await f.ui.load(); assert.match(f.element('financeOverview').innerHTML, /库存成本<\/span><strong>待补价格/);
+    f.click({ financeSection: 'movements' });
+    const summary = f.element('financeOverview').innerHTML;
+    for (const text of ['USD 205.00', 'USD 300.00', '已知金额', '1 笔待补价格', '2 笔待补价格']) assert.ok(summary.includes(text), text);
+    f.click({ financeDetail: 'products', id: '3' }); const profile = f.element('financeDetailsBody').innerHTML;
+    for (const field of ['累计成本（折算）', '等效单位成本（折算）', '已售利润（折算）']) assert.ok(profile.includes(`<dt>${field}</dt><dd>待补价格</dd>`), field);
+    assert.match(profile, /USD 200.00/);
+});
+
+test('default overview stock cost explains missing purchase history independently from currency conversion', async () => {
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [{ ...product, quantity: -2, inventory_incomplete: true, missing_purchase_quantity: 2 }], summary: [{ currency: 'USD', inventory_cost: null }] }) }));
+    await f.ui.load(); assert.match(f.element('financeOverview').innerHTML, /库存成本<\/span><strong>待补进货/);
+    assert.doesNotMatch(f.element('financeOverview').innerHTML, /未折算/);
+});

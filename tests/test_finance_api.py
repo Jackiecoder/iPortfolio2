@@ -7,7 +7,8 @@ import httpx
 
 from app import main
 from app import finance_api
-from app.finance import FinanceError, InventoryPaymentCreate, InventoryPaymentUpdate, request_data
+from app.finance import (FinanceError, InventoryPaymentCreate, InventoryPaymentUpdate,
+                         ProductCreate, empty_state, replay, request_data)
 
 
 class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
@@ -228,6 +229,79 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 422)
             self.assertEqual(update.call_count, 2)
 
+    async def test_sale_first_response_exposes_pending_cost_and_later_purchase_recalculates(self):
+        state = empty_state()
+        state['products'].append(dict(request_data(ProductCreate(request_id=uuid4(), name='Tea')),
+                                      id=1, version=1, voided=False))
+
+        def write(kind, request):
+            self.assertEqual(kind, 'movements')
+            state[kind].append(dict(request_data(request), id=len(state[kind]) + 1,
+                                    version=1, voided=False, payments=[]))
+            return replay(state)
+
+        with patch.object(finance_api.repository, 'create_record', side_effect=write), \
+             patch.object(main, '_queue_ledger_reload') as investment_reload:
+            sale = dict(date='2026-01-01', product_id=1, kind='sale', quantity=2,
+                        total_amount=50, handler='Seller', request_id=str(uuid4()))
+            response = await self.client.post('/api/finance/movements', json=sale, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            item, saved = response.json()['products'][0], response.json()['movements'][0]
+            self.assertEqual((item['quantity'], item['inventory_incomplete'], item['missing_purchase_quantity']), (-2, True, 2))
+            self.assertIsNone(saved['cost_of_goods'])
+            self.assertIsNone(saved['realized_profit'])
+            self.assertEqual(item['currency_totals'][0]['sales_revenue'], 50)
+            for index, date_value in enumerate(('2026-01-04', '2026-01-05')):
+                response = await self.client.post('/api/finance/movements', json=dict(
+                    date=date_value, product_id=1, kind='purchase', quantity=1,
+                    total_amount=10, request_id=str(uuid4())), headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                item = response.json()['products'][0]
+                self.assertEqual(item['inventory_incomplete'], index == 0)
+            self.assertEqual((item['quantity'], item['missing_purchase_quantity'], item['realized_profit']), (0, 0, 30))
+            saved = next(entry for entry in response.json()['movements'] if entry['kind'] == 'sale')
+            self.assertEqual((saved['cost_of_goods'], saved['realized_profit'], saved['handler']), (20, 30, 'Seller'))
+            investment_reload.assert_not_called()
+
+    async def test_quantity_transactions_accept_unknown_price_and_explicit_price_clear(self):
+        body = dict(date='2026-01-01', product_id=1, kind='sale', quantity=2,
+                    paid_amount=10, unit_price=None, total_amount=None, request_id=str(uuid4()))
+        with patch.object(finance_api.repository, 'create_record', return_value=self.state) as create, \
+             patch.object(finance_api.repository, 'update_record', return_value=self.state) as update:
+            for kind in ('sale', 'purchase'):
+                response = await self.client.post('/api/finance/movements',
+                    json={**body, 'kind': kind}, headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                fields = request_data(create.call_args.args[1])
+                self.assertNotIn('unit_price', fields)
+                self.assertNotIn('total_amount', fields)
+                self.assertEqual(fields['paid_amount'], '10')
+            response = await self.client.post('/api/finance/movements',
+                json={**body, 'kind': 'opening', 'paid_amount': 0}, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            values = {key: value for key, value in body.items() if key != 'request_id'}
+            response = await self.client.put('/api/finance/movements/7',
+                json={**values, 'version': 1}, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            fields = request_data(update.call_args.args[2])
+            self.assertIsNone(fields['unit_price'])
+            self.assertIsNone(fields['total_amount'])
+            values.pop('unit_price')
+            values.pop('total_amount')
+            response = await self.client.put('/api/finance/movements/7',
+                json={**values, 'version': 2}, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            fields = request_data(update.call_args.args[2])
+            self.assertNotIn('unit_price', fields)
+            self.assertNotIn('total_amount', fields)
+            for values in (dict(quantity=None), dict(kind='expense', category='Shipping'),
+                           dict(kind='opening'), dict(total_amount=9)):
+                response = await self.client.post('/api/finance/movements',
+                    json={**body, **values}, headers=self.headers)
+                self.assertEqual(response.status_code, 422)
+            self.assertEqual(create.call_count, 3)
+            self.assertEqual(update.call_count, 2)
+
     async def test_product_transactions_support_total_prices_custom_costs_and_handlers(self):
         purchase = dict(date='2026-01-01', product_id=1, kind='purchase', quantity=3,
                         total_amount=100, handler='  Kevin  ', request_id=str(uuid4()))
@@ -268,7 +342,7 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
                 response = await self.client.post('/api/finance/movements',
                     json={**expense, **changed}, headers=self.headers)
                 self.assertEqual(response.status_code, 422)
-            for changed in (dict(quantity=None), dict(unit_price=34), dict(total_amount=None)):
+            for changed in (dict(quantity=None), dict(unit_price=34)):
                 response = await self.client.post('/api/finance/movements',
                     json={**expense, 'kind': 'sale', 'quantity': 3, 'total_amount': 100, **changed}, headers=self.headers)
                 self.assertEqual(response.status_code, 422)

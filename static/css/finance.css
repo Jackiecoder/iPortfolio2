@@ -113,6 +113,9 @@
 .finance-product-card-values dt { color: #76879a; font-size: .74rem; font-weight: 400; margin-bottom: 6px; }
 .finance-product-card-values dd { font-size: .97rem; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
 .finance-product-card-values .is-income { color: #087f65; }
+.finance-native-amount small { color: #8a6224; display: inline; font-size: .74rem; font-weight: 400; }
+.finance-inventory-pending { background: #fff7e7; border: 1px solid #f0dfb9; border-radius: 8px; color: #8a6224; font-size: .78rem; line-height: 1.7; margin: 16px 0; overflow-wrap: anywhere; padding: 10px 12px; }
+.finance-product-card .finance-inventory-pending { color: #8a6224; margin: 0 0 16px; }
 .finance-profile-button { align-items: center; display: flex; font-size: .8rem; justify-content: space-between; padding: 9px 12px; width: 100%; }
 .finance-profile-button:focus-visible { outline: 2px solid #087f65; outline-offset: 3px; }
 .finance-profile-meta { color: #76879a; display: flex; flex-wrap: wrap; font-size: .78rem; gap: 8px 18px; margin-bottom: 22px; }

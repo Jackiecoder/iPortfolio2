@@ -40,7 +40,10 @@ Old records without names remain blank rather than inferring participants.
   location, stock, and income/expense totals in each original currency. Add transactions inside that profile:
   purchases, sales, opening stock, and expenses with a custom category such as
   logistics or packaging. Purchase and sale entries accept quantity with either
-  unit price or total price. An entered total is saved exactly, even when the
+  unit price or total price; either price can be left blank and filled in later.
+  A missing price is pending, while an explicit zero price records a gift or
+  zero-cost acquisition. Known income/expense subtotals remain visible alongside
+  the number of prices still missing. An entered total is saved exactly, even when the
   implied unit price is a repeating decimal. Each transaction and later payment
   can record an independent handler, payer, and recipient.
   Equivalent unit cost is the profile's total purchase/opening cost plus all
@@ -49,8 +52,17 @@ Old records without names remain blank rather than inferring participants.
   correcting a purchase or expense updates the profile's unit cost and earlier
   sales' profit. Use separate profiles/SKUs when batches should have separate
   costs. Before any stock is acquired, expenses remain visible as unallocated
-  cost and unit cost awaits a purchase. Stock availability is still validated
-  chronologically, so backdated changes cannot cause historical overselling.
+  cost and unit cost awaits a purchase. Sales can be recorded before purchase
+  history is complete. The profile shows the quantity of purchases still missing;
+  its raw recorded stock is acquired units minus sold units. Until acquisitions
+  cover all recorded sales, unit cost, inventory value and sales profit remain
+  pending rather than using a fictitious zero cost. A missing purchase price
+  similarly leaves cost/profit pending; a missing sale price leaves its revenue
+  and profit pending. Later purchases, including
+  entries dated after sales, automatically recalculate the product cost pool.
+  Actual receipts/payments can also be recorded while an invoice price is
+  pending. Its remaining balance stays unknown until a price is entered; the
+  entered invoice total cannot be less than payments already confirmed.
   Each profile has an optional conversion view using its accounting currency;
   transactions and later payments can be saved in another currency without
   entering an exchange rate. Native-currency expense and income totals remain
@@ -80,9 +92,10 @@ original currencies, summarized independently without inventing exchange rates.
 Saved amounts and quantities use exact Decimal math with up to six decimal
 places and half-even rounding; inventory exchange rates allow twelve decimal
 places. Records can be corrected or voided while retaining
-history; changes have version checks and transactional audit records. Backdated
-changes cannot create negative historical stock, and repayment/payment totals
-cannot exceed the original principal/invoice. Duplicate create retries use a
+history; changes have version checks and transactional audit records. Correcting
+or voiding a purchase may return the profile to pending purchase history; it does
+not remove its sales. Repayment/payment totals cannot exceed the original
+principal/invoice. Duplicate create retries use a
 stable request ID. If a response is lost, the UI checks the recorded result and
 reuses that request ID when retrying the same creation. APIs use the existing application-token authentication and
 are never cached by the service worker. The anonymous toggle also masks this tab.
@@ -90,6 +103,10 @@ are never cached by the service worker. The anonymous toggle also masks this tab
 The inventory flow and payment-status conventions reference
 [cmpManager](https://github.com/Jackiecoder/cmpManager); this personal ledger adds
 product cost pools and sales profit calculations.
+
+After sale-first or unpriced movements have been saved, a rollback must retain
+support for those records. Older Finance releases reject incomplete inventory
+or cannot read missing prices; retaining their revision alone is insufficient.
 
 ## Installation
 

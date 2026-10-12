@@ -1,4 +1,4 @@
-"""Financial balance and chronological inventory replay regression tests."""
+"""Financial balances and product-level inventory replay regression tests."""
 from copy import deepcopy
 from decimal import Decimal
 import json
@@ -188,7 +188,7 @@ class ProductTransactionLedgerTests(unittest.TestCase):
                        dict(handler='a' * 201)):
             with self.subTest(fields=fields), self.assertRaises(ValidationError):
                 self.expense(**fields)
-        for fields in (dict(quantity=None), dict(total_amount=None), dict(total_amount=99, unit_price=33),
+        for fields in (dict(quantity=None), dict(total_amount=99, unit_price=33),
                        dict(total_amount=100, unit_price=33), dict(paid_amount=101)):
             if fields == dict(total_amount=99, unit_price=33):
                 self.assertNotIn('unit_price', self.transaction(**fields))
@@ -196,6 +196,97 @@ class ProductTransactionLedgerTests(unittest.TestCase):
                 with self.subTest(fields=fields), self.assertRaises(ValidationError):
                     self.transaction(**fields)
         self.assertEqual(self.transaction(kind='sale', total_amount=0)['total_amount'], '0')
+        self.assertNotIn('total_amount', self.transaction(total_amount=None))
+
+    def test_unknown_price_requests_keep_legacy_canonical_prices_and_explicit_update_clear(self):
+        fields = dict(date='2026-01-01', product_id=1, kind='sale', quantity=2, request_id=uuid4())
+        omitted = request_data(MovementCreate(**fields))
+        explicit = request_data(MovementCreate(**fields, unit_price=None, total_amount=None))
+        self.assertEqual(omitted, explicit)
+        self.assertNotIn('unit_price', omitted)
+        self.assertNotIn('total_amount', omitted)
+        fields.pop('request_id')
+        untouched = request_data(MovementUpdate(**fields, version=1))
+        self.assertNotIn('unit_price', untouched)
+        self.assertNotIn('total_amount', untouched)
+        clear = request_data(MovementUpdate(**fields, unit_price=None, total_amount=None, version=1))
+        self.assertIsNone(clear['unit_price'])
+        self.assertIsNone(clear['total_amount'])
+
+    def test_unknown_sale_price_allocates_known_cost_but_never_becomes_zero_price_gift(self):
+        self.state['movements'] = [self.transaction(quantity=3, total_amount=30),
+            self.transaction(2, date='2026-01-03', kind='sale', quantity=2, total_amount=None)]
+        result = replay(self.state)
+        item, sale = result['products'][0], result['movements'][0]
+        self.assertEqual((sale['price_pending'], sale['price_basis'], sale['conversion_pending'], sale['status']), (True, 'pending', False, 'pending_price'))
+        for key in ('total', 'base_total', 'unit_price', 'realized_profit', 'remaining_payment', 'confirmed_remaining_payment'):
+            self.assertIsNone(sale[key])
+        self.assertEqual((sale['cost_of_goods'], item['average_cost'], item['inventory_cost']), (20, 10, 10))
+        self.assertEqual((item['price_pending'], item['pending_purchase_price_count'], item['pending_sale_price_count']), (True, 0, 1))
+        self.assertFalse(item['inventory_incomplete'])
+        self.assertIsNone(item['sales_revenue'])
+        self.assertIsNone(item['realized_profit'])
+        native = item['currency_totals'][0]
+        self.assertEqual((native['known_total_cost'], native['known_sales_revenue'], native['pending_sale_price_count']), (30, 0, 1))
+        self.assertIsNone(native['sales_revenue'])
+        self.assertIsNone(native['net_income'])
+        self.assertIsNone(result['summary'][0]['inventory_income'])
+        self.assertEqual(result['summary'][0]['known_inventory_income'], 0)
+        self.state['movements'][1]['total_amount'] = '0'
+        sale = replay(self.state)['movements'][0]
+        self.assertEqual((sale['price_pending'], sale['total'], sale['realized_profit'], sale['status']), (False, 0, -20, 'paid'))
+
+    def test_unknown_purchase_price_keeps_real_known_subtotals_without_fabricated_pool_cost(self):
+        self.state['movements'] = [self.transaction(total_amount=None), self.expense(2, total_amount=5),
+            self.transaction(3, date='2026-01-03', quantity=1, total_amount=10),
+            self.transaction(4, date='2026-01-04', kind='sale', quantity=2, total_amount=60)]
+        result = replay(self.state)
+        item, native = result['products'][0], result['products'][0]['currency_totals'][0]
+        self.assertEqual((item['quantity'], item['inventory_incomplete'], item['conversion_pending'], item['price_pending']), (2, False, False, True))
+        for key in ('purchase_cost', 'total_cost', 'average_cost', 'inventory_cost', 'realized_profit'):
+            self.assertIsNone(item[key])
+        self.assertEqual((native['known_purchase_cost'], native['known_expense_cost'], native['known_total_cost'],
+                          native['known_sales_revenue'], native['pending_purchase_price_count']), (10, 5, 15, 60, 1))
+        self.assertIsNone(native['purchase_cost'])
+        self.assertIsNone(native['total_cost'])
+        self.assertIsNone(native['net_income'])
+        summary = result['summary'][0]
+        self.assertEqual((summary['known_inventory_spend'], summary['known_inventory_income'],
+                          summary['pending_inventory_spend_count']), (15, 60, 1))
+        self.assertIsNone(summary['inventory_spend'])
+        self.state['movements'][0]['total_amount'] = '30'
+        item = replay(self.state)['products'][0]
+        self.assertEqual((item['price_pending'], item['total_cost'], item['inventory_cost'], item['realized_profit']), (False, 45, 22.5, 37.5))
+
+    def test_unknown_invoice_price_retains_actual_payments_and_later_amount_guard(self):
+        sale = self.transaction(date='2026-01-01', kind='sale', quantity=2, total_amount=None, paid_amount=10)
+        sale['payments'] = [inventory_payment(amount=20)]
+        self.state['movements'] = [sale]
+        first = replay(self.state)['movements'][0]
+        self.assertEqual((first['paid_amount'], first['status']), (30, 'pending_price'))
+        self.assertIsNone(first['remaining_payment'])
+        sale['total_amount'] = '29'
+        with self.assertRaisesRegex(FinanceError, 'Payments cannot exceed'):
+            replay(self.state)
+        sale['total_amount'] = '30'
+        saved = replay(self.state)['movements'][0]
+        self.assertEqual((saved['paid_amount'], saved['remaining_payment'], saved['price_pending'], saved['status']), (30, 0, False, 'paid'))
+        self.assertIsNone(saved['realized_profit'])  # Purchase history is still incomplete.
+
+    def test_pending_price_and_pending_conversion_are_separate_including_opening_stock(self):
+        self.state['movements'] = [self.transaction(currency='CNY', exchange_rate='.1', total_amount=None),
+                                  self.transaction(2, date='2026-01-03', kind='opening', quantity=1, total_amount=None),
+                                  self.transaction(3, date='2026-01-04', kind='sale', quantity=1, total_amount=50)]
+        result = replay(self.state)
+        self.assertTrue(result['products'][0]['price_pending'])
+        self.assertFalse(result['products'][0]['conversion_pending'])
+        entries = {entry['id']: entry for entry in result['movements']}
+        self.assertEqual((entries[1]['price_pending'], entries[1]['conversion_pending']), (True, False))
+        self.assertEqual((entries[2]['price_pending'], entries[2]['status']), (True, 'pending_price'))
+        self.state['movements'][0].pop('exchange_rate')
+        result = replay(self.state)
+        self.assertTrue(result['products'][0]['conversion_pending'])
+        self.assertTrue(result['products'][0]['price_pending'])
 
     def test_total_amount_stays_exact_without_unit_price_round_trip(self):
         buy = self.transaction(total_amount=1, handler='  Kevin  ')
@@ -245,7 +336,7 @@ class ProductTransactionLedgerTests(unittest.TestCase):
         fee['voided'] = True
         self.assertEqual(replay(self.state)['products'][0]['realized_profit'], 15)
 
-    def test_pooled_cost_accounts_for_later_purchases_without_allowing_backdated_oversales(self):
+    def test_pooled_cost_accounts_for_later_purchases_even_after_sale_date(self):
         self.state['movements'] = [movement(quantity=2, unit_price=10),
             movement(2, date='2026-01-03', kind='sale', quantity=1, unit_price=30),
             movement(3, date='2026-01-04', quantity=2, unit_price=20)]
@@ -254,8 +345,80 @@ class ProductTransactionLedgerTests(unittest.TestCase):
         self.assertEqual((sale['cost_of_goods'], sale['realized_profit']), (15, 15))
         self.assertEqual((result['products'][0]['quantity'], result['products'][0]['inventory_cost']), (3, 45))
         self.state['movements'][1]['quantity'] = '3'
-        with self.assertRaisesRegex(FinanceError, 'Insufficient inventory'):
-            replay(self.state)
+        result = replay(self.state)
+        item = result['products'][0]
+        sale = next(entry for entry in result['movements'] if entry['kind'] == 'sale')
+        self.assertEqual((item['quantity'], item['inventory_cost'], item['inventory_incomplete']), (1, 15, False))
+        self.assertEqual((sale['cost_of_goods'], sale['realized_profit']), (45, 45))
+
+    def test_sales_before_purchases_keep_native_income_and_pending_cost_then_recalculate(self):
+        sale = self.transaction(date='2026-01-01', kind='sale', quantity=3, total_amount=90, handler='Seller')
+        gift = self.transaction(2, date='2026-01-02', kind='sale', quantity=1, total_amount=0)
+        self.state['movements'] = [sale, gift]
+        first = replay(self.state)
+        item = first['products'][0]
+        self.assertEqual((item['quantity'], item['missing_purchase_quantity'], item['inventory_incomplete']), (-4, 4, True))
+        self.assertEqual((item['total_cost'], item['unallocated_cost'], item['sales_revenue']), (0, 0, 90))
+        for key in ('average_cost', 'equivalent_cost', 'inventory_cost', 'realized_profit'):
+            self.assertIsNone(item[key])
+        for entry in first['movements']:
+            self.assertEqual((entry['inventory_incomplete'], entry['missing_purchase_quantity']), (True, 4))
+            self.assertIsNone(entry['cost_of_goods'])
+            self.assertIsNone(entry['realized_profit'])
+            self.assertIsNone(entry['calculation_fields']['cost_of_goods'])
+        self.assertEqual((item['currency_totals'][0]['total_cost'], item['currency_totals'][0]['sales_revenue'],
+                          item['currency_totals'][0]['net_income']), (0, 90, 90))
+        self.assertEqual((first['summary'][0]['inventory_spend'], first['summary'][0]['inventory_income']), (0, 90))
+        self.assertIsNone(first['summary'][0]['inventory_cost'])
+        self.assertIsNone(first['summary'][0]['realized_profit'])
+
+        self.state['movements'].extend([self.transaction(3, date='2026-01-05', quantity=2, total_amount=20),
+                                       self.expense(4, date='2026-01-06', total_amount=4)])
+        partial = replay(self.state)['products'][0]
+        self.assertEqual((partial['quantity'], partial['missing_purchase_quantity'], partial['total_cost'],
+                          partial['unallocated_cost']), (-2, 2, 24, 24))
+        self.assertIsNone(partial['currency_totals'][0]['equivalent_cost'])
+        self.assertIsNone(partial['realized_profit'])
+
+        self.state['movements'].append(self.transaction(5, date='2026-01-08', quantity=3, total_amount=30))
+        complete = replay(self.state)
+        item = complete['products'][0]
+        entries = {entry['id']: entry for entry in complete['movements']}
+        self.assertEqual((item['quantity'], item['missing_purchase_quantity'], item['inventory_incomplete']), (1, 0, False))
+        self.assertEqual((item['total_cost'], item['average_cost'], item['inventory_cost'], item['unallocated_cost'],
+                          item['realized_profit']), (54, 10.8, 10.8, 0, 46.8))
+        self.assertEqual((entries[1]['cost_of_goods'], entries[1]['realized_profit'], entries[1]['handler']), (32.4, 57.6, 'Seller'))
+        self.assertEqual((entries[2]['cost_of_goods'], entries[2]['realized_profit']), (10.8, -10.8))
+        self.assertEqual(sum(Decimal(entry['calculation_fields']['cost_of_goods'])
+                             for entry in complete['movements'] if entry['kind'] == 'sale')
+                         + Decimal(str(item['inventory_cost'])), Decimal(54))
+
+    def test_missing_purchase_history_and_missing_fx_are_independent(self):
+        self.state['movements'] = [self.transaction(date='2026-01-01', kind='sale', quantity=2,
+                                                   total_amount=50, currency='USD'),
+                                  self.transaction(2, date='2026-01-02', quantity=1, total_amount=70, currency='CNY')]
+        partial = replay(self.state)['products'][0]
+        self.assertEqual((partial['inventory_incomplete'], partial['conversion_pending'], partial['missing_purchase_quantity']), (True, True, 1))
+        self.state['movements'].append(self.transaction(3, date='2026-01-04', quantity=1, total_amount=70, currency='CNY'))
+        enough = replay(self.state)['products'][0]
+        self.assertEqual((enough['inventory_incomplete'], enough['conversion_pending'], enough['quantity']), (False, True, 0))
+        self.assertIsNone(enough['realized_profit'])
+        native = {row['currency']: row for row in enough['currency_totals']}
+        self.assertEqual((native['CNY']['total_cost'], native['USD']['sales_revenue']), (140, 50))
+        for entry in self.state['movements'][1:]:
+            entry['exchange_rate'] = '.1'
+        complete = replay(self.state)['products'][0]
+        self.assertEqual((complete['inventory_incomplete'], complete['conversion_pending'], complete['total_cost'],
+                          complete['realized_profit']), (False, False, 14, 36))
+
+    def test_sale_first_fractional_allocations_conserve_every_micro_unit(self):
+        self.state['movements'] = [self.transaction(date='2026-01-01', kind='sale', quantity='.1', total_amount=1),
+            self.transaction(2, date='2026-01-02', kind='sale', quantity='.2', total_amount=2),
+            self.transaction(3, date='2026-01-03', quantity='.4', total_amount='.000003')]
+        result = replay(self.state)
+        costs = [Decimal(entry['calculation_fields']['cost_of_goods']) for entry in result['movements'] if entry['kind'] == 'sale']
+        self.assertTrue(all(cost >= 0 for cost in costs))
+        self.assertEqual(sum(costs) + Decimal(str(result['products'][0]['inventory_cost'])), Decimal('.000003'))
 
     def test_fractional_sales_allocate_every_micro_unit_once_and_void_rebalances(self):
         self.state['movements'] = [self.transaction(quantity='.3'),
@@ -775,21 +938,25 @@ class FinanceReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(FinanceError, 'Payments cannot exceed'):
             replay(self.state)
 
-    def test_backdated_sale_or_voided_purchase_cannot_create_negative_stock(self):
+    def test_backdated_sale_or_voided_purchase_can_leave_pending_purchase_history(self):
         self.state['movements'] = [movement(), movement(2, date='2026-01-01', kind='sale', quantity=1)]
-        with self.assertRaisesRegex(FinanceError, 'Insufficient inventory'):
-            replay(self.state)
+        item = replay(self.state)['products'][0]
+        self.assertEqual((item['quantity'], item['inventory_incomplete'], item['realized_profit']), (9, False, 0))
         self.state['movements'][1]['date'] = '2026-01-03'
         self.state['movements'][0]['voided'] = True
-        with self.assertRaisesRegex(FinanceError, 'Insufficient inventory'):
-            replay(self.state)
+        result = replay(self.state)
+        item, sale = result['products'][0], result['movements'][0]
+        self.assertEqual((item['quantity'], item['inventory_incomplete'], item['missing_purchase_quantity']), (-1, True, 1))
+        self.assertIsNone(item['realized_profit'])
+        self.assertIsNone(sale['cost_of_goods'])
 
-    def test_same_date_respects_stable_creation_order(self):
+    def test_same_date_creation_order_does_not_restrict_recording_sales_first(self):
         self.state['movements'] = [movement(2, kind='sale', quantity=10), movement(1)]
         self.assertEqual(replay(self.state)['products'][0]['quantity'], 0)
         self.state['movements'][0]['id'] = 0
-        with self.assertRaises(FinanceError):
-            replay(self.state)
+        result = replay(self.state)
+        self.assertEqual((result['products'][0]['quantity'], result['products'][0]['inventory_incomplete']), (0, False))
+        self.assertEqual(result['movements'][1]['cost_of_goods'], 100)
 
     def test_last_sale_clears_rounding_residue(self):
         self.state['movements'] = [movement(quantity=3, unit_price='0.333333'),

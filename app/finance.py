@@ -1,6 +1,7 @@
 """Independent financial ledger, validated with exact decimal arithmetic.
 
-Inventory uses product-level pooled cost, with chronological stock validation.
+Inventory uses product-level pooled cost and permits purchases to be recorded
+after sales. Cost allocation waits until recorded acquisitions cover sales.
 These records never become investment transactions or contribute to the
 portfolio's cash or performance.
 """
@@ -295,13 +296,12 @@ class MovementFields(MoneyActors):
         else:
             if self.quantity is None:
                 raise ValueError('Enter the transaction quantity')
-            if self.unit_price is None and self.total_amount is None:
-                raise ValueError('Enter a unit price or total amount')
             if self.unit_price is not None and self.total_amount is not None and rounded(
                     self.quantity * self.unit_price) != self.total_amount:
                 raise ValueError('Unit price and total amount do not match')
-        total = self.total_amount if self.total_amount is not None else rounded(self.quantity * self.unit_price)
-        if self.paid_amount > total:
+        total = (self.total_amount if self.total_amount is not None else
+                 rounded(self.quantity * self.unit_price) if self.unit_price is not None else None)
+        if total is not None and self.paid_amount > total:
             raise ValueError('Paid amount cannot exceed the movement total')
         if self.kind == 'opening' and self.paid_amount:
             raise ValueError('Opening inventory cannot have a payment')
@@ -369,11 +369,15 @@ def request_data(request):
             values.pop('project_id', None)
     if isinstance(request, (MovementCreate, MovementUpdate)):
         for key in ('quantity', 'unit_price', 'total_amount'):
-            if values[key] is None:
+            clear_price = (key in ('unit_price', 'total_amount') and isinstance(request, MovementUpdate)
+                           and key in request.model_fields_set)
+            if values[key] is None and not clear_price:
                 values.pop(key)
         # A supplied total is authoritative; the matching unit price is redundant.
-        if 'total_amount' in values:
+        if values.get('total_amount') is not None:
             values.pop('unit_price', None)
+        elif values.get('unit_price') is not None:
+            values.pop('total_amount', None)
     for key in ('payer', 'recipient', 'handler', 'category'):
         if key in values:
             is_update = isinstance(request, (TransferUpdate, LoanUpdate, MovementUpdate, ExchangeUpdate, InventoryPaymentUpdate))
@@ -590,7 +594,9 @@ def replay(state):
                 'sales_total', 'payable', 'receivable', 'realized_profit',
                 'exchange_in', 'exchange_out', 'exchange_fees', 'exchange_net',
                 'expense_total', 'unallocated_cost', 'inventory_spend',
-                'inventory_income', 'pending_payment_conversion_count')})
+                'inventory_income', 'known_inventory_spend', 'known_inventory_income',
+                'pending_inventory_spend_count', 'pending_inventory_income_count',
+                'pending_payment_conversion_count')})
         return summary[currency]
 
     with localcontext() as ctx:
@@ -653,6 +659,8 @@ def replay(state):
             if currency not in currencies:
                 currencies[currency] = dict(currency=currency, expense_categories={}, **{
                     key: ZERO for key in ('purchase_cost', 'expense_cost', 'sales_revenue',
+                                          'known_purchase_cost', 'known_expense_cost', 'known_sales_revenue',
+                                          'pending_purchase_price_count', 'pending_sale_price_count',
                                           'acquired_quantity', 'sold_quantity')})
             return currencies[currency]
 
@@ -669,6 +677,8 @@ def replay(state):
                            total_cost=ZERO, sales_revenue=ZERO, equivalent_cost=ZERO,
                            unallocated_cost=ZERO, expense_categories=[],
                            currency_totals=[], conversion_pending=False,
+                           inventory_incomplete=False, missing_purchase_quantity=ZERO,
+                           price_pending=False, pending_purchase_price_count=0, pending_sale_price_count=0,
                            pending_payment_conversion_count=0)
             if not product['voided']:
                 bucket(product['currency'])
@@ -701,19 +711,21 @@ def replay(state):
                 raise FinanceError('Enter an expense category and total amount')
             qty = ZERO if expense else money(movement['quantity'])
             total = (money(movement['total_amount']) if movement.get('total_amount') is not None
-                     else rounded(qty * money(movement['unit_price'])))
+                     else rounded(qty * money(movement['unit_price'])) if movement.get('unit_price') is not None else None)
+            price_pending = total is None
             price = (ZERO if expense else money(movement['unit_price'])
-                     if movement.get('unit_price') is not None else total / qty)
+                     if movement.get('unit_price') is not None else None if price_pending else total / qty)
             initial = money(movement['paid_amount'])
             invoice_currency, rate = resolve_currency_rate(movement, product['currency'], allow_missing=True)
             extra, pending_payments = _inventory_payments(movement, invoice_currency)
             # Zero-price gifts/opening stock have zero value in every currency;
             # no exchange rate is needed to know their converted amount.
-            base_total = ZERO if total == ZERO else None if rate is None else rounded(total * rate)
+            base_total = ZERO if total == ZERO else None if rate is None or price_pending else rounded(total * rate)
+            conversion_pending = rate is None and total != ZERO
             paid = initial + extra
-            if paid > total:
+            if total is not None and paid > total:
                 raise FinanceError('Payments cannot exceed the movement total')
-            if pending_payments and paid == total:
+            if pending_payments and total is not None and paid == total:
                 raise FinanceError('Resolve the pending payment exchange rate before settling an already paid movement')
             if movement['kind'] == 'opening' and (initial or movement.get('payments')):
                 raise FinanceError('Opening inventory cannot have payments')
@@ -721,36 +733,49 @@ def replay(state):
                             exchange_rate=rate, base_total=base_total, quantity=qty, unit_price=price,
                             total=total, initial_paid_amount=initial, paid_amount=paid,
                             remaining_payment=ZERO if movement['voided'] or movement['kind'] == 'opening'
-                                else None if pending_payments else total - paid,
-                            confirmed_remaining_payment=ZERO if movement['voided'] or movement['kind'] == 'opening' else total - paid,
-                            conversion_pending=base_total is None,
+                                else None if pending_payments or price_pending else total - paid,
+                            confirmed_remaining_payment=ZERO if movement['voided'] or movement['kind'] == 'opening'
+                                else None if price_pending else total - paid,
+                            conversion_pending=conversion_pending, price_pending=price_pending,
                             pending_payment_conversion_count=pending_payments,
+                            inventory_incomplete=False, missing_purchase_quantity=ZERO,
                             cost_of_goods=ZERO, realized_profit=ZERO,
-                            price_basis='expense' if expense else 'total' if movement.get('total_amount') is not None else 'unit',
+                            price_basis='expense' if expense else 'pending' if price_pending
+                                else 'total' if movement.get('total_amount') is not None else 'unit',
                             request_fields=request_fields,
-                            status='void' if movement['voided'] else 'pending_conversion' if pending_payments
+                            status='void' if movement['voided'] else 'pending_price' if price_pending
+                            else 'pending_conversion' if pending_payments
                             else 'paid' if paid == total or movement['kind'] == 'opening'
                             else 'partial' if paid else 'unpaid')
             if movement['voided']:
                 continue
             values = bucket(invoice_currency)
             native = native_bucket(product['id'], invoice_currency)
-            product['conversion_pending'] |= base_total is None
+            product['conversion_pending'] |= conversion_pending
+            product['price_pending'] |= price_pending
             product['pending_payment_conversion_count'] += pending_payments
             values['pending_payment_conversion_count'] += pending_payments
             if movement['kind'] in ('purchase', 'opening'):
                 product['quantity'] += qty
                 product['acquired_quantity'] += qty
                 add_nullable(product, 'purchase_cost', base_total)
-                native['purchase_cost'] += total
+                add_nullable(native, 'purchase_cost', total)
+                if price_pending:
+                    product['pending_purchase_price_count'] += 1
+                    native['pending_purchase_price_count'] += 1
+                    values['pending_inventory_spend_count'] += 1
+                else:
+                    native['known_purchase_cost'] += total
+                    values['known_inventory_spend'] += total
                 native['acquired_quantity'] += qty
-                values['inventory_spend'] += total
+                add_nullable(values, 'inventory_spend', total)
                 if movement['kind'] == 'purchase':
-                    values['purchase_total'] += total
-                    add_nullable(values, 'payable', None if pending_payments else total - paid)
+                    add_nullable(values, 'purchase_total', total)
+                    add_nullable(values, 'payable', None if pending_payments or price_pending else total - paid)
             elif expense:
                 add_nullable(product, 'expense_cost', base_total)
                 native['expense_cost'] += total
+                native['known_expense_cost'] += total
                 categories = expense_categories[product['id']]
                 category = movement['category']
                 categories.setdefault(category, ZERO)
@@ -758,37 +783,63 @@ def replay(state):
                 native_categories = native['expense_categories']
                 native_categories[category] = native_categories.get(category, ZERO) + total
                 values['expense_total'] += total
-                values['inventory_spend'] += total
+                add_nullable(values, 'inventory_spend', total)
+                values['known_inventory_spend'] += total
                 add_nullable(values, 'payable', None if pending_payments else total - paid)
             else:
-                if qty > product['quantity']:
-                    raise FinanceError(f'Insufficient inventory for {product["name"]} on {movement["date"]}; check earlier stock records')
+                # The ledger can be filled in any order. A negative recorded
+                # balance is a missing-purchase history, not permission to
+                # allocate negative stock cost or invent a sale's profit.
                 product['quantity'] -= qty
                 product['sold_quantity'] += qty
                 add_nullable(product, 'sales_revenue', base_total)
-                native['sales_revenue'] += total
+                add_nullable(native, 'sales_revenue', total)
+                if price_pending:
+                    product['pending_sale_price_count'] += 1
+                    native['pending_sale_price_count'] += 1
+                    values['pending_inventory_income_count'] += 1
+                else:
+                    native['known_sales_revenue'] += total
+                    values['known_inventory_income'] += total
                 native['sold_quantity'] += qty
                 sales[product['id']].append(movement)
-                values['sales_total'] += total
-                values['inventory_income'] += total
-                add_nullable(values, 'receivable', None if pending_payments else total - paid)
+                add_nullable(values, 'sales_total', total)
+                add_nullable(values, 'inventory_income', total)
+                add_nullable(values, 'receivable', None if pending_payments or price_pending else total - paid)
         for product in products.values():
             product['total_cost'] = (None if product['purchase_cost'] is None or product['expense_cost'] is None
                                      else product['purchase_cost'] + product['expense_cost'])
             product['converted_expense_categories'] = [dict(category=category, total=total)
                 for category, total in sorted(expense_categories[product['id']].items())]
             acquired = product['acquired_quantity']
+            missing = max(product['sold_quantity'] - acquired, ZERO)
+            product.update(inventory_incomplete=bool(missing), missing_purchase_quantity=missing)
+            for sale in sales[product['id']]:
+                sale.update(inventory_incomplete=bool(missing), missing_purchase_quantity=missing)
             for currency, native in sorted(native_totals[product['id']].items()):
-                native['total_cost'] = native['purchase_cost'] + native['expense_cost']
-                native['net_income'] = native['sales_revenue'] - native['total_cost']
-                native['equivalent_cost'] = None if not acquired else rounded(native['total_cost'] / acquired)
+                native['total_cost'] = (None if native['purchase_cost'] is None else native['purchase_cost'] + native['expense_cost'])
+                native['known_total_cost'] = native['known_purchase_cost'] + native['known_expense_cost']
+                native['net_income'] = (None if native['sales_revenue'] is None or native['total_cost'] is None
+                                        else native['sales_revenue'] - native['total_cost'])
+                native['equivalent_cost'] = (None if not acquired or missing or product['pending_purchase_price_count']
+                                             else rounded(native['total_cost'] / acquired))
                 categories = native['expense_categories']
                 native['expense_categories'] = [dict(category=category, total=total)
                     for category, total in sorted(categories.items())]
                 product['currency_totals'].append(native)
                 product['expense_categories'].extend(dict(category=category, currency=currency, total=total)
                     for category, total in sorted(categories.items()))
-            if product['total_cost'] is None:
+            if missing:
+                # Keep the known product pool unallocated until the acquisition
+                # history is complete. Reporting zero cost here would make the
+                # recorded revenue look like profit; partial allocation would
+                # divide costs across units whose purchase cost is unknown.
+                product['unallocated_cost'] = product['total_cost']
+                for key in ('average_cost', 'equivalent_cost', 'inventory_cost', 'realized_profit'):
+                    product[key] = None
+                for sale in sales[product['id']]:
+                    sale['cost_of_goods'] = sale['realized_profit'] = None
+            elif product['total_cost'] is None:
                 for key in ('average_cost', 'equivalent_cost', 'inventory_cost', 'realized_profit', 'unallocated_cost'):
                     product[key] = None
                 for sale in sales[product['id']]:
