@@ -290,6 +290,23 @@ test('a pending refresh cannot overwrite the state of an acknowledged finance wr
     assert.ok(!f.element('financeList').innerHTML.includes('12,345.67'));
 });
 
+test('voiding during a pending refresh retains void state and clears the loading notice', async () => {
+    const f = fixture(); await f.ui.load();
+    let release;
+    const updated = { ...data, transfers: [{ ...transfer, voided: true, version: 2 }] };
+    f.setResponse((_url, options) => options.method === 'GET' ? new Promise(resolve => { release = resolve; }) : Promise.resolve({ ok: true, json: async () => updated }));
+    const refreshing = f.ui.load(true);
+    assert.equal(f.element('financeNotice').textContent, '正在读取财务记录…');
+    f.click({ financeVoid: 'transfers', id: '1' }, true);
+    await f.element('financeVoidConfirm').listeners.click();
+    assert.equal(f.element('financeNotice').textContent, '');
+    assert.ok(f.element('financeNotice').classes.has('d-none'));
+    assert.ok(!f.element('financeList').innerHTML.includes('12,345.67'));
+    release({ ok: true, json: async () => data }); await refreshing;
+    assert.ok(!f.element('financeList').innerHTML.includes('12,345.67'));
+    assert.equal(f.element('financeNotice').textContent, '');
+});
+
 test('privacy refresh removes existing detail and editor values from DOM', async () => {
     const f = fixture(); await f.ui.load();
     f.click({ financeDetail: 'loans', id: '2' });

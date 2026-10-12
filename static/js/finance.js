@@ -519,6 +519,7 @@
                 const path = target.parent ? `/${target.parentType}/${target.parent.id}/${target.type}/${target.id}` : `/${target.type}/${target.id}`;
                 const data = await api(`${path}?version=${target.record.version}`, null, 'DELETE');
                 busy = false; applyState(data); getModal('financeVoidModal').hide(); voidTarget = null;
+                notice('');
                 toast('记录已作废，历史已保留');
             } catch (error) {
                 if (privateMode()) { showError('financeVoidError', ''); notice('作废结果暂未确认，请刷新记录后检查。'); }
