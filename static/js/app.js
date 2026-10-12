@@ -5410,8 +5410,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const storedTrackerTab = portfolioStorage.getItem('trackerActiveTab');
     const savedTrackerTab = storedTrackerTab === '#trackerIncome'
         ? '#trackerPerformance'
-        : storedTrackerTab;
-    if (storedTrackerTab === '#trackerIncome') {
+        : storedTrackerTab === '#trackerCoveredCalls'
+            ? '#trackerToday'
+            : storedTrackerTab;
+    if (savedTrackerTab !== storedTrackerTab) {
         portfolioStorage.setItem('trackerActiveTab', savedTrackerTab);
     }
     if (savedTrackerTab) {

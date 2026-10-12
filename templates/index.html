@@ -378,12 +378,12 @@
                     <i class="bi bi-list-ul me-1"></i>Transactions
                 </button>
             </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="covered-calls-tab" data-bs-toggle="pill" data-bs-target="#trackerCoveredCalls" type="button" role="tab" aria-controls="trackerCoveredCalls" aria-selected="false"><i class="bi bi-shield-check me-1"></i>Option</button>
+            <li class="nav-item d-none" role="presentation" aria-hidden="true">
+                <button class="nav-link" id="covered-calls-tab" data-bs-toggle="pill" data-bs-target="#trackerCoveredCalls" type="button" role="tab" aria-controls="trackerCoveredCalls" aria-selected="false" aria-disabled="true" tabindex="-1" disabled><i class="bi bi-shield-check me-1"></i>Option</button>
             </li>
             {% if not demo_mode %}
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="finance-tab" data-bs-toggle="pill" data-bs-target="#trackerFinance" type="button" role="tab" aria-controls="trackerFinance" aria-selected="false"><i class="bi bi-journal-text me-1"></i>财务</button>
+                <button class="nav-link" id="finance-tab" data-bs-toggle="pill" data-bs-target="#trackerFinance" type="button" role="tab" aria-controls="trackerFinance" aria-selected="false"><i class="bi bi-journal-text me-1"></i>Finance</button>
             </li>
             {% endif %}
         </ul>
@@ -1284,7 +1284,7 @@
     <script src="/static/js/option-quotes.js?v=1"></script>
     <script src="/static/js/covered-calls.js?v=3"></script>
     {% if not demo_mode %}<script src="/static/js/finance.js?v=3"></script>{% endif %}
-    <script src="/static/js/app.js?v=162"></script>
+    <script src="/static/js/app.js?v=163"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {
