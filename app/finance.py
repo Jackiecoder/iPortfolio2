@@ -115,7 +115,12 @@ class FinanceModel(BaseModel):
         return result
 
 
-class TransferFields(FinanceModel):
+class MoneyActors(FinanceModel):
+    payer: str = Field(default='', max_length=200)
+    recipient: str = Field(default='', max_length=200)
+
+
+class TransferFields(MoneyActors):
     date: date
     direction: Literal['in', 'out', 'internal']
     amount: Decimal
@@ -136,7 +141,7 @@ class TransferUpdate(TransferFields):
     version: int = Field(ge=1, strict=True)
 
 
-class ExchangeFields(FinanceModel):
+class ExchangeFields(MoneyActors):
     """One recorded exchange, whose fee is charged in exactly one currency.
 
     from_amount excludes the fee; to_amount is the gross receipt before any
@@ -177,7 +182,7 @@ class ExchangeUpdate(ExchangeFields):
     version: int = Field(ge=1, strict=True)
 
 
-class LoanFields(FinanceModel):
+class LoanFields(MoneyActors):
     date: date
     direction: Literal['lent', 'borrowed']
     counterparty: str = Field(min_length=1, max_length=200)
@@ -261,7 +266,7 @@ class ProjectUpdate(ProjectFields):
     version: int = Field(ge=1, strict=True)
 
 
-class MovementFields(FinanceModel):
+class MovementFields(MoneyActors):
     date: date
     product_id: int = Field(ge=1, strict=True)
     kind: Literal['purchase', 'sale', 'opening']
@@ -291,7 +296,7 @@ class MovementUpdate(MovementFields):
     version: int = Field(ge=1, strict=True)
 
 
-class PaymentCreate(FinanceModel):
+class PaymentCreate(MoneyActors):
     date: date
     amount: Decimal
     note: str = Field(default='', max_length=2000)
@@ -329,6 +334,11 @@ def request_data(request):
     if values.get('project_id') is None:
         if not isinstance(request, MovementUpdate) or 'project_id' not in request.model_fields_set:
             values.pop('project_id', None)
+    for key in ('payer', 'recipient'):
+        if key in values:
+            is_update = isinstance(request, (TransferUpdate, LoanUpdate, MovementUpdate, ExchangeUpdate))
+            if (is_update and key not in request.model_fields_set) or (not is_update and values[key] == ''):
+                values.pop(key)
     return values
 
 
@@ -491,6 +501,16 @@ def replay(state):
     result = deepcopy(state)
     result.setdefault('exchanges', [])
     result.setdefault('projects', [])
+    # Historical records carry no actors. Expose blanks without inventing names
+    # or rewriting stored payloads; each later payment keeps its own actors.
+    for kind in ('transfers', 'loans', 'movements', 'exchanges'):
+        for record in result[kind]:
+            record.setdefault('payer', '')
+            record.setdefault('recipient', '')
+            for history in ('repayments', 'payments'):
+                for payment in record.get(history, []):
+                    payment.setdefault('payer', '')
+                    payment.setdefault('recipient', '')
     summary = {}
 
     def bucket(currency):

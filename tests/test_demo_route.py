@@ -1,4 +1,5 @@
 import unittest
+import re
 from unittest.mock import patch
 
 import httpx
@@ -19,6 +20,7 @@ class DemoRouteTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('action="/" method="get"', response.text)
                 self.assertIn('aria-label="Demo portfolio" aria-pressed="true"', response.text)
                 self.assertNotIn('id="finance-tab"', response.text)
+                self.assertNotIn('id="financeSummary"', response.text)
                 self.assertNotIn('src="/static/js/finance.js', response.text)
                 for route in ['/api/summary', '/api/positions', '/api/transactions', '/api/finance', '/demo/private']:
                     self.assertEqual((await client.get(route)).status_code, 401)
@@ -35,4 +37,8 @@ class DemoRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('data-portfolio-mode="personal"', response.text)
             self.assertNotIn('src="/static/js/demo-portfolio.js', response.text)
             self.assertIn('id="finance-tab"', response.text)
-            self.assertIn('src="/static/js/finance.js?v=6"', response.text)
+            self.assertIn('src="/static/js/finance.js?v=7"', response.text)
+            self.assertIn('href="/static/css/finance.css?v=5"', response.text)
+            summary = re.search(r'<details\b[^>]*id="financeSummary"[^>]*>', response.text)
+            self.assertIsNotNone(summary)
+            self.assertNotRegex(summary.group(), r'\bopen(?:\s|=|>)')

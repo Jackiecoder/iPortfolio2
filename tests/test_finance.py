@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from app.finance import (ExchangeCreate, FinanceError, InventoryPaymentCreate, LoanCreate, LoanUpdate, MovementCreate,
                          MovementUpdate,
                          ProductCreate, ProductUpdate, PaymentCreate, TransferCreate,
+                         TransferUpdate, ExchangeUpdate,
                          ProjectCreate, ProjectUpdate,
                          empty_state, replay, request_data, validate_edit, validate_void)
 
@@ -125,6 +126,44 @@ class FinanceModelTests(unittest.TestCase):
         child = dict(request_id=request_id, date='2026-01-02', amount=10)
         self.assertEqual(request_data(PaymentCreate(**child)), request_data(InventoryPaymentCreate(**child)))
         self.assertIn('due_date', request_data(LoanCreate(request_id=request_id, date='2026-01-01', direction='lent', counterparty='K', principal=10)))
+
+    def test_money_actors_are_trimmed_bounded_and_keep_old_create_fingerprints(self):
+        requests = [TransferCreate(request_id=uuid4(), date='2026-01-01', direction='in', amount=10),
+                    LoanCreate(request_id=uuid4(), date='2026-01-01', direction='lent', principal=10, counterparty='Separate counterparty'),
+                    MovementCreate(request_id=uuid4(), date='2026-01-01', product_id=1, kind='purchase', quantity=1, unit_price=10),
+                    ExchangeCreate(request_id=uuid4(), date='2026-01-01', from_currency='USD', to_currency='CNY', from_amount=10, to_amount=70),
+                    PaymentCreate(request_id=uuid4(), date='2026-01-02', amount=1),
+                    InventoryPaymentCreate(request_id=uuid4(), date='2026-01-02', amount=1)]
+        for request in requests:
+            with self.subTest(model=type(request).__name__):
+                old = request_data(request)
+                values = request.model_dump()
+                self.assertNotIn('payer', old)
+                self.assertNotIn('recipient', old)
+                self.assertEqual(request_data(type(request)(**dict(values, payer='  ', recipient=''))), old)
+                named = request_data(type(request)(**dict(values, payer='  Kevin  ', recipient=' Partner ')))
+                self.assertEqual((named['payer'], named['recipient']), ('Kevin', 'Partner'))
+                for field in ('payer', 'recipient'):
+                    with self.assertRaises(ValidationError):
+                        type(request)(**dict(values, **{field: 'A' * 201}))
+        with self.assertRaises(ValidationError):
+            ProductCreate(request_id=uuid4(), name='Tea', payer='Kevin')
+        with self.assertRaises(ValidationError):
+            project(payer='Kevin')
+
+    def test_actor_updates_distinguish_omission_from_explicit_clear(self):
+        requests = [TransferUpdate(date='2026-01-01', direction='in', amount=10, version=1),
+                    LoanUpdate(date='2026-01-01', direction='lent', principal=10, counterparty='K', version=1),
+                    MovementUpdate(date='2026-01-01', product_id=1, kind='purchase', quantity=1, unit_price=10, version=1),
+                    ExchangeUpdate(date='2026-01-01', from_currency='USD', to_currency='CNY', from_amount=10, to_amount=70, version=1)]
+        for request in requests:
+            with self.subTest(model=type(request).__name__):
+                self.assertNotIn('payer', request_data(request))
+                self.assertNotIn('recipient', request_data(request))
+                fields = request.model_dump(exclude={'payer', 'recipient'})
+                clear = request_data(type(request)(**fields, payer='  '))
+                self.assertEqual(clear['payer'], '')
+                self.assertNotIn('recipient', clear)
 
 
 class InventoryCurrencyTests(unittest.TestCase):
@@ -393,6 +432,30 @@ class FinanceReplayTests(unittest.TestCase):
     def setUp(self):
         self.state = empty_state()
         self.state['products'] = [product()]
+
+    def test_legacy_actor_blanks_and_each_payment_history_keep_independent_names(self):
+        self.state['transfers'] = [record(TransferCreate, date='2026-01-01', direction='in', amount=10, counterparty='Do not infer me')]
+        self.state['exchanges'] = [exchange(counterparty='Do not infer me')]
+        loan = record(LoanCreate, date='2026-01-01', direction='lent', counterparty='Borrower', principal=100)
+        loan['repayments'] = [payment(amount=10, payer='  Repayment sender ', recipient=' Repayment receiver ')]
+        self.state['loans'] = [loan]
+        purchase = movement(paid_amount=20, payer='Initial payer', recipient='Initial recipient')
+        purchase['payments'] = [inventory_payment(amount=5),
+            dict(inventory_payment(2, amount=15, payer='Later payer', recipient='Later recipient'), voided=True)]
+        self.state['movements'] = [purchase]
+        original = deepcopy(self.state)
+        result = replay(self.state)
+        for kind in ('transfers', 'loans', 'exchanges'):
+            self.assertEqual((result[kind][0]['payer'], result[kind][0]['recipient']), ('', ''))
+        saved_loan = result['loans'][0]
+        self.assertEqual((saved_loan['repayments'][0]['payer'], saved_loan['repayments'][0]['recipient']),
+                         ('Repayment sender', 'Repayment receiver'))
+        self.assertEqual(saved_loan['outstanding'], 90)
+        saved = result['movements'][0]
+        self.assertEqual((saved['payer'], saved['recipient'], saved['paid_amount']), ('Initial payer', 'Initial recipient', 25))
+        self.assertEqual((saved['payments'][0]['payer'], saved['payments'][0]['recipient']), ('', ''))
+        self.assertEqual((saved['payments'][1]['payer'], saved['payments'][1]['recipient']), ('Later payer', 'Later recipient'))
+        self.assertEqual(self.state, original)
 
     def test_moving_average_partial_payments_and_profit(self):
         a = movement(quantity=10, unit_price=10, paid_amount=50)

@@ -771,3 +771,128 @@ test('project create keeps blank forecast null and known zero as a raw zero stri
         assert.equal(JSON.parse(f.requests.at(-1).body).expected_profit, value === '' ? null : '0');
     }
 });
+
+test('funding summary defaults closed, survives page renders and data reload, then collapses on privacy', async () => {
+    const f = fixture();
+    assert.equal(f.element('financeSummary').open, false);
+    assert.equal(f.element('financeSummaryHint').textContent, '展开');
+    await f.ui.load(); assert.equal(f.element('financeSummary').open, false);
+    f.element('financeSummary').open = true; f.element('financeSummary').listeners.toggle();
+    assert.equal(f.element('financeSummaryHint').textContent, '收起');
+    f.click({ financeSection: 'loans' }); assert.equal(f.element('financeSummary').open, true);
+    await f.ui.load(true); assert.equal(f.element('financeSummary').open, true);
+    f.element('financeSearch').value = 'Sensitive'; f.element('financeSearch').listeners.input();
+    assert.equal(f.element('financeSummary').open, true);
+    f.ui.setPrivate(true);
+    assert.equal(f.element('financeSummary').open, false); assert.equal(f.element('financeSummaryHint').textContent, '展开');
+    assert.ok(!f.element('financeOverview').innerHTML.includes('400.00'));
+    f.ui.setPrivate(false); assert.equal(f.element('financeSummary').open, false);
+    const refreshedPage = fixture(); assert.equal(refreshedPage.element('financeSummary').open, false);
+});
+
+function openMonetaryEditor(f, type) {
+    if (type === 'repayments' || type === 'payments') f.click({ financePayment: type === 'repayments' ? 'loans' : 'movements', id: type === 'repayments' ? '2' : '4' }, true);
+    else { f.click({ financeSection: type }); f.element('financeAdd').listeners.click(); }
+    if (type === 'transfers') f.fields.get('amount').value = '5';
+    if (type === 'loans') { f.fields.get('counterparty').value = 'Different counterparty'; f.fields.get('principal').value = '500'; }
+    if (type === 'movements') { f.fields.get('quantity').value = '1'; f.fields.get('unit_price').value = '20'; }
+    if (type === 'exchanges') { f.fields.get('from_amount').value = '100'; f.fields.get('to_amount').value = '720'; }
+}
+
+test('optional actors create trimmed names on all monetary records and omit blank names for retry compatibility', async () => {
+    for (const type of ['transfers', 'loans', 'movements', 'exchanges', 'repayments', 'payments']) {
+        const blank = fixture(); await blank.ui.load(); openMonetaryEditor(blank, type);
+        assert.equal(blank.fields.get('payer').value, ''); assert.equal(blank.fields.get('recipient').value, '');
+        assert.match(blank.element('financeFormFields').innerHTML, /name="payer"[^>]*maxlength="200"/);
+        assert.match(blank.element('financeFormFields').innerHTML, /name="recipient"[^>]*maxlength="200"/);
+        blank.fields.get('payer').value = '   '; blank.fields.get('recipient').value = '  '; await blank.submit();
+        const blankPayload = JSON.parse(blank.requests.at(-1).body);
+        assert.equal(blankPayload.payer, undefined, type); assert.equal(blankPayload.recipient, undefined, type);
+        const filled = fixture(); await filled.ui.load(); openMonetaryEditor(filled, type);
+        filled.fields.get('payer').value = '  Actual payer  '; filled.fields.get('recipient').value = '  Actual recipient  ';
+        await filled.submit(); const payload = JSON.parse(filled.requests.at(-1).body);
+        assert.equal(payload.payer, 'Actual payer', type); assert.equal(payload.recipient, 'Actual recipient', type);
+        if (type === 'loans') assert.equal(payload.counterparty, 'Different counterparty');
+    }
+});
+
+test('editing actors preserves recorded names and explicitly clears blank names without changing counterparties', async () => {
+    for (const [type, source] of [['transfers', transfer], ['loans', loan], ['movements', movement], ['exchanges', exchange]]) {
+        const record = { ...source, payer: 'Original payer', recipient: 'Original recipient' };
+        const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, [type]: [record] }) }));
+        await f.ui.load(); f.click({ financeEdit: type, id: String(source.id) }, true);
+        assert.equal(f.fields.get('payer').value, 'Original payer'); assert.equal(f.fields.get('recipient').value, 'Original recipient');
+        const counterparty = f.fields.get('counterparty').value;
+        f.fields.get('payer').value = ''; f.fields.get('recipient').value = ' '; await f.submit();
+        const payload = JSON.parse(f.requests.at(-1).body);
+        assert.equal(payload.payer, '', type); assert.equal(payload.recipient, '', type);
+        assert.equal(payload.counterparty, counterparty); assert.equal(payload.version, source.version);
+        if (type === 'movements') assert.equal(payload.paid_amount, '30');
+    }
+});
+
+test('actors never infer counterparty or parent names and nested history remains independently searchable', async () => {
+    const parentLoan = { ...loan, payer: 'Principal payer', recipient: 'Principal recipient', repayments: [{ ...loan.repayments[0], payer: 'Repayment Alice', recipient: 'Repayment Bob', voided: true }] };
+    const parentMovement = { ...movement, payer: 'Initial payer', recipient: 'Initial recipient', payments: [{ ...movement.payments[0], payer: 'Later Carol', recipient: 'Later David' }] };
+    assert.equal(FinanceUI.filterRecords([parentLoan], { search: 'repayment ALICE' }).length, 1);
+    assert.equal(FinanceUI.filterRecords([parentMovement], { search: 'later david' }).length, 1);
+    assert.equal(FinanceUI.filterRecords([{ ...transfer, payer: 'Another payer' }], { search: 'another payer' }).length, 1);
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, loans: [parentLoan], movements: [parentMovement] }) }));
+    await f.ui.load();
+    for (const [type, id, scope, initial, later] of [['loans', '2', '本金付款人（谁付的）', 'Principal payer', 'Repayment Alice'], ['movements', '4', '最初收付的付款人（谁付的）', 'Initial payer', 'Later Carol']]) {
+        f.click({ financeDetail: type, id }, true);
+        const html = f.element('financeDetailsBody').innerHTML;
+        assert.ok(html.includes(scope)); assert.ok(html.includes(initial)); assert.ok(html.includes(`本次付款人 ${later}`));
+        f.click({ financePayment: type, id }, true);
+        assert.equal(f.fields.get('payer').value, ''); assert.equal(f.fields.get('recipient').value, '');
+    }
+    assert.ok(FinanceUI.renderRows([parentLoan], 'loans').includes('本金：付款人 Principal payer'));
+    assert.ok(FinanceUI.renderRows([parentMovement], 'movements', [product]).includes('最初收付：付款人 Initial payer'));
+});
+
+test('exchange actors clearly correspond to source payer and destination recipient after leg changes', async () => {
+    const f = fixture(); await f.ui.load(); openMonetaryEditor(f, 'exchanges');
+    assert.ok(f.element('financeFormFields').innerHTML.includes('付款人（换出币种）'));
+    assert.ok(f.element('financeFormFields').innerHTML.includes('收款人（换入币种）'));
+    assert.match(f.element('financeActorsIntro').textContent, /支付换出的 USD.*收到换入的 CNY/);
+    f.fields.get('from_currency').value = 'CNY'; f.fields.get('to_currency').value = 'USD';
+    f.element('financeForm').listeners.change({ target: { name: 'from_currency' } });
+    assert.match(f.element('financeActorsIntro').textContent, /支付换出的 CNY.*收到换入的 USD/);
+    f.click({ financeDetail: 'exchanges', id: '5' });
+    assert.ok(f.element('financeDetailsBody').innerHTML.includes('付款人（换出 USD）'));
+    assert.ok(f.element('financeDetailsBody').innerHTML.includes('收款人（换入 CNY）'));
+});
+
+test('actors escape hostile HTML, mask in lists and scrub open forms/history when privacy collapses summary', async () => {
+    const actors = { payer: '<img src=x onerror=alert(1)>', recipient: '<script>unsafe()</script>' };
+    for (const [type, record] of [['transfers', transfer], ['loans', loan], ['movements', movement], ['exchanges', exchange]]) {
+        const row = FinanceUI.renderRows([{ ...record, ...actors }], type, [product]);
+        assert.ok(row.includes('&lt;img')); assert.ok(row.includes('&lt;script&gt;')); assert.ok(!row.includes('<img')); assert.ok(!row.includes('<script>'));
+        const masked = FinanceUI.renderRows([{ ...record, payer: 'Secret payer', recipient: 'Secret recipient' }], type, [product], true);
+        assert.ok(!masked.includes('Secret payer')); assert.ok(!masked.includes('Secret recipient'));
+    }
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, loans: [{ ...loan, ...actors, repayments: [{ ...loan.repayments[0], ...actors }] }] }) }));
+    await f.ui.load(); f.click({ financeSection: 'loans' }); f.click({ financeDetail: 'loans', id: '2' });
+    assert.ok(!f.element('financeDetailsBody').innerHTML.includes('<img')); assert.ok(f.element('financeDetailsBody').innerHTML.includes('&lt;img'));
+    f.click({ financeEdit: 'loans', id: '2' }, true); f.element('financeSummary').open = true; f.ui.setPrivate(true);
+    assert.equal(f.element('financeSummary').open, false); assert.equal(f.element('financeFormFields').innerHTML, ''); assert.equal(f.fields.size, 0);
+    assert.equal(f.element('financeDetailsBody').innerHTML, ''); assert.ok(!f.element('financeList').innerHTML.includes('onerror')); assert.ok(!f.element('financeList').innerHTML.includes('unsafe'));
+});
+
+test('actors enforce 200 characters and are absent from product and project editors', async () => {
+    for (const type of ['transfers', 'loans', 'movements', 'exchanges', 'repayments', 'payments']) assert.match(FinanceUI.validatePayload(type, { date: '2026-10-01', payer: 'a'.repeat(201) }), /200 个字符/);
+    const f = fixture(); await f.ui.load(); f.click({ financeProductNew: '' }, true);
+    assert.equal(f.fields.has('payer'), false); assert.equal(f.fields.has('recipient'), false);
+    f.click({ financeSection: 'projects' }); f.element('financeAdd').listeners.click();
+    assert.equal(f.fields.has('payer'), false); assert.equal(f.fields.has('recipient'), false);
+});
+
+test('actor retry keeps UUID for the same names and changes UUID when actors change', async () => {
+    const f = fixture(); await f.ui.load(); openMonetaryEditor(f, 'transfers');
+    f.fields.get('payer').value = 'Actual payer'; f.fields.get('recipient').value = 'Actual recipient';
+    f.setResponse(async () => { throw new Error('Interrupted'); }); await f.submit();
+    const first = JSON.parse(f.requests.at(-1).body); await f.submit();
+    assert.equal(JSON.parse(f.requests.at(-1).body).request_id, first.request_id);
+    f.fields.get('recipient').value = 'Different recipient'; await f.submit();
+    assert.notEqual(JSON.parse(f.requests.at(-1).body).request_id, first.request_id);
+});

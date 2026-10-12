@@ -8,8 +8,11 @@
             <button type="button" id="financeReload" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>刷新记录</button>
         </header>
         <div id="financeNotice" class="finance-notice d-none" role="status" aria-live="polite"></div>
-        <div id="financeOverview" class="finance-overview" aria-label="按币种汇总"></div>
-        <p class="finance-scope">仅汇总这里记录的往来，各币种分别统计。财务记录独立于投资组合。</p>
+        <details id="financeSummary" class="finance-summary">
+            <summary><span>资金汇总</span><span class="finance-summary-toggle"><span id="financeSummaryHint">展开</span><i class="bi bi-chevron-down" aria-hidden="true"></i></span></summary>
+            <div id="financeOverview" class="finance-overview" aria-label="按币种汇总"></div>
+            <p class="finance-scope">仅汇总这里记录的往来，各币种分别统计。财务记录独立于投资组合。</p>
+        </details>
         <div class="finance-section-bar">
             <div class="finance-sections" role="group" aria-label="财务分类">
                 <button type="button" data-finance-section="transfers" aria-pressed="true" class="active"><i class="bi bi-arrow-left-right" aria-hidden="true"></i>转账记录</button>

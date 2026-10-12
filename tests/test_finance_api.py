@@ -53,6 +53,37 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(write.call_args.args[0], 'transfers')
             reload.assert_not_called()
 
+    async def test_money_actor_fields_reach_parent_and_child_writes_and_support_clear(self):
+        bodies = [('/transfers', self.transfer),
+                  ('/loans', dict(date='2026-01-01', direction='lent', counterparty='K', principal=10, request_id=str(uuid4()))),
+                  ('/movements', dict(date='2026-01-01', product_id=1, kind='purchase', quantity=1, unit_price=10, request_id=str(uuid4()))),
+                  ('/exchanges', dict(date='2026-01-01', from_currency='USD', to_currency='CNY', from_amount=10, to_amount=70, request_id=str(uuid4())))]
+        with patch.object(finance_api.repository, 'create_record', return_value=self.state) as create, \
+             patch.object(finance_api.repository, 'update_record', return_value=self.state) as update, \
+             patch.object(finance_api.repository, 'create_payment', return_value=self.state) as payment:
+            for path, body in bodies:
+                response = await self.client.post('/api/finance' + path,
+                    json={**body, 'payer': '  Kevin  ', 'recipient': 'Partner'}, headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                fields = request_data(create.call_args.args[1])
+                self.assertEqual((fields['payer'], fields['recipient']), ('Kevin', 'Partner'))
+                changed = {key: value for key, value in body.items() if key != 'request_id'}
+                response = await self.client.put('/api/finance' + path + '/1',
+                    json={**changed, 'version': 1, 'payer': ''}, headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(request_data(update.call_args.args[2])['payer'], '')
+                self.assertNotIn('recipient', request_data(update.call_args.args[2]))
+                response = await self.client.post('/api/finance' + path,
+                    json={**body, 'payer': 'A' * 201}, headers=self.headers)
+                self.assertEqual(response.status_code, 422)
+            for path in ('/loans/1/repayments', '/movements/1/payments'):
+                response = await self.client.post('/api/finance' + path,
+                    json=dict(date='2026-01-02', amount=1, request_id=str(uuid4()), payer=' Sender ', recipient=' Receiver '), headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                fields = request_data(payment.call_args.args[2])
+                self.assertEqual((fields['payer'], fields['recipient']), ('Sender', 'Receiver'))
+            self.assertEqual((create.call_count, update.call_count, payment.call_count), (4, 4, 2))
+
     async def test_invalid_numbers_dates_currency_and_extra_fields_do_not_write(self):
         with patch.object(finance_api.repository, 'create_record') as write, \
              patch.object(finance_api.repository, 'update_record') as update:

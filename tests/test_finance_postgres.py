@@ -112,6 +112,109 @@ class FinancePostgresTests(unittest.TestCase):
             ledger.create_record('loans', self.loan(request_id=transfer.request_id))
         self.assertEqual(self.row_count('finance_loans'), 0)
 
+    def test_money_actors_persist_independent_payment_history_and_guard_request_reuse(self):
+        transfer = self.transfer(payer='  Transfer sender  ', recipient='Transfer receiver')
+        ledger.create_record('transfers', transfer)
+        ledger.create_record('loans', self.loan(payer='Principal sender', recipient='Principal receiver'))
+        ledger.create_record('products', self.product())
+        ledger.create_record('movements', self.movement(paid_amount=20, payer='Initial buyer', recipient='Initial seller'))
+        ledger.create_record('exchanges', self.exchange(payer='Exchange sender', recipient='Exchange receiver'))
+        repayment = self.payment(payer='Repayment sender', recipient='Repayment receiver')
+        ledger.create_payment('loans', 1, repayment)
+        payment = self.inventory_payment(amount=30, payer='  Later buyer ', recipient='Later seller')
+        saved = ledger.create_payment('movements', 1, payment)
+        self.assertEqual(ledger.list_finance(), saved)
+        expected = {'transfers': ('Transfer sender', 'Transfer receiver'),
+                    'loans': ('Principal sender', 'Principal receiver'),
+                    'movements': ('Initial buyer', 'Initial seller'),
+                    'exchanges': ('Exchange sender', 'Exchange receiver')}
+        for kind, names in expected.items():
+            self.assertEqual((saved[kind][0]['payer'], saved[kind][0]['recipient']), names)
+            with self.pool.connection() as conn:
+                payload = conn.execute(f'SELECT payload FROM finance_{kind} WHERE id=1').fetchone()[0]
+                self.assertEqual((payload['payer'], payload['recipient']), names)
+        self.assertEqual((saved['loans'][0]['outstanding'], saved['loans'][0]['version']), (60, 2))
+        self.assertEqual((saved['movements'][0]['paid_amount'], saved['movements'][0]['version']), (50, 2))
+        history = saved['movements'][0]['payments'][0]
+        self.assertEqual((history['payer'], history['recipient']), ('Later buyer', 'Later seller'))
+        self.assertEqual((saved['loans'][0]['repayments'][0]['payer'], saved['loans'][0]['repayments'][0]['recipient']),
+                         ('Repayment sender', 'Repayment receiver'))
+        self.assertEqual(ledger.create_payment('movements', 1, self.inventory_payment(request_id=payment.request_id,
+                         amount='30.000000', payer='Later buyer', recipient=' Later seller ')), saved)
+        with self.assertRaisesRegex(FinanceError, 'different values'):
+            ledger.create_record('transfers', self.transfer(request_id=transfer.request_id, payer='Other sender', recipient='Transfer receiver'))
+        with self.assertRaisesRegex(FinanceError, 'different values'):
+            ledger.create_payment('movements', 1, self.inventory_payment(request_id=payment.request_id, amount=30, payer='Other buyer', recipient='Later seller'))
+        with self.assertRaisesRegex(FinanceError, 'different values'):
+            ledger.create_payment('movements', 1, self.inventory_payment(request_id=repayment.request_id, payer='Repayment sender', recipient='Repayment receiver'))
+        with self.assertRaisesRegex(FinanceError, 'different values'):
+            ledger.create_record('projects', self.project(request_id=transfer.request_id))
+        self.assertEqual(ledger.list_finance(), saved)
+        voided = ledger.void_payment('movements', 1, 1, 1)
+        self.assertEqual((voided['movements'][0]['payments'][0]['payer'], voided['movements'][0]['payments'][0]['recipient']),
+                         ('Later buyer', 'Later seller'))
+        with self.pool.connection() as conn:
+            before, after = conn.execute("SELECT before_data, after_data FROM finance_audit WHERE entity_kind='payments' AND action='void'").fetchone()
+            self.assertEqual((before['payer'], after['payer']), ('Later buyer', 'Later buyer'))
+        self.assertEqual(self.row_count('transactions'), 0)
+
+    def test_legacy_money_payloads_retries_and_actorless_edits_do_not_gain_actor_keys(self):
+        requests = [('transfers', self.transfer(), TransferUpdate), ('loans', self.loan(), LoanUpdate),
+                    ('movements', self.movement(), MovementUpdate), ('exchanges', self.exchange(), ExchangeUpdate)]
+        ledger.create_record('products', self.product())
+        for kind, request, _ in requests:
+            ledger.create_record(kind, request)
+        repayments = self.payment(amount=10)
+        payments = self.inventory_payment(amount=10)
+        ledger.create_payment('loans', 1, repayments)
+        original = ledger.create_payment('movements', 1, payments)
+        with self.pool.connection() as conn:
+            journal = conn.execute('SELECT request_id, request_payload FROM finance_requests ORDER BY request_id').fetchall()
+            raw = {kind: conn.execute(f'SELECT payload FROM finance_{kind} WHERE id=1').fetchone()[0]
+                   for kind in ('transfers', 'loans', 'movements', 'exchanges', 'repayments', 'payments')}
+        for payload in raw.values():
+            self.assertNotIn('payer', payload)
+            self.assertNotIn('recipient', payload)
+        for kind, request, _ in requests:
+            retry = type(request)(**dict(request.model_dump(), payer='  ', recipient=''))
+            self.assertEqual(ledger.create_record(kind, retry), original)
+            self.assertEqual((original[kind][0]['payer'], original[kind][0]['recipient']), ('', ''))
+        self.assertEqual(ledger.create_payment('loans', 1, type(repayments)(**dict(repayments.model_dump(), payer='', recipient=' '))), original)
+        self.assertEqual(ledger.create_payment('movements', 1, type(payments)(**dict(payments.model_dump(), payer=' ', recipient=''))), original)
+        with self.pool.connection() as conn:
+            self.assertEqual(conn.execute('SELECT request_id, request_payload FROM finance_requests ORDER BY request_id').fetchall(), journal)
+            for kind, payload in raw.items():
+                self.assertEqual(conn.execute(f'SELECT payload FROM finance_{kind} WHERE id=1').fetchone()[0], payload)
+        for kind, request, update_model in requests:
+            fields = request.model_dump(exclude={'request_id', 'payer', 'recipient', 'project_id'})
+            version = 2 if kind in ('loans', 'movements') else 1
+            ledger.update_record(kind, 1, update_model(**fields, version=version))
+            with self.pool.connection() as conn:
+                payload = conn.execute(f'SELECT payload FROM finance_{kind} WHERE id=1').fetchone()[0]
+                self.assertNotIn('payer', payload)
+                self.assertNotIn('recipient', payload)
+
+    def test_actor_edit_omission_preserves_names_and_explicit_blank_clears_only_that_name(self):
+        ledger.create_record('products', self.product())
+        requests = [('transfers', self.transfer(payer='Alice', recipient='Bob'), TransferUpdate),
+                    ('loans', self.loan(payer='Alice', recipient='Bob'), LoanUpdate),
+                    ('movements', self.movement(payer='Alice', recipient='Bob'), MovementUpdate),
+                    ('exchanges', self.exchange(payer='Alice', recipient='Bob'), ExchangeUpdate)]
+        for kind, request, update_model in requests:
+            ledger.create_record(kind, request)
+            fields = request.model_dump(exclude={'request_id', 'payer', 'recipient', 'project_id'})
+            omitted = ledger.update_record(kind, 1, update_model(**fields, version=1))[kind][0]
+            self.assertEqual((omitted['payer'], omitted['recipient']), ('Alice', 'Bob'))
+            cleared = ledger.update_record(kind, 1, update_model(**fields, payer='  ', version=2))[kind][0]
+            self.assertEqual((cleared['payer'], cleared['recipient']), ('', 'Bob'))
+            changed = ledger.update_record(kind, 1, update_model(**fields, payer=' Carol ', recipient='', version=3))[kind][0]
+            self.assertEqual((changed['payer'], changed['recipient']), ('Carol', ''))
+            self.assertEqual(ledger.list_finance()[kind][0], changed)
+            with self.pool.connection() as conn:
+                before, after = conn.execute('SELECT before_data, after_data FROM finance_audit WHERE entity_kind=%s AND action=%s AND after_data->>\'version\'=%s',
+                                            (kind, 'update', '3')).fetchone()
+                self.assertEqual((before['payer'], after['payer'], after['recipient']), ('Alice', '', 'Bob'))
+
     def test_partial_repayments_retry_overpay_rollback_and_void(self):
         ledger.create_record('loans', self.loan())
         request = self.payment()

@@ -1,6 +1,7 @@
 (function (root) {
     'use strict';
     const currencies = ['USD', 'CNY'];
+    const actorTypes = new Set(['transfers', 'loans', 'movements', 'exchanges', 'repayments', 'payments']);
     const labels = { in: '转入', out: '转出', internal: '账户间转账', lent: '我借给别人', borrowed: '我向别人借',
         purchase: '进货', sale: '出货', opening: '期初库存', exchange: '换汇', recorded: '已记录', planned: '分红计划', open: '待还款', partial: '部分结清', settled: '已结清', unpaid: '未付款', paid: '已付清', void: '已作废' };
     const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -138,6 +139,10 @@
         const style = status === 'void' ? 'is-void' : ['settled', 'paid', 'in', 'sale'].includes(status) ? 'is-good' : ['open', 'partial', 'unpaid'].includes(status) ? 'is-open' : '';
         return `<span class="finance-badge ${style}">${escape(label || labels[status] || status)}</span>`;
     }
+    function actorLine(record, privateMode, scope = '') {
+        if (!record.payer && !record.recipient) return '';
+        return `${escape(scope)}付款人 ${sensitive(record.payer || '未填写', privateMode)} → 收款人 ${sensitive(record.recipient || '未填写', privateMode)}`;
+    }
     function filterRecords(records, filter = {}, products = [], projects = []) {
         const names = new Map(products.map(p => [Number(p.id), p.name]));
         const projectNames = new Map(projects.map(p => [Number(p.id), p.name]));
@@ -147,8 +152,8 @@
             if (filter.currency && ![record.currency, record.base_currency, record.from_currency, record.to_currency, ...(record.participants || []).map(p => p.currency)].includes(filter.currency)) return false;
             if (filter.status && record.status !== filter.status && record.direction !== filter.status && record.kind !== filter.status) return false;
             if (!query) return true;
-            return [record.name, record.counterparty, record.from_account, record.to_account, record.reference, record.method, record.note,
-                record.date, record.currency, record.base_currency, record.from_currency, record.to_currency, names.get(Number(record.product_id)), record.project_name, projectNames.get(Number(record.project_id)), ...(record.participants || []).flatMap(p => [p.name, p.note, p.currency])].some(v => String(v || '').toLocaleLowerCase().includes(query));
+            return [record.name, record.counterparty, record.payer, record.recipient, record.from_account, record.to_account, record.reference, record.method, record.note,
+                record.date, record.currency, record.base_currency, record.from_currency, record.to_currency, names.get(Number(record.product_id)), record.project_name, projectNames.get(Number(record.project_id)), ...(record.participants || []).flatMap(p => [p.name, p.note, p.currency]), ...[...(record.repayments || []), ...(record.payments || [])].flatMap(payment => [payment.payer, payment.recipient, payment.note])].some(v => String(v || '').toLocaleLowerCase().includes(query));
         }).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || Number(b.id) - Number(a.id));
     }
     function isZeroPriceSale(record) {
@@ -196,6 +201,8 @@
                 subtitle += `<span class="finance-row-base">库存核算 ${money(baseTotal, baseCurrency, privateMode)}${income ? ` · 毛利 ${money(record.realized_profit, baseCurrency, privateMode)}` : ''}</span>`;
                 if (record.project_id) subtitle += `<span class="finance-row-project">项目 ${sensitive(record.project_name || projectNames.get(Number(record.project_id)), privateMode)}</span>`;
             }
+            const actors = actorTypes.has(section) ? actorLine(record, privateMode, section === 'loans' ? '本金：' : section === 'movements' ? '最初收付：' : section === 'exchanges' ? '换出 / 换入：' : '') : '';
+            if (actors) subtitle += `<span class="finance-row-actors">${actors}</span>`;
             const statusLabel = section === 'movements' && !record.voided ? (isZeroPriceSale(record) && !privateMode ? '无需收款' : record.kind === 'opening' ? '期初库存' : record.status === 'unpaid' ? (income ? '未收款' : '未付款') : record.status === 'partial' ? (income ? '部分收款' : '部分付款') : income ? '已收清' : '已付清') : undefined;
             return `<article class="finance-row ${record.voided ? 'is-void' : ''}">
                 <div class="finance-row-date">${sensitive(record.date, privateMode)}</div>
@@ -207,6 +214,7 @@
     }
     function validatePayload(type, payload, record) {
         if (type !== 'products' && !/^\d{4}-\d{2}-\d{2}$/.test(payload.date || '')) return '请填写有效的记录日期。';
+        if (actorTypes.has(type) && ['payer', 'recipient'].some(field => Array.from(String(payload[field] || '')).length > 200)) return '付款人与收款人姓名最多填写 200 个字符。';
         const positive = key => Number.isFinite(Number(payload[key])) && Number(payload[key]) > 0;
         const nonnegative = key => Number.isFinite(Number(payload[key])) && Number(payload[key]) >= 0;
         if (type === 'transfers' && !positive('amount')) return '转账金额必须大于 0。';
@@ -347,6 +355,10 @@
             $('financeNotice').classList.toggle('is-loading', isLoading);
         };
         const showError = (id, message) => { $(id).textContent = message; $(id).classList.toggle('d-none', !message); };
+        function updateSummaryHint() {
+            const hint = $('financeSummaryHint');
+            if (hint) hint.textContent = $('financeSummary')?.open ? '收起' : '展开';
+        }
         function applyState(data) {
             for (const key of ['transfers', 'loans', 'products', 'movements', 'exchanges', 'projects', 'summary']) state[key] = Array.isArray(data[key]) ? data[key] : [];
             stateRevision += 1;
@@ -410,10 +422,10 @@
             }).join('');
         }
         const types = {
-            transfers: { name: '转账记录', add: '记录转账', placeholder: '搜索对方、账户、备注', empty: '把重要转账记在这里', description: '记录转入、转出和自己的账户间转账。填上对方与备注，日后查找更方便。', icon: 'arrow-left-right', filters: [['', '全部类型'], ['in', '转入'], ['out', '转出'], ['internal', '账户间转账']] },
-            loans: { name: '借贷往来', add: '记录借贷', placeholder: '搜索姓名、备注', empty: '清楚谁还欠谁', description: '记录你借给别人的钱，或你向别人借的钱。每次还款都能单独保存，余额会随之更新。', icon: 'people', filters: [['', '全部借贷'], ['lent', '我借给别人'], ['borrowed', '我向别人借'], ['open', '待还款'], ['partial', '部分结清'], ['settled', '已结清']] },
-            movements: { name: '进出货记录', add: '记录进出货', placeholder: '搜索商品、对方、备注', empty: '从第一件商品开始', description: '先添加商品，再记录进货、出货或期初库存。已付款、未付款与分次收款都可以记录。', icon: 'box-seam', filters: [['', '全部类型'], ['purchase', '进货'], ['sale', '出货'], ['opening', '期初库存'], ['unpaid', '未收付'], ['partial', '部分收付'], ['paid', '已结清']] },
-            exchanges: { name: '换汇记录', add: '记录换汇', placeholder: '搜索币种、对方、账户、备注', empty: '记下每次换汇的实际支出与到账', description: '填写换出与换入金额，记录成交汇率、手续费与账户。人民币换美元，或美元换人民币，都能清楚回看。', icon: 'currency-exchange', filters: [['', '全部换汇']] },
+            transfers: { name: '转账记录', add: '记录转账', placeholder: '搜索对方、付款人、收款人、账户', empty: '把重要转账记在这里', description: '记录转入、转出和自己的账户间转账。填上对方与备注，日后查找更方便。', icon: 'arrow-left-right', filters: [['', '全部类型'], ['in', '转入'], ['out', '转出'], ['internal', '账户间转账']] },
+            loans: { name: '借贷往来', add: '记录借贷', placeholder: '搜索姓名、付款人、收款人、备注', empty: '清楚谁还欠谁', description: '记录你借给别人的钱，或你向别人借的钱。每次还款都能单独保存，余额会随之更新。', icon: 'people', filters: [['', '全部借贷'], ['lent', '我借给别人'], ['borrowed', '我向别人借'], ['open', '待还款'], ['partial', '部分结清'], ['settled', '已结清']] },
+            movements: { name: '进出货记录', add: '记录进出货', placeholder: '搜索商品、付款人、收款人、备注', empty: '从第一件商品开始', description: '先添加商品，再记录进货、出货或期初库存。已付款、未付款与分次收款都可以记录。', icon: 'box-seam', filters: [['', '全部类型'], ['purchase', '进货'], ['sale', '出货'], ['opening', '期初库存'], ['unpaid', '未收付'], ['partial', '部分收付'], ['paid', '已结清']] },
+            exchanges: { name: '换汇记录', add: '记录换汇', placeholder: '搜索付款人、收款人、对方、账户', empty: '记下每次换汇的实际支出与到账', description: '填写换出与换入金额，记录成交汇率、手续费与账户。人民币换美元，或美元换人民币，都能清楚回看。', icon: 'currency-exchange', filters: [['', '全部换汇']] },
             projects: { name: '合资项目', add: '添加项目', placeholder: '搜索项目、参与人、备注', empty: '一起出资，把分红计划记清楚', description: '分别记录每位参与人的出资与约定分红比例。可以先留出待分配份额，预计利润也可以暂不填写。', icon: 'diagram-3', filters: [['', '全部项目']] },
         };
         function render() {
@@ -454,7 +466,7 @@
         }
         function input(name, label, value = '', options = {}) {
             const attributes = `${options.required ? ' required' : ''}${options.min !== undefined ? ` min="${escape(options.min)}"` : ''}${options.max !== undefined ? ` max="${escape(options.max)}"` : ''}${options.step ? ` step="${escape(options.step)}"` : ''}${options.disabled ? ' disabled' : ''}`;
-            return `<div class="${options.wide ? 'col-12' : 'col-12 col-sm-6'}"><label class="form-label" for="financeField-${name}">${escape(label)}${options.required ? ' <span aria-hidden="true">*</span>' : ''}</label><input class="form-control" type="${options.type || 'text'}" id="financeField-${name}" name="${name}" value="${escape(value)}"${attributes}${options.type === 'text' || !options.type ? ' maxlength="500"' : ''}>${options.help ? `<div class="form-text">${escape(options.help)}</div>` : ''}</div>`;
+            return `<div class="${options.wide ? 'col-12' : 'col-12 col-sm-6'}"><label class="form-label" for="financeField-${name}">${escape(label)}${options.required ? ' <span aria-hidden="true">*</span>' : ''}</label><input class="form-control" type="${options.type || 'text'}" id="financeField-${name}" name="${name}" value="${escape(value)}"${attributes}${options.type === 'text' || !options.type ? ` maxlength="${options.maxLength ?? 500}"` : ''}>${options.help ? `<div class="form-text">${escape(options.help)}</div>` : ''}</div>`;
         }
         function select(name, label, value, options, disabled = false) {
             return `<div class="col-12 col-sm-6"><label class="form-label" for="financeField-${name}">${escape(label)}</label><select class="form-select" id="financeField-${name}" name="${name}"${disabled ? ' disabled' : ''}>${options.map(([v, text]) => `<option value="${escape(v)}"${String(v) === String(value) ? ' selected' : ''}>${escape(text)}</option>`).join('')}</select></div>`;
@@ -464,6 +476,10 @@
         const amountField = (name, label, value = '', max) => input(name, label, value, { type: 'number', min: name === 'paid_amount' || name === 'unit_price' ? 0 : '0.000001', step: 'any', required: true, max });
         const currencyField = (value = 'USD', disabled = false, label = '币种') => select('currency', label, value, currencies.map(c => [c, c]), disabled);
         const inventoryRateField = (labelId, value) => `<div class="col-12"><label class="form-label" id="${labelId}" for="financeField-exchange_rate">折算汇率</label><input class="form-control" id="financeField-exchange_rate" name="exchange_rate" type="number" step="any" min="0" required value="${escape(value ?? '')}"><div class="form-text">不同币种请填写本次约定的汇率，最多 12 位小数。</div></div>`;
+        function actorFields(record, type) {
+            const introductions = { transfers: '分别记录这笔转账是谁付款、谁收款，可以与对方名称不同。', loans: '这里记录借款本金的付款人与收款人；后续每次还款单独填写。', movements: '这里记录最初已收付金额的付款人与收款人；后续分次收付款单独填写。期初库存没有付款，可不填。', exchanges: '付款人对应换出金额，收款人对应换入金额，可以与换汇对方或机构不同。', repayments: '这里记录本次还款是谁付款、谁收款，可与最初本金往来不同。', payments: '这里记录本次实际收付款是谁付款、谁收款，可与最初收付不同。' };
+            return `<div class="col-12"><p class="finance-actors-intro mb-0" id="financeActorsIntro">${introductions[type]}</p></div>` + input('payer', type === 'exchanges' ? '付款人（换出币种）' : '付款人（谁付的）', record.payer, { maxLength: 200 }) + input('recipient', type === 'exchanges' ? '收款人（换入币种）' : '收款人（谁收的）', record.recipient, { maxLength: 200 });
+        }
         function projectFormValues() {
             const read = name => String($('financeForm').elements.namedItem(name)?.value ?? '').trim();
             const currency = read('currency');
@@ -543,15 +559,15 @@
             let fields = '', title, intro;
             if (type === 'transfers') {
                 title = record ? '编辑转账' : '记录转账'; intro = '记录重要的资金往来。自己的账户间转账不计入净转入金额。';
-                fields = dateField(r.date) + select('direction', '转账类型', r.direction || 'out', [['out', '转出'], ['in', '转入'], ['internal', '自己的账户间转账']]) + amountField('amount', '转账金额', r.amount) + currencyField(r.currency) + input('counterparty', '对方姓名或名称', r.counterparty) + input('method', '转账方式', r.method, { help: '例如银行转账、Zelle、现金、微信' }) + input('from_account', '转出账户', r.from_account) + input('to_account', '转入账户', r.to_account) + input('reference', '凭证或参考编号', r.reference, { wide: true }) + note(r.note);
+                fields = dateField(r.date) + select('direction', '转账类型', r.direction || 'out', [['out', '转出'], ['in', '转入'], ['internal', '自己的账户间转账']]) + amountField('amount', '转账金额', r.amount) + currencyField(r.currency) + input('counterparty', '对方姓名或名称', r.counterparty) + input('method', '转账方式', r.method, { help: '例如银行转账、Zelle、现金、微信' }) + input('from_account', '转出账户', r.from_account) + input('to_account', '转入账户', r.to_account) + input('reference', '凭证或参考编号', r.reference, { wide: true }) + (actorTypes.has(type) ? actorFields(r, type) : '') + note(r.note);
             } else if (type === 'loans') {
                 title = record ? '编辑借贷' : '记录借贷'; intro = '这里只记录本金往来。后续还款请在详情中单独记录，保留每次还款的历史。';
                 const locked = Boolean(r.repayments?.length);
-                fields = dateField(r.date) + select('direction', '借贷方向', r.direction || 'lent', [['lent', '我借给别人'], ['borrowed', '我向别人借']], locked) + input('counterparty', '对方姓名', r.counterparty, { required: true }) + amountField('principal', '借款本金', r.principal) + currencyField(r.currency, locked) + input('due_date', '约定还款日期（可不填）', r.due_date || '', { type: 'date' }) + note(r.note);
+                fields = dateField(r.date) + select('direction', '借贷方向', r.direction || 'lent', [['lent', '我借给别人'], ['borrowed', '我向别人借']], locked) + input('counterparty', '对方姓名', r.counterparty, { required: true }) + amountField('principal', '借款本金', r.principal) + currencyField(r.currency, locked) + input('due_date', '约定还款日期（可不填）', r.due_date || '', { type: 'date' }) + (actorTypes.has(type) ? actorFields(r, type) : '') + note(r.note);
             } else if (type === 'products') {
                 title = record ? '编辑商品' : '添加商品'; intro = record ? '商品已有进出货历史后，库存核算币种与数量单位不能修改。数量通过进出货记录维护。' : '选择商品库存与毛利的核算币种。每笔进出货的货款和后续收付款可以使用不同币种。';
                 const locked = Boolean(record && state.movements.some(m => m.product_id === r.id));
-                fields = input('name', '商品名称', r.name, { required: true }) + input('sku', '商品编号（可不填）', r.sku) + input('unit', '数量单位', r.unit || '件', { required: true, disabled: locked }) + currencyField(r.currency, locked, '库存核算币种') + input('location', '存放位置（可不填）', r.location, { wide: true }) + note(r.note);
+                fields = input('name', '商品名称', r.name, { required: true }) + input('sku', '商品编号（可不填）', r.sku) + input('unit', '数量单位', r.unit || '件', { required: true, disabled: locked }) + currencyField(r.currency, locked, '库存核算币种') + input('location', '存放位置（可不填）', r.location, { wide: true }) + (actorTypes.has(type) ? actorFields(r, type) : '') + note(r.note);
             } else if (type === 'projects') {
                 title = record ? '编辑合资项目' : '添加合资项目';
                 intro = '出资比例自动按折算金额计算，计划分红比例按约定填写。预计利润只分配利润，不含返还本金；项目核算币种保存后固定。';
@@ -568,7 +584,7 @@
                 const invoiceCurrency = r.currency || product.currency;
                 const rate = r.exchange_rate ?? (invoiceCurrency === product.currency ? '1' : '');
                 fields = dateField(r.date) + select('kind', '记录类型', r.kind || 'purchase', [['purchase', '进货'], ['sale', '出货'], ['opening', '期初库存']], locked) + select('product_id', '商品', r.product_id || product.id, availableProducts.map(p => [p.id, `${p.name} · 核算 ${p.currency} / ${p.unit}`]), locked) + amountField('quantity', '数量', r.quantity) + currencyField(invoiceCurrency, locked, '货款币种') + amountField('unit_price', '每单位价格 / 成本（货款币种）', r.unit_price) + amountField('paid_amount', record ? '最初已收付金额（货款币种）' : '已收付金额（货款币种）', record ? r.initial_paid_amount : 0) + inventoryRateField('financeMovementRateLabel', rate) +
-                    '<div class="col-12"><div class="finance-inventory-preview" aria-live="polite"><div><span>原币种货款总额</span><strong id="financeMovementTotal">—</strong></div><div><span>折算库存核算金额</span><strong id="financeMovementBaseTotal">—</strong></div><p id="financeMovementHint"></p></div></div>' + select('project_id', '项目（可不选）', r.project_id || '', [['', '不关联项目'], ...state.projects.filter(project => !project.voided || project.id === r.project_id).map(project => [project.id, `${project.name}${project.voided ? '（已作废，历史关联）' : ''}`])]) + input('counterparty', '供应商或客户（可不填）', r.counterparty) + note(r.note);
+                    '<div class="col-12"><div class="finance-inventory-preview" aria-live="polite"><div><span>原币种货款总额</span><strong id="financeMovementTotal">—</strong></div><div><span>折算库存核算金额</span><strong id="financeMovementBaseTotal">—</strong></div><p id="financeMovementHint"></p></div></div>' + select('project_id', '项目（可不选）', r.project_id || '', [['', '不关联项目'], ...state.projects.filter(project => !project.voided || project.id === r.project_id).map(project => [project.id, `${project.name}${project.voided ? '（已作废，历史关联）' : ''}`])]) + input('counterparty', '供应商或客户（可不填）', r.counterparty) + (actorTypes.has(type) ? actorFields(r, type) : '') + note(r.note);
             } else if (type === 'exchanges') {
                 title = record ? '编辑换汇' : '记录换汇';
                 intro = '填写两笔成交金额，自动得到汇率；也可填写换出金额与汇率，自动计算换入金额。手续费单独记录，避免重复扣费。';
@@ -582,7 +598,7 @@
                     select('fee_currency', '手续费币种', r.fee_currency || from, [[from, from], [to, to]]) +
                     '<div class="col-12"><div class="finance-exchange-preview" aria-live="polite"><div><span>实际支出</span><strong id="financeExchangeDebit">—</strong></div><div><span>实际到账</span><strong id="financeExchangeReceipt">—</strong></div><p id="financeExchangeEffectiveRate"></p></div></div>' +
                     input('from_account', '换出账户（可不填）', r.from_account) + input('to_account', '换入账户（可不填）', r.to_account) +
-                    input('method', '换汇方式（可不填）', r.method, { help: '例如银行换汇、现金、线上换汇' }) + input('reference', '凭证或参考编号（可不填）', r.reference) + note(r.note);
+                    input('method', '换汇方式（可不填）', r.method, { help: '例如银行换汇、现金、线上换汇' }) + input('reference', '凭证或参考编号（可不填）', r.reference) + (actorTypes.has(type) ? actorFields(r, type) : '') + note(r.note);
             } else {
                 const isLoan = type === 'repayments', isReceiving = isLoan ? parent.direction === 'lent' : parent.kind === 'sale';
                 title = isLoan ? (isReceiving ? '记录收到的还款' : '记录我的还款') : (isReceiving ? '记录收款' : '记录付款');
@@ -590,8 +606,8 @@
                 intro = `尚未结清 ${money(remaining, parent.currency)}。填写本次金额，可以记录部分或全部结清。`;
                 if (!isLoan && currencies.includes(parent.currency)) {
                     intro = `尚未结清的货款为 ${money(remaining, parent.currency)}。实际收付款可以使用另一币种，按本次汇率折抵货款。`;
-                    fields = dateField(today(), parent.date) + currencyField(parent.currency, false, '实际收付款币种') + amountField('amount', `本次实际${isReceiving ? '收到' : '支付'}金额`, remaining) + inventoryRateField('financePaymentRateLabel', '1') + '<div class="col-12"><div class="finance-inventory-preview finance-payment-preview" aria-live="polite"><div><span>折抵货款金额</span><strong id="financePaymentInvoiceAmount">—</strong></div><p id="financePaymentHint"></p></div></div>' + note('');
-                } else fields = dateField(today(), parent.date) + amountField('amount', `本次${isReceiving ? '收到' : '支付'}金额（${parent.currency}）`, remaining, remaining) + note('');
+                    fields = dateField(today(), parent.date) + currencyField(parent.currency, false, '实际收付款币种') + amountField('amount', `本次实际${isReceiving ? '收到' : '支付'}金额`, remaining) + inventoryRateField('financePaymentRateLabel', '1') + '<div class="col-12"><div class="finance-inventory-preview finance-payment-preview" aria-live="polite"><div><span>折抵货款金额</span><strong id="financePaymentInvoiceAmount">—</strong></div><p id="financePaymentHint"></p></div></div>' + actorFields(r, type) + note('');
+                } else fields = dateField(today(), parent.date) + amountField('amount', `本次${isReceiving ? '收到' : '支付'}金额（${parent.currency}）`, remaining, remaining) + actorFields(r, type) + note('');
             }
             $('financeEditTitle').textContent = title;
             $('financeFormIntro').textContent = intro;
@@ -659,6 +675,7 @@
             const derived = exchangeAmounts(values);
             if (!editor.rateMode) quoteField.value = derived.exchange_rate > 0 ? String(Number(derived.exchange_rate.toPrecision(12))) : '';
             $('financeExchangeRateLabel').textContent = `成交汇率：1 ${from} = 多少 ${to}`;
+            $('financeActorsIntro').textContent = `付款人支付换出的 ${from}，收款人收到换入的 ${to}；可以与换汇对方或机构不同。`;
             $('financeExchangeRateHelp').textContent = derived.exchange_rate > 0 ? `1 ${from} = ${formatRate(derived.exchange_rate)} ${to}；反向：1 ${to} = ${formatRate(derived.inverse_rate)} ${from}。以上汇率不含手续费。` : `按 ${from} 换成 ${to} 的方向填写。也可以直接填写两笔金额，计算成交汇率。`;
             $('financeExchangeDebit').textContent = cleanNumber(values.from_amount) > 0 ? money(derived.debited_amount, from) : '—';
             $('financeExchangeReceipt').textContent = cleanNumber(values.to_amount) > 0 ? money(derived.received_amount, to) : '—';
@@ -684,6 +701,7 @@
             if (type === 'movements') { payload.kind = get('kind') || record?.kind; payload.product_id = Number(get('product_id') || record?.product_id); payload.quantity = get('quantity'); payload.unit_price = get('unit_price'); payload.paid_amount = payload.kind === 'opening' ? '0' : get('paid_amount'); payload.currency = get('currency') || record?.currency; payload.exchange_rate = get('exchange_rate') || ($('financeForm').elements.namedItem('exchange_rate')?.disabled ? '1' : ''); }
             if (type === 'movements' && (record || get('project_id'))) payload.project_id = get('project_id') ? Number(get('project_id')) : null;
             if (type === 'payments' && currencies.includes(parent.currency)) { payload.currency = get('currency'); payload.exchange_rate = get('exchange_rate') || ($('financeForm').elements.namedItem('exchange_rate')?.disabled ? '1' : ''); }
+            if (actorTypes.has(type)) for (const field of ['payer', 'recipient']) if (record || get(field)) payload[field] = get(field);
             const validationRecord = type === 'movements' ? { ...record, base_currency: state.products.find(p => p.id === payload.product_id)?.currency } : parent || record;
             const error = validatePayload(type, payload, validationRecord);
             if (error) throw new Error(error);
@@ -749,6 +767,10 @@
                 if (r.kind === 'sale') fields.push(detailField('出货成本（库存核算币种）', baseCash(r.cost_of_goods)), detailField('出货毛利（库存核算币种）', baseCash(r.realized_profit)));
                 if (r.project_id) fields.push(detailField('关联项目', `<button type="button" class="btn finance-project-link" data-finance-detail="projects" data-id="${Number(r.project_id)}">${text(r.project_name || state.projects.find(project => project.id === r.project_id)?.name)}</button>`));
             }
+            if (actorTypes.has(type)) {
+                const scope = type === 'loans' ? '本金' : type === 'movements' ? '最初收付的' : '';
+                fields.push(detailField(type === 'exchanges' ? `付款人（换出 ${r.from_currency}）` : `${scope}付款人（谁付的）`, text(r.payer)), detailField(type === 'exchanges' ? `收款人（换入 ${r.to_currency}）` : `${scope}收款人（谁收的）`, text(r.recipient)));
+            }
             fields.push(detailField('备注', text(r.note), true));
             let history = '';
             if (type === 'projects') {
@@ -769,7 +791,8 @@
                 history = `<div class="finance-history"><h6>${title}</h6>${(r[nested] || []).length ? r[nested].map(payment => {
                     const paymentCurrency = payment.currency || r.currency;
                     const conversion = type === 'movements' ? `<small class="finance-history-conversion">折抵 ${money(payment.invoice_amount ?? payment.amount, payment.invoice_currency || r.currency, p)}；1 ${escape(paymentCurrency)} = ${formatRate(payment.exchange_rate ?? 1, p)} ${escape(payment.invoice_currency || r.currency)}</small>` : '';
-                    return `<div class="finance-history-row"><span>${text(payment.date)}</span><span>${text(payment.note)}${payment.voided ? ` ${badge('void')}` : ''}${conversion}</span><strong>${money(payment.amount, type === 'movements' ? paymentCurrency : r.currency, p)}</strong>${!r.voided && !payment.voided ? `<button type="button" class="btn btn-outline-secondary" data-finance-void="${nested}" data-id="${payment.id}" data-parent="${r.id}">作废</button>` : '<span></span>'}</div>`;
+                    const actors = actorLine(payment, p);
+                    return `<div class="finance-history-row"><span>${text(payment.date)}</span><span>${text(payment.note)}${payment.voided ? ` ${badge('void')}` : ''}${actors ? `<small class="finance-history-actors">本次${actors}</small>` : ''}${conversion}</span><strong>${money(payment.amount, type === 'movements' ? paymentCurrency : r.currency, p)}</strong>${!r.voided && !payment.voided ? `<button type="button" class="btn btn-outline-secondary" data-finance-void="${nested}" data-id="${payment.id}" data-parent="${r.id}">作废</button>` : '<span></span>'}</div>`;
                 }).join('') : '<p class="small text-muted mb-0">尚未记录分次收付款。</p>'}${type === 'movements' ? '<p class="finance-private-note mt-3 mb-0">折抵金额只计入一次货款余额。出货毛利不包含后续收付款产生的汇兑损益。</p>' : ''}</div>`;
             }
             $('financeDetailsTitle').textContent = `${types[type].name}详情`;
@@ -850,6 +873,8 @@
         }
         function refreshPrivacy() {
             if (privateMode()) {
+                if ($('financeSummary')) $('financeSummary').open = false;
+                updateSummaryHint();
                 $('financeSearch').value = '';
                 for (const id of ['financeEditModal', 'financeDetailsModal', 'financeVoidModal']) getModal(id).hide();
                 $('financeFormFields').innerHTML = ''; $('financeFormIntro').textContent = ''; $('financeDetailsBody').innerHTML = ''; $('financeDetailsActions').innerHTML = '';
@@ -871,6 +896,7 @@
         $('financeForm').addEventListener('change', updateEditorPreview);
         $('financeForm').addEventListener('click', handleProjectAction);
         $('financeVoidConfirm').addEventListener('click', confirmVoid);
+        if ($('financeSummary')) { $('financeSummary').open = false; $('financeSummary').addEventListener('toggle', updateSummaryHint); updateSummaryHint(); }
         ['financeEditModal', 'financeVoidModal'].forEach(id => $(id).addEventListener('hide.bs.modal', event => { if (busy && !privateMode()) event.preventDefault(); }));
         changeSection('transfers');
         return { load, refreshPrivacy, setPrivate(value) { privateOverride = Boolean(value); refreshPrivacy(); } };

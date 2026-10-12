@@ -17,6 +17,13 @@ The personal **Finance** tab is a separate PostgreSQL ledger for important trans
 money lent/borrowed, merchandise purchases/sales, and joint-financing projects. It does not change investment
 holdings, cash snapshots, or portfolio returns. The public demo does not load it.
 
+The currency summary starts collapsed; expand it when needed. Each transfer,
+loan principal, exchange, initial inventory payment, repayment, and subsequent
+inventory payment can record an optional payer and recipient separately from
+the counterparty. These names describe the people who handled that money,
+remain searchable in history, and never change the recorded financial amounts.
+Old records without names remain blank rather than inferring participants.
+
 - **转账记录** saves the date, direction, original currency, counterparty,
   accounts, payment method, reference, and notes. Internal transfers are excluded
   from transfer inflow/outflow totals.
