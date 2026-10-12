@@ -17,7 +17,7 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
                                        base_url='https://portfolio.test')
         self.headers = {'Authorization': 'Bearer finance-api-test'}
-        self.state = dict(transfers=[], loans=[], products=[], movements=[], exchanges=[], summary=[])
+        self.state = dict(transfers=[], loans=[], products=[], movements=[], exchanges=[], projects=[], summary=[])
         self.transfer = dict(date='2026-01-01', direction='in', amount='100', request_id=str(uuid4()))
 
     async def asyncTearDown(self):
@@ -31,6 +31,7 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
                 ('GET', '/api/finance'),
                 ('POST', '/api/finance/transfers'), ('PUT', '/api/finance/transfers/1'), ('DELETE', '/api/finance/transfers/1'),
                 ('POST', '/api/finance/exchanges'), ('PUT', '/api/finance/exchanges/1'), ('DELETE', '/api/finance/exchanges/1'),
+                ('POST', '/api/finance/projects'), ('PUT', '/api/finance/projects/1'), ('DELETE', '/api/finance/projects/1'),
                 ('POST', '/api/finance/loans'), ('PUT', '/api/finance/loans/1'), ('DELETE', '/api/finance/loans/1'),
                 ('POST', '/api/finance/products'), ('PUT', '/api/finance/products/1'), ('DELETE', '/api/finance/products/1'),
                 ('POST', '/api/finance/movements'), ('PUT', '/api/finance/movements/1'), ('DELETE', '/api/finance/movements/1'),
@@ -150,6 +151,51 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post('/api/finance/loans/7/repayments', json=payment, headers=self.headers)
             self.assertEqual(response.status_code, 422)
             self.assertEqual(write.call_count, 1)
+
+    async def test_project_crud_returns_state_and_keeps_forecast_out_of_investments(self):
+        plan = dict(date='2026-01-01', name='Tea', expected_profit=0,
+                    participants=[dict(name='Kevin', contribution_amount='600.00', dividend_percent=60),
+                                  dict(name='Partner', contribution_amount=400, dividend_percent=30)],
+                    request_id=str(uuid4()))
+        with patch.object(finance_api.repository, 'create_record', return_value=self.state) as create, \
+             patch.object(finance_api.repository, 'update_record', return_value=self.state) as update, \
+             patch.object(finance_api.repository, 'void_record', return_value=self.state) as void, \
+             patch.object(main, '_queue_ledger_reload') as reload:
+            response = await self.client.post('/api/finance/projects', json=plan, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), self.state)
+            self.assertEqual(create.call_args.args[0], 'projects')
+            self.assertEqual(request_data(create.call_args.args[1])['participants'][0]['contribution_amount'], '600')
+            body = {k: v for k, v in plan.items() if k != 'request_id'}
+            response = await self.client.put('/api/finance/projects/3', json={**body, 'version': 2}, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(update.call_args.args[:2], ('projects', 3))
+            response = await self.client.delete('/api/finance/projects/3?version=3', headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            void.assert_called_once_with('projects', 3, 3)
+            reload.assert_not_called()
+
+    async def test_invalid_project_plans_never_reach_writer(self):
+        plan = dict(date='2026-01-01', name='Tea', participants=[dict(name='Kevin', contribution_amount=100, dividend_percent=60)], request_id=str(uuid4()))
+        with patch.object(finance_api.repository, 'create_record') as create:
+            for values in [dict(expected_profit=-1), dict(participants=[]), dict(currency='HKD'),
+                           dict(participants=plan['participants'] * 2),
+                           dict(participants=[dict(name='A', contribution_amount=100, dividend_percent=101)]),
+                           dict(participants=[dict(name='A', contribution_amount='.000001', currency='CNY', exchange_rate='.000000000001', dividend_percent=50)])]:
+                response = await self.client.post('/api/finance/projects', json={**plan, **values}, headers=self.headers)
+                self.assertEqual(response.status_code, 422)
+            create.assert_not_called()
+
+    async def test_movement_link_null_is_forwarded_and_omitted_link_is_preserved(self):
+        body = dict(date='2026-01-01', product_id=1, kind='purchase', quantity=1, unit_price=1, version=1)
+        with patch.object(finance_api.repository, 'update_record', return_value=self.state) as update:
+            response = await self.client.put('/api/finance/movements/1', json=body, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn('project_id', request_data(update.call_args.args[2]))
+            response = await self.client.put('/api/finance/movements/1', json={**body, 'project_id': None}, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('project_id', request_data(update.call_args.args[2]))
+            self.assertIsNone(request_data(update.call_args.args[2])['project_id'])
 
 
 if __name__ == '__main__':

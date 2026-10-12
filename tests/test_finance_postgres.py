@@ -1,6 +1,9 @@
 """Opt-in, disposable localhost PostgreSQL persistence/concurrency regressions."""
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 import os
+from pathlib import Path
+import subprocess
 import threading
 import unittest
 from unittest.mock import patch
@@ -16,6 +19,7 @@ from app.finance import (ExchangeCreate, ExchangeUpdate, FinanceError, Inventory
                          LoanCreate, LoanUpdate, MovementCreate,
                          MovementUpdate, PaymentCreate, ProductCreate, ProductUpdate,
                          TransferCreate, TransferUpdate)
+from app.finance import ProjectCreate, ProjectUpdate
 
 
 @unittest.skipUnless(os.environ.get('IPORTFOLIO_TEST_DATABASE_URL'), 'Requires disposable localhost Postgres')
@@ -63,6 +67,13 @@ class FinancePostgresTests(unittest.TestCase):
         return ExchangeCreate(**dict(dict(request_id=uuid4(), date='2026-01-01',
                                           from_currency='USD', to_currency='CNY',
                                           from_amount=1000, to_amount=7200, fee_amount=5), **values))
+
+    def project(self, **values):
+        defaults = dict(request_id=uuid4(), date='2026-01-01', name='Tea partnership', expected_profit=250,
+                        participants=[dict(name='Kevin', contribution_amount=600, dividend_percent=60),
+                                      dict(name='Partner', contribution_amount=2800, currency='CNY', exchange_rate='.142857142857', dividend_percent=40)])
+        defaults.update(values)
+        return ProjectCreate(**defaults)
 
     def row_count(self, table):
         with self.pool.connection() as conn:
@@ -344,6 +355,151 @@ class FinancePostgresTests(unittest.TestCase):
         self.assertEqual(self.row_count('finance_payments'), 1)
         self.assertEqual(self.row_count('finance_requests'), 3)
         self.assertEqual(self.row_count('finance_audit'), 4)
+
+    def test_project_crud_versions_nested_retry_and_global_uuid_guards(self):
+        request = self.project()
+        first = ledger.create_record('projects', request)
+        saved = first['projects'][0]
+        self.assertEqual((saved['total_contribution'], saved['dividend_percent_total'], saved['allocation_complete']), (1000, 100, True))
+        self.assertEqual([p['expected_dividend'] for p in saved['participants']], [150, 100])
+        self.assertEqual(first['summary'], [])
+        data = request.model_dump()
+        data['participants'][0]['contribution_amount'] = '600.00'
+        self.assertEqual(ledger.create_record('projects', ProjectCreate(**data)), first)
+        self.assertEqual(self.row_count('finance_project_requests'), 1)
+        self.assertEqual(self.row_count('finance_requests'), 0)
+        with self.assertRaisesRegex(FinanceError, 'different values'):
+            ledger.create_record('transfers', self.transfer(request_id=request.request_id))
+        normal = self.transfer()
+        ledger.create_record('transfers', normal)
+        with self.assertRaisesRegex(FinanceError, 'different values'):
+            ledger.create_record('projects', self.project(request_id=normal.request_id))
+        updated = ledger.update_record('projects', 1, ProjectUpdate(**dict(saved['request_fields'], expected_profit=0), version=1))
+        self.assertEqual(updated['projects'][0]['expected_profit'], 0)
+        self.assertEqual(updated['projects'][0]['version'], 2)
+        with self.assertRaisesRegex(FinanceError, 'changed'):
+            ledger.void_record('projects', 1, 1)
+        with self.assertRaisesRegex(FinanceError, 'Project currency'):
+            fields = dict(updated['projects'][0]['request_fields'], currency='CNY')
+            fields['participants'] = [dict(p, currency='CNY', exchange_rate=1) for p in fields['participants']]
+            ledger.update_record('projects', 1, ProjectUpdate(**fields, version=2))
+        final = ledger.void_record('projects', 1, 2)
+        self.assertEqual(final['projects'][0]['status'], 'void')
+        self.assertEqual(ledger.create_record('projects', request), final)
+        with self.pool.connection() as conn:
+            rows = conn.execute('SELECT action, before_data, after_data FROM finance_audit WHERE entity_kind=%s ORDER BY id', ('projects',)).fetchall()
+        self.assertEqual([row[0] for row in rows], ['create', 'update', 'void'])
+        self.assertEqual((rows[1][1]['expected_profit'], rows[1][2]['expected_profit']), ('250', '0'))
+        self.assertEqual(self.row_count('transactions'), 0)
+
+    def test_exact_project_edit_inputs_retain_near_cap_micro_units(self):
+        request = self.project(expected_profit='999999999999.000001', participants=[
+            dict(name='Kevin', contribution_amount='999999999999.000001', dividend_percent='33.333333')])
+        saved = ledger.create_record('projects', request)['projects'][0]
+        with self.pool.connection() as conn:
+            original = conn.execute('SELECT payload FROM finance_projects WHERE id=1').fetchone()[0]
+        updated = ledger.update_record('projects', 1, ProjectUpdate(**saved['request_fields'], version=1))['projects'][0]
+        self.assertEqual(updated['request_fields']['expected_profit'], '999999999999.000001')
+        self.assertEqual(updated['request_fields']['participants'][0]['contribution_amount'], '999999999999.000001')
+        exact = updated['calculation_fields']
+        self.assertEqual(exact['total_contribution'], '999999999999.000001')
+        self.assertEqual(exact['participants'][0]['base_amount'], '999999999999.000001')
+        self.assertEqual(Decimal(exact['participants'][0]['expected_dividend']) + Decimal(exact['unallocated_profit']),
+                         Decimal(updated['request_fields']['expected_profit']))
+        self.assertEqual(ledger.list_finance()['projects'][0]['calculation_fields'], exact)
+        with self.pool.connection() as conn:
+            self.assertEqual(conn.execute('SELECT payload FROM finance_projects WHERE id=1').fetchone()[0], original)
+
+    def test_project_movement_link_omit_clear_and_voided_history_are_atomic(self):
+        ledger.create_record('projects', self.project())
+        ledger.create_record('products', self.product())
+        old_request = self.movement()
+        legacy = ledger.create_record('movements', old_request)
+        self.assertEqual(ledger.create_record('movements', old_request), legacy)
+        fields = dict(date='2026-01-02', product_id=1, kind='purchase', quantity=10, unit_price=10)
+        linked = ledger.update_record('movements', 1, MovementUpdate(**fields, project_id=1, version=1))
+        self.assertEqual(linked['projects'][0]['active_movement_ids'], [1])
+        with self.assertRaisesRegex(FinanceError, 'active movements'):
+            ledger.void_record('projects', 1, 1)
+        preserved = ledger.update_record('movements', 1, MovementUpdate(**fields, version=2))
+        self.assertEqual(preserved['movements'][0]['project_id'], 1)
+        cleared = ledger.update_record('movements', 1, MovementUpdate(**fields, project_id=None, version=3))
+        self.assertIsNone(cleared['movements'][0]['project_id'])
+        self.assertEqual(cleared['projects'][0]['movement_ids'], [])
+        voided = ledger.void_record('projects', 1, 1)
+        with self.assertRaisesRegex(FinanceError, 'active project'):
+            ledger.update_record('movements', 1, MovementUpdate(**fields, project_id=1, version=4))
+        with self.assertRaisesRegex(FinanceError, 'active project'):
+            ledger.create_record('movements', self.movement(project_id=99))
+        self.assertEqual(ledger.list_finance(), voided)
+        ledger.create_record('projects', self.project(name='Second plan'))
+        ledger.update_record('movements', 1, MovementUpdate(**fields, project_id=2, version=4))
+        ledger.void_record('movements', 1, 5)
+        final = ledger.void_record('projects', 2, 1)
+        archived = next(p for p in final['projects'] if p['id'] == 2)
+        self.assertEqual((archived['status'], archived['movement_ids'], archived['active_movement_ids']), ('void', [1], []))
+        self.assertEqual(final['movements'][0]['project_name'], 'Second plan')
+
+    def test_project_schema_upgrade_and_old_image_boot_preserve_all_journals(self):
+        transfer = self.transfer()
+        ledger.create_record('transfers', transfer)
+        with self.pool.connection() as conn:
+            conn.execute('DROP TABLE finance_project_requests')
+            conn.execute('DROP TABLE finance_projects')
+        db.init_schema()
+        db.init_schema()
+        request = self.project(expected_profit=1, participants=[
+            dict(name='A', contribution_amount=1, dividend_percent='33.333333'),
+            dict(name='B', contribution_amount=1, dividend_percent='33.333333'),
+            dict(name='C', contribution_amount=1, dividend_percent='33.333334')])
+        saved = ledger.create_record('projects', request)
+        def snapshot():
+            with self.pool.connection() as conn:
+                return {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
+                        for table in ('finance_projects', 'finance_project_requests', 'finance_requests', 'finance_audit')}
+        before = snapshot()
+        old_schema = subprocess.check_output(['git', 'show', 'c78fda3:schema.sql'], cwd=Path(__file__).resolve().parents[1], text=True)
+        with self.pool.connection() as conn:
+            conn.execute(old_schema)  # Actual retained rollback image's schema bootstrap.
+        self.assertEqual(snapshot(), before)
+        db.init_schema()
+        db.init_schema()
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(ledger.list_finance(), saved)
+        self.assertEqual(ledger.create_record('projects', request), saved)
+        self.assertEqual(ledger.create_record('transfers', transfer), saved)
+
+    def test_competing_project_request_saves_once_and_link_void_cannot_race(self):
+        request = self.project()
+        barrier = threading.Barrier(2)
+        def save():
+            barrier.wait()
+            return ledger.create_record('projects', request)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: save(), range(2)))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(self.row_count('finance_projects'), 1)
+        self.assertEqual(self.row_count('finance_project_requests'), 1)
+        self.assertEqual(self.row_count('finance_audit'), 1)
+        ledger.create_record('products', self.product())
+        barrier = threading.Barrier(2)
+        def mutate(operation):
+            barrier.wait()
+            try:
+                return ledger.create_record('movements', self.movement(project_id=1)) if operation == 'link' else ledger.void_record('projects', 1, 1)
+            except FinanceError:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(mutate, ('link', 'void')))
+        self.assertEqual(sum(r is not None for r in results), 1)
+        final = ledger.list_finance()
+        plan = final['projects'][0]
+        if plan['voided']:
+            self.assertEqual(plan['active_movement_ids'], [])
+            self.assertEqual(final['movements'], [])
+        else:
+            self.assertEqual(plan['active_movement_ids'], [1])
+            self.assertEqual(final['movements'][0]['project_id'], 1)
 
 
 if __name__ == '__main__':

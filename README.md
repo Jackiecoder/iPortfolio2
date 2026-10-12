@@ -14,7 +14,7 @@ performance charts, dividend tracking, and an independent financial ledger.
 ## 财务
 
 The personal **Finance** tab is a separate PostgreSQL ledger for important transfers,
-money lent/borrowed, and merchandise purchases/sales. It does not change investment
+money lent/borrowed, merchandise purchases/sales, and joint-financing projects. It does not change investment
 holdings, cash snapshots, or portfolio returns. The public demo does not load it.
 
 - **转账记录** saves the date, direction, original currency, counterparty,
@@ -40,6 +40,16 @@ holdings, cash snapshots, or portfolio returns. The public demo does not load it
   may use a different currency and an explicit rate into the invoice currency.
   The original payment amount and its invoice-equivalent amount are both saved.
   Invoice currency is fixed once any payment history exists.
+- **合资项目** records each participant's contribution amount and currency,
+  an explicit exchange rate into the project's fixed accounting currency, and
+  their automatically calculated contribution percentage. Planned dividend
+  percentages are independent of contribution percentages. Expected distributable
+  profit excludes returned principal; each participant's forecast dividend is
+  shown separately. Incomplete allocation plans may be saved with an unallocated
+  percentage and profit amount; allocations cannot exceed 100%. Rounding
+  reconciles forecast dividends and unallocated profit to the project total.
+  Projects can be linked from individual inventory movements. Forecasts are
+  planning figures and do not add realized profit, transfers, or investment cash.
 
 Currency selectors currently offer USD and CNY. Historical records retain their
 original currencies, summarized independently without inventing exchange rates.

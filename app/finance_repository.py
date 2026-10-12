@@ -9,7 +9,7 @@ from .finance import (FinanceError, empty_state, find_record, replay, request_da
 # Fixed, separate from the investment ledger's lock. Every writer participates.
 FINANCE_LOCK = 738190241
 TABLES = {kind: 'finance_' + kind for kind in (
-    'transfers', 'loans', 'products', 'movements', 'repayments', 'payments', 'exchanges')}
+    'transfers', 'loans', 'products', 'movements', 'repayments', 'payments', 'exchanges', 'projects')}
 CHILDREN = {'loans': 'repayments', 'movements': 'payments'}
 
 
@@ -56,17 +56,20 @@ def _audit(conn, kind, record_id, action, before, after):
 
 
 def _idempotent(conn, request_id, kind, parent_id, payload):
-    prior = conn.execute('SELECT entity_kind, parent_id, request_payload FROM finance_requests WHERE request_id = %s',
-                         (request_id,)).fetchone()
-    if prior is None:
-        return False
-    if prior[0] != kind or prior[1] != parent_id or prior[2] != payload:
-        raise FinanceError('This request was already saved with different values; refresh and try again', 409)
-    return True
+    found = False
+    for table in ('finance_requests', 'finance_project_requests'):
+        prior = conn.execute(f'SELECT entity_kind, parent_id, request_payload FROM {table} WHERE request_id = %s',
+                             (request_id,)).fetchone()
+        if prior is not None:
+            if prior[0] != kind or prior[1] != parent_id or prior[2] != payload:
+                raise FinanceError('This request was already saved with different values; refresh and try again', 409)
+            found = True
+    return found
 
 
 def _remember(conn, kind, parent_id, record_id, payload):
-    conn.execute('''INSERT INTO finance_requests
+    table = 'finance_project_requests' if kind == 'projects' else 'finance_requests'
+    conn.execute(f'''INSERT INTO {table}
                     (request_id, entity_kind, parent_id, entity_id, request_payload)
                     VALUES (%s, %s, %s, %s, %s::jsonb)''',
                  (payload['request_id'], kind, parent_id, record_id, json.dumps(payload)))

@@ -5,9 +5,9 @@ investment transactions or contribute to the portfolio's cash or performance.
 """
 from copy import deepcopy
 from datetime import date, datetime
-from decimal import Decimal, localcontext
+from decimal import Decimal, ROUND_FLOOR, localcontext
 import re
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -70,10 +70,13 @@ class FinanceModel(BaseModel):
         return value
 
     @field_validator('amount', 'principal', 'quantity', 'unit_price', 'paid_amount',
-                     'from_amount', 'to_amount', 'fee_amount',
+                     'from_amount', 'to_amount', 'fee_amount', 'expected_profit',
+                     'contribution_amount', 'dividend_percent',
                      mode='before', check_fields=False)
     @classmethod
     def exact_number(cls, value, info):
+        if value is None and info.field_name == 'expected_profit':
+            return None
         if isinstance(value, bool):
             raise ValueError('Amount must be a number')
         try:
@@ -86,7 +89,9 @@ class FinanceModel(BaseModel):
             raise ValueError('Amount is too large')
         if result != result.quantize(PRECISION):
             raise ValueError('Use at most 6 decimal places')
-        if result < 0 or (result == 0 and info.field_name not in ('unit_price', 'paid_amount', 'fee_amount')):
+        if result < 0 or (result == 0 and info.field_name not in (
+                'unit_price', 'paid_amount', 'fee_amount', 'expected_profit',
+                'contribution_amount', 'dividend_percent')):
             raise ValueError('Amount must be positive')
         return result
 
@@ -213,6 +218,49 @@ class ProductUpdate(ProductFields):
     version: int = Field(ge=1, strict=True)
 
 
+class ProjectParticipant(FinanceModel):
+    name: str = Field(min_length=1, max_length=200)
+    contribution_amount: Decimal
+    currency: Optional[str] = None
+    exchange_rate: Optional[Decimal] = None
+    dividend_percent: Decimal = Field(ge=0, le=100)
+    note: str = Field(default='', max_length=2000)
+
+
+class ProjectFields(FinanceModel):
+    date: date
+    name: str = Field(min_length=1, max_length=200)
+    currency: str = 'USD'
+    expected_profit: Optional[Decimal] = None
+    participants: List[ProjectParticipant] = Field(min_length=1, max_length=50)
+    note: str = Field(default='', max_length=2000)
+
+    @model_validator(mode='after')
+    def valid_plan(self):
+        names = [p.name.casefold() for p in self.participants]
+        if len(set(names)) != len(names):
+            raise ValueError('Participant names must be unique')
+        with localcontext() as ctx:
+            ctx.prec = 48
+            if sum((p.dividend_percent for p in self.participants), ZERO) > 100:
+                raise ValueError('Dividend percentages cannot exceed 100 in total')
+            for participant in self.participants:
+                currency, rate = resolve_currency_rate(participant.model_dump(), self.currency)
+                if participant.contribution_amount > 0 and rounded(participant.contribution_amount * rate) <= 0:
+                    raise ValueError('Converted contribution amount must be positive')
+                participant.currency = currency
+                participant.exchange_rate = rate
+        return self
+
+
+class ProjectCreate(ProjectFields):
+    request_id: UUID
+
+
+class ProjectUpdate(ProjectFields):
+    version: int = Field(ge=1, strict=True)
+
+
 class MovementFields(FinanceModel):
     date: date
     product_id: int = Field(ge=1, strict=True)
@@ -222,6 +270,7 @@ class MovementFields(FinanceModel):
     paid_amount: Decimal = D(0)
     currency: Optional[str] = None
     exchange_rate: Optional[Decimal] = None
+    project_id: Optional[int] = Field(default=None, ge=1, strict=True)
     counterparty: str = Field(default='', max_length=200)
     note: str = Field(default='', max_length=2000)
 
@@ -256,20 +305,30 @@ class InventoryPaymentCreate(PaymentCreate):
 
 CREATE_MODELS = {'transfers': TransferCreate, 'loans': LoanCreate,
                  'products': ProductCreate, 'movements': MovementCreate,
-                 'exchanges': ExchangeCreate}
+                 'exchanges': ExchangeCreate, 'projects': ProjectCreate}
 UPDATE_MODELS = {'transfers': TransferUpdate, 'loans': LoanUpdate,
                  'products': ProductUpdate, 'movements': MovementUpdate,
-                 'exchanges': ExchangeUpdate}
+                 'exchanges': ExchangeUpdate, 'projects': ProjectUpdate}
 
 
 def request_data(request):
     """Stable canonical JSON, including decimal strings for storage/idempotency."""
-    values = request.model_dump(mode='json')
+    def canonical(python_value, json_value):
+        if isinstance(python_value, Decimal):
+            return format(python_value.normalize(), 'f')
+        if isinstance(python_value, dict):
+            return {key: canonical(value, json_value[key]) for key, value in python_value.items()}
+        if isinstance(python_value, list):
+            return [canonical(value, item) for value, item in zip(python_value, json_value)]
+        return json_value
+
+    values = canonical(request.model_dump(), request.model_dump(mode='json'))
     for key, value in request.model_dump().items():
         if value is None and key in ('currency', 'exchange_rate'):
             values.pop(key, None)
-        if isinstance(value, Decimal):
-            values[key] = format(value.normalize(), 'f')
+    if values.get('project_id') is None:
+        if not isinstance(request, MovementUpdate) or 'project_id' not in request.model_fields_set:
+            values.pop('project_id', None)
     return values
 
 
@@ -293,6 +352,8 @@ def require_version(record, version):
 
 def validate_edit(state, kind, record, values):
     """Fields defining settled historical meaning cannot change silently."""
+    if kind == 'projects' and record['currency'] != values['currency']:
+        raise FinanceError('Project currency cannot change after creation', 409)
     if kind == 'products':
         history = [m for m in state['movements'] if m['product_id'] == record['id']]
         if history and any(record[f] != values[f] for f in ('currency', 'unit')):
@@ -310,6 +371,8 @@ def validate_edit(state, kind, record, values):
 
 
 def validate_void(state, kind, record):
+    if kind == 'projects' and any(m.get('project_id') == record['id'] and not m['voided'] for m in state['movements']):
+        raise FinanceError('Unlink or void the active movements before voiding this project', 409)
     if kind == 'products' and any(m['product_id'] == record['id'] for m in state['movements']):
         raise FinanceError('A product with inventory history cannot be voided', 409)
     if kind == 'loans' and any(not p['voided'] for p in record.get('repayments', [])):
@@ -358,10 +421,76 @@ def _inventory_payments(movement, invoice_currency):
     return total
 
 
+def allocate_residual(total, weights):
+    """Largest remainder at 6 decimals, with stable input-order tie breaking."""
+    denominator = sum(weights, ZERO)
+    if denominator == 0:
+        return [ZERO for _ in weights]
+    exact = [total * weight / denominator for weight in weights]
+    allocated = [value.quantize(PRECISION, rounding=ROUND_FLOOR) for value in exact]
+    residual = int((total - sum(allocated, ZERO)) / PRECISION)
+    order = sorted(range(len(weights)), key=lambda index: (-(exact[index] - allocated[index]), index))
+    for index in order[:residual]:
+        allocated[index] += PRECISION
+    return allocated
+
+
+def project_forecast(project):
+    """A planning calculation; never enters realized financial summaries."""
+    weights, dividends = [], []
+    for participant in project['participants']:
+        amount = money(participant['contribution_amount'])
+        currency, rate = resolve_currency_rate(participant, project['currency'])
+        base_amount = rounded(amount * rate)
+        if amount > 0 and base_amount <= 0:
+            raise FinanceError('Converted contribution amount must be positive')
+        dividend = money(participant['dividend_percent'])
+        participant.update(contribution_amount=amount, currency=currency, exchange_rate=rate,
+                           base_amount=base_amount, dividend_percent=dividend)
+        weights.append(base_amount)
+        dividends.append(dividend)
+    percentages = allocate_residual(D(100), weights)
+    dividend_total = sum(dividends, ZERO)
+    if dividend_total > 100:
+        raise FinanceError('Dividend percentages cannot exceed 100 in total')
+    unallocated_percent = D(100) - dividend_total
+    profit = project.get('expected_profit')
+    forecasts = None if profit is None else allocate_residual(money(profit), dividends + [unallocated_percent])
+    for index, participant in enumerate(project['participants']):
+        participant.update(contribution_percent=percentages[index],
+                           expected_dividend=None if forecasts is None else forecasts[index])
+    # Keep exact editable inputs alongside numeric display/calculation results.
+    # IEEE-754 JSON numbers cannot preserve every micro-unit near the input cap.
+    request_fields = {key: project[key] for key in ('date', 'name', 'currency', 'note')}
+    request_fields['expected_profit'] = None if profit is None else format(money(profit).normalize(), 'f')
+    request_fields['participants'] = [{
+        key: format(participant[key].normalize(), 'f') if isinstance(participant[key], Decimal) else participant[key]
+        for key in ('name', 'contribution_amount', 'currency', 'exchange_rate', 'dividend_percent', 'note')
+    } for participant in project['participants']]
+    project.update(expected_profit=None if profit is None else money(profit),
+                   total_contribution=sum(weights, ZERO), dividend_percent_total=dividend_total,
+                   unallocated_percent=unallocated_percent,
+                   unallocated_profit=None if forecasts is None else forecasts[-1],
+                   allocation_complete=dividend_total == 100,
+                   status='void' if project['voided'] else 'planned',
+                   movement_ids=[], active_movement_ids=[], request_fields=request_fields)
+    # Keep exact derived values too: float display amounts can lose micro-units
+    # even though the allocation and stored inputs reconcile exactly.
+    project['calculation_fields'] = {
+        key: None if project[key] is None else format(project[key].normalize(), 'f')
+        for key in ('total_contribution', 'dividend_percent_total', 'unallocated_percent', 'unallocated_profit')
+    }
+    project['calculation_fields']['participants'] = [{
+        key: None if participant[key] is None else format(participant[key].normalize(), 'f')
+        for key in ('base_amount', 'contribution_percent', 'expected_dividend')
+    } for participant in project['participants']]
+
+
 def replay(state):
     """Validate the entire ledger and derive balances, stock and sales costs."""
     result = deepcopy(state)
     result.setdefault('exchanges', [])
+    result.setdefault('projects', [])
     summary = {}
 
     def bucket(currency):
@@ -375,6 +504,9 @@ def replay(state):
 
     with localcontext() as ctx:
         ctx.prec = 48
+        projects = {p['id']: p for p in result['projects']}
+        for project in projects.values():
+            project_forecast(project)
         for exchange in result['exchanges']:
             principal = money(exchange['from_amount'])
             gross = money(exchange['to_amount'])
@@ -437,6 +569,15 @@ def replay(state):
 
         # Same-date ordering is stable by creation ID, matching the recorded ledger.
         for movement in sorted(result['movements'], key=lambda m: (m['date'], m['id'])):
+            project_id = movement.get('project_id')
+            project = projects.get(project_id) if project_id is not None else None
+            if project_id is not None:
+                if project is None or (project['voided'] and not movement['voided']):
+                    raise FinanceError('Choose an active project')
+                project['movement_ids'].append(movement['id'])
+                if not movement['voided']:
+                    project['active_movement_ids'].append(movement['id'])
+            movement.update(project_id=project_id, project_name=None if project is None else project['name'])
             product = products.get(movement['product_id'])
             if product is None or (product['voided'] and not movement['voided']):
                 raise FinanceError('Choose an active product')
@@ -488,7 +629,7 @@ def replay(state):
             if not product['voided']:
                 bucket(product['currency'])['inventory_cost'] += product['inventory_cost']
     result['summary'] = [summary[c] for c in sorted(summary)]
-    for collection in ('transfers', 'loans', 'movements', 'exchanges'):
+    for collection in ('transfers', 'loans', 'movements', 'exchanges', 'projects'):
         result[collection].sort(key=lambda r: (r['date'], r['id']), reverse=True)
     result['products'].sort(key=lambda r: (r['voided'], r['name'].casefold(), r['id']))
     return json_numbers(result)

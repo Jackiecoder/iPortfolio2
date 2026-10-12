@@ -1,6 +1,7 @@
 """Financial balance and chronological inventory replay regression tests."""
 from copy import deepcopy
 from decimal import Decimal
+import json
 import unittest
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 from app.finance import (ExchangeCreate, FinanceError, InventoryPaymentCreate, LoanCreate, LoanUpdate, MovementCreate,
                          MovementUpdate,
                          ProductCreate, ProductUpdate, PaymentCreate, TransferCreate,
+                         ProjectCreate, ProjectUpdate,
                          empty_state, replay, request_data, validate_edit, validate_void)
 
 
@@ -45,6 +47,14 @@ def exchange(record_id=1, **values):
                     from_amount=1000, to_amount=7200)
     defaults.update(values)
     return record(ExchangeCreate, record_id, **defaults)
+
+
+def project(record_id=1, **values):
+    defaults = dict(date='2026-01-01', name='Tea partnership', participants=[
+        dict(name='Kevin', contribution_amount=100, dividend_percent=60),
+        dict(name='Partner', contribution_amount=50, dividend_percent=30)])
+    defaults.update(values)
+    return record(ProjectCreate, record_id, **defaults)
 
 
 class FinanceModelTests(unittest.TestCase):
@@ -193,6 +203,137 @@ class InventoryCurrencyTests(unittest.TestCase):
         self.assertEqual((result['currency'], result['exchange_rate'], result['base_total'], result['paid_amount']), ('USD', 1, 100, 40))
         self.assertNotIn('currency', legacy)
         self.assertNotIn('exchange_rate', legacy['payments'][0])
+
+
+class ProjectTests(unittest.TestCase):
+    def setUp(self):
+        self.state = empty_state()
+
+    def test_project_zero_or_absent_profit_and_incomplete_allocations_are_distinct(self):
+        for profit in (None, 0):
+            self.state['projects'] = [project(expected_profit=profit)]
+            result = replay(self.state)
+            saved = result['projects'][0]
+            self.assertEqual(saved['total_contribution'], 150)
+            self.assertEqual([p['contribution_percent'] for p in saved['participants']], [66.666667, 33.333333])
+            self.assertEqual((saved['dividend_percent_total'], saved['unallocated_percent'], saved['allocation_complete']), (90, 10, False))
+            self.assertEqual(saved['unallocated_profit'], None if profit is None else 0)
+            self.assertEqual(saved['participants'][0]['expected_dividend'], None if profit is None else 0)
+            exact = saved['calculation_fields']
+            self.assertEqual(exact['unallocated_profit'], None if profit is None else '0')
+            self.assertEqual(exact['participants'][0]['expected_dividend'], None if profit is None else '0')
+            self.assertEqual(result['summary'], [])
+
+    def test_project_contribution_fx_and_forecast_reconcile_with_unallocated_profit(self):
+        self.state['projects'] = [project(expected_profit='123.456789', participants=[
+            dict(name='Kevin', contribution_amount=100, dividend_percent=50),
+            dict(name='Partner', contribution_amount=720, currency='CNY', exchange_rate='.138888888889', dividend_percent=40)])]
+        saved = replay(self.state)['projects'][0]
+        self.assertEqual(saved['total_contribution'], 200)
+        self.assertEqual([p['contribution_percent'] for p in saved['participants']], [50, 50])
+        self.assertEqual([p['expected_dividend'] for p in saved['participants']], [61.728394, 49.382716])
+        self.assertEqual(saved['unallocated_profit'], 12.345679)
+        total = sum((Decimal(str(p['expected_dividend'])) for p in saved['participants']), Decimal(str(saved['unallocated_profit'])))
+        self.assertEqual(total, Decimal('123.456789'))
+
+    def test_project_largest_remainders_have_stable_ties_and_funding_sums_to_100(self):
+        self.state['projects'] = [project(expected_profit='.000001', participants=[
+            dict(name='A', contribution_amount=1, dividend_percent=50),
+            dict(name='B', contribution_amount=1, dividend_percent=50)])]
+        saved = replay(self.state)['projects'][0]
+        self.assertEqual([p['expected_dividend'] for p in saved['participants']], [.000001, 0])
+        self.state['projects'] = [project(expected_profit=1, participants=[
+            dict(name='A', contribution_amount=1, dividend_percent='33.333333'),
+            dict(name='B', contribution_amount=1, dividend_percent='33.333333'),
+            dict(name='C', contribution_amount=1, dividend_percent='33.333334')])]
+        saved = replay(self.state)['projects'][0]
+        self.assertEqual([p['contribution_percent'] for p in saved['participants']], [33.333334, 33.333333, 33.333333])
+        self.assertEqual([p['expected_dividend'] for p in saved['participants']], [.333333, .333333, .333334])
+
+    def test_zero_funding_allows_independent_labor_dividends(self):
+        self.state['projects'] = [project(expected_profit=100, participants=[
+            dict(name='Organizer', contribution_amount=0, dividend_percent=30),
+            dict(name='Supplier', contribution_amount=0, dividend_percent=70)])]
+        saved = replay(self.state)['projects'][0]
+        self.assertEqual(saved['total_contribution'], 0)
+        self.assertEqual([p['contribution_percent'] for p in saved['participants']], [0, 0])
+        self.assertEqual([p['expected_dividend'] for p in saved['participants']], [30, 70])
+        self.assertTrue(saved['allocation_complete'])
+
+    def test_project_guards_duplicate_names_allocations_rates_and_positive_conversions(self):
+        rows = [dict(name='Kevin', contribution_amount=100, dividend_percent=60),
+                dict(name='Partner', contribution_amount=50, dividend_percent=30)]
+        invalid = [dict(participants=[]), dict(participants=[rows[0]] * 51),
+                   dict(participants=[rows[0], dict(rows[1], name=' kevin ')]),
+                   dict(participants=[rows[0], dict(rows[1], dividend_percent=41)]),
+                   dict(participants=[dict(rows[0], contribution_amount=-1)]),
+                   dict(participants=[dict(rows[0], currency='CNY')]),
+                   dict(participants=[dict(rows[0], exchange_rate=2)]),
+                   dict(participants=[dict(rows[0], currency='CNY', contribution_amount='.000001', exchange_rate='.000000000001')]),
+                   dict(expected_profit=-1)]
+        for values in invalid:
+            with self.subTest(values=values), self.assertRaises(ValidationError):
+                project(**values)
+
+    def test_nested_canonical_requests_and_exact_edit_fields_preserve_precision(self):
+        values = dict(date='2026-01-01', name='Project', expected_profit='999999999999.000001', request_id=uuid4(),
+                      participants=[dict(name='A', contribution_amount='999999999999.000001', dividend_percent='33.333333')])
+        request = ProjectCreate(**values)
+        raw = request_data(request)
+        changed_spelling = ProjectCreate(**dict(values, participants=[dict(values['participants'][0], contribution_amount='999999999999.0000010', exchange_rate='1.000000000000')]))
+        self.assertEqual(request_data(changed_spelling), raw)
+        self.state['projects'] = [dict(raw, id=1, version=1, voided=False)]
+        saved = replay(self.state)['projects'][0]
+        self.assertEqual(saved['request_fields']['expected_profit'], '999999999999.000001')
+        self.assertEqual(saved['request_fields']['participants'][0]['contribution_amount'], '999999999999.000001')
+        updated = request_data(ProjectUpdate(**saved['request_fields'], version=1))
+        updated.pop('version')
+        raw.pop('request_id')
+        self.assertEqual(updated, raw)
+
+    def test_exact_project_calculations_reconcile_after_json_near_input_cap(self):
+        self.state['projects'] = [project(expected_profit='999999999999.000001', participants=[
+            dict(name='A', contribution_amount='999999999999.000001', dividend_percent='33.333333'),
+            dict(name='B', contribution_amount='999999999999.000001', dividend_percent='33.333333')])]
+        saved = json.loads(json.dumps(replay(self.state)))['projects'][0]
+        exact = saved['calculation_fields']
+        self.assertEqual(exact['total_contribution'], '1999999999998.000002')
+        self.assertEqual(exact['participants'][0]['base_amount'], '999999999999.000001')
+        self.assertEqual((exact['dividend_percent_total'], exact['unallocated_percent']), ('66.666666', '33.333334'))
+        self.assertEqual(sum(Decimal(p['contribution_percent']) for p in exact['participants']), Decimal(100))
+        paid = sum((Decimal(p['expected_dividend']) for p in exact['participants']), Decimal(exact['unallocated_profit']))
+        self.assertEqual(paid, Decimal(saved['request_fields']['expected_profit']))
+        self.assertIsInstance(saved['total_contribution'], float)
+
+    def test_project_links_keep_bases_separate_and_voided_history_readable(self):
+        self.state['projects'] = [project(expected_profit=100)]
+        self.state['products'] = [product(), product(2, sku='CNY', currency='CNY')]
+        self.state['movements'] = [movement(project_id=1), movement(2, product_id=2, currency='USD', exchange_rate=7, project_id=1)]
+        result = replay(self.state)
+        saved = result['projects'][0]
+        self.assertEqual((saved['movement_ids'], saved['active_movement_ids']), ([1, 2], [1, 2]))
+        self.assertEqual(saved['expected_profit'], 100)
+        values = {r['currency']: r for r in result['summary']}
+        self.assertEqual((values['USD']['inventory_cost'], values['CNY']['inventory_cost']), (100, 700))
+        with self.assertRaisesRegex(FinanceError, 'active movements'):
+            validate_void(self.state, 'projects', self.state['projects'][0])
+        self.state['projects'][0]['voided'] = True
+        for item in self.state['movements']:
+            item['voided'] = True
+        saved = replay(self.state)['projects'][0]
+        self.assertEqual(saved['status'], 'void')
+        self.assertEqual((saved['movement_ids'], saved['active_movement_ids']), ([1, 2], []))
+
+    def test_project_currency_is_fixed_and_link_clear_differs_from_omission(self):
+        plan = project()
+        self.state['projects'] = [plan]
+        values = request_data(ProjectUpdate(date='2026-01-01', name='Tea', currency='CNY', participants=plan['participants'], version=1))
+        with self.assertRaisesRegex(FinanceError, 'Project currency'):
+            validate_edit(self.state, 'projects', plan, values)
+        base = dict(date='2026-01-02', product_id=1, kind='purchase', quantity=10, unit_price=10)
+        self.assertNotIn('project_id', request_data(MovementCreate(**base, request_id=uuid4())))
+        self.assertNotIn('project_id', request_data(MovementUpdate(**base, version=1)))
+        self.assertIsNone(request_data(MovementUpdate(**base, project_id=None, version=1))['project_id'])
 
 
 class ExchangeReplayTests(unittest.TestCase):

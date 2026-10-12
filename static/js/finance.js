@@ -2,7 +2,7 @@
     'use strict';
     const currencies = ['USD', 'CNY'];
     const labels = { in: '转入', out: '转出', internal: '账户间转账', lent: '我借给别人', borrowed: '我向别人借',
-        purchase: '进货', sale: '出货', opening: '期初库存', exchange: '换汇', recorded: '已记录', open: '待还款', partial: '部分结清', settled: '已结清', unpaid: '未付款', paid: '已付清', void: '已作废' };
+        purchase: '进货', sale: '出货', opening: '期初库存', exchange: '换汇', recorded: '已记录', planned: '分红计划', open: '待还款', partial: '部分结清', settled: '已结清', unpaid: '未付款', paid: '已付清', void: '已作废' };
     const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const cleanNumber = value => Number.isFinite(Number(value)) ? Number(value) : 0;
     const quantity = (value, privateMode = false) => privateMode ? '***' : cleanNumber(value).toLocaleString('zh-CN', { maximumFractionDigits: 6 });
@@ -65,6 +65,69 @@
         if (parts) while (parts.scale > 0 && parts.coefficient % 10n === 0n) { parts.coefficient /= 10n; parts.scale -= 1; }
         return Boolean(parts && parts.coefficient > 0n && parts.scale <= 12 && (!sameCurrency || !decimalGreater(rate, '1') && !decimalGreater('1', rate)));
     }
+    function decimalUnits(value, precision = 6) {
+        const parts = decimalParts(value);
+        if (!parts) return null;
+        if (parts.scale <= precision) return parts.coefficient * 10n ** BigInt(precision - parts.scale);
+        const divisor = 10n ** BigInt(parts.scale - precision), remainder = parts.coefficient % divisor;
+        let units = parts.coefficient / divisor;
+        if (remainder * 2n > divisor || remainder * 2n === divisor && units % 2n === 1n) units += 1n;
+        return units;
+    }
+    function decimalFromUnits(units, precision = 6) {
+        if (units === null) return null;
+        const negative = units < 0n;
+        const digits = (negative ? -units : units).toString().padStart(precision + 1, '0');
+        return (negative ? '-' : '') + (precision ? `${digits.slice(0, -precision)}.${digits.slice(-precision)}`.replace(/\.?0+$/, '') : digits);
+    }
+    function allocateDecimal(total, weights) {
+        const units = decimalUnits(total), portions = weights.map(v => decimalUnits(v));
+        if (units === null || portions.some(v => v === null)) return null;
+        const denominator = portions.reduce((sum, value) => sum + value, 0n);
+        if (denominator === 0n) return portions.map(() => '0');
+        const shares = portions.map((weight, index) => ({ index, amount: units * weight / denominator, remainder: units * weight % denominator }));
+        const remaining = units - shares.reduce((sum, share) => sum + share.amount, 0n);
+        const ranked = [...shares].sort((a, b) => a.remainder === b.remainder ? a.index - b.index : a.remainder > b.remainder ? -1 : 1);
+        for (let i = 0; i < Number(remaining); i += 1) ranked[i].amount += 1n;
+        return shares.map(share => decimalFromUnits(share.amount));
+    }
+    function projectPreview(project) {
+        const participants = project.participants || [];
+        const baseAmounts = participants.map(p => validInventoryRate(p.exchange_rate ?? ((p.currency || project.currency) === project.currency ? '1' : ''), (p.currency || project.currency) === project.currency) ? inventoryAmount(p.contribution_amount, p.exchange_rate ?? '1') : null);
+        const total = baseAmounts.some(v => v === null) ? null : decimalSum(baseAmounts);
+        const contributionPercents = total === null ? baseAmounts.map(() => null) : allocateDecimal('100', baseAmounts);
+        const dividendTotal = decimalSum(participants.map(p => p.dividend_percent));
+        const remainder = dividendTotal === null ? null : 100000000n - decimalUnits(dividendTotal);
+        const unallocatedPercent = decimalFromUnits(remainder);
+        const knownProfit = project.expected_profit !== null && project.expected_profit !== undefined && project.expected_profit !== '';
+        const dividends = knownProfit && remainder !== null && remainder >= 0n ? allocateDecimal(project.expected_profit, [...participants.map(p => p.dividend_percent), unallocatedPercent]) : null;
+        return { total_contribution: total, dividend_percent_total: dividendTotal, unallocated_percent: unallocatedPercent,
+            unallocated_profit: dividends ? dividends.at(-1) : null, allocation_complete: remainder === 0n,
+            participants: participants.map((p, i) => ({ ...p, base_amount: baseAmounts[i], contribution_percent: contributionPercents?.[i] ?? null, expected_dividend: dividends?.[i] ?? null })) };
+    }
+    function validProjectDecimal(value) {
+        const parts = decimalParts(value);
+        if (!parts) return false;
+        while (parts.scale > 0 && parts.coefficient % 10n === 0n) { parts.coefficient /= 10n; parts.scale -= 1; }
+        return parts.scale <= 6;
+    }
+    function projectNumber(value, minimumFractionDigits = 0, privateMode = false) {
+        if (privateMode) return '***';
+        const negative = String(value ?? '').startsWith('-');
+        const units = decimalUnits(negative ? String(value).slice(1) : value);
+        if (units === null) return '—';
+        const digits = units.toString().padStart(7, '0');
+        const whole = digits.slice(0, -6).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        const fraction = digits.slice(-6).replace(/0+$/, '').padEnd(minimumFractionDigits, '0');
+        return `${negative ? '-' : ''}${whole}${fraction ? '.' + fraction : ''}`;
+    }
+    const projectMoney = (value, currency, privateMode = false) => privateMode ? '***' : `${escape(currency)} ${projectNumber(value, 2)}`;
+    function projectSnapshot(record) {
+        const inputs = record.request_fields || record;
+        const fallback = projectPreview(inputs), calculated = record.calculation_fields || {};
+        return { ...record, ...inputs, ...fallback, ...calculated,
+            participants: fallback.participants.map((participant, index) => ({ ...participant, ...(calculated.participants?.[index] || {}) })) };
+    }
     function exchangeAmounts(record) {
         const from = cleanNumber(record.from_amount), to = cleanNumber(record.to_amount), fee = cleanNumber(record.fee_amount);
         const debited = from + (record.fee_currency === record.from_currency ? fee : 0);
@@ -75,20 +138,22 @@
         const style = status === 'void' ? 'is-void' : ['settled', 'paid', 'in', 'sale'].includes(status) ? 'is-good' : ['open', 'partial', 'unpaid'].includes(status) ? 'is-open' : '';
         return `<span class="finance-badge ${style}">${escape(label || labels[status] || status)}</span>`;
     }
-    function filterRecords(records, filter = {}, products = []) {
+    function filterRecords(records, filter = {}, products = [], projects = []) {
         const names = new Map(products.map(p => [Number(p.id), p.name]));
+        const projectNames = new Map(projects.map(p => [Number(p.id), p.name]));
         const query = String(filter.search || '').trim().toLocaleLowerCase();
         return records.filter(record => {
             if (!filter.showVoided && record.voided) return false;
-            if (filter.currency && ![record.currency, record.base_currency, record.from_currency, record.to_currency].includes(filter.currency)) return false;
+            if (filter.currency && ![record.currency, record.base_currency, record.from_currency, record.to_currency, ...(record.participants || []).map(p => p.currency)].includes(filter.currency)) return false;
             if (filter.status && record.status !== filter.status && record.direction !== filter.status && record.kind !== filter.status) return false;
             if (!query) return true;
-            return [record.counterparty, record.from_account, record.to_account, record.reference, record.method, record.note,
-                record.date, record.currency, record.base_currency, record.from_currency, record.to_currency, names.get(Number(record.product_id))].some(v => String(v || '').toLocaleLowerCase().includes(query));
+            return [record.name, record.counterparty, record.from_account, record.to_account, record.reference, record.method, record.note,
+                record.date, record.currency, record.base_currency, record.from_currency, record.to_currency, names.get(Number(record.product_id)), record.project_name, projectNames.get(Number(record.project_id)), ...(record.participants || []).flatMap(p => [p.name, p.note, p.currency])].some(v => String(v || '').toLocaleLowerCase().includes(query));
         }).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || Number(b.id) - Number(a.id));
     }
-    function renderRows(records, section, products = [], privateMode = false) {
+    function renderRows(records, section, products = [], privateMode = false, projects = []) {
         const names = new Map(products.map(p => [Number(p.id), p]));
+        const projectNames = new Map(projects.map(p => [Number(p.id), p.name]));
         return records.map(record => {
             let title, subtitle, amount, secondary, income = false;
             let type = record.direction || record.kind;
@@ -109,6 +174,13 @@
                 subtitle = `${sensitive(record.from_account, privateMode)} → ${sensitive(record.to_account, privateMode)}${record.note || record.reference ? ` · ${sensitive(record.note || record.reference, privateMode)}` : ''}`;
                 amount = `到账 ${money(record.received_amount, record.to_currency, privateMode)}`;
                 secondary = `支出 ${money(record.debited_amount, record.from_currency, privateMode)}`;
+            } else if (section === 'projects') {
+                const project = projectSnapshot(record);
+                status = record.voided ? 'void' : 'planned';
+                title = sensitive(project.name, privateMode);
+                subtitle = `${(project.participants || []).map(p => sensitive(p.name, privateMode)).join(' · ')}<span class="finance-row-base">计划分红 ${projectNumber(project.dividend_percent_total, 0, privateMode)}%；待分配 ${projectNumber(project.unallocated_percent, 0, privateMode)}%</span>`;
+                amount = `总出资 ${projectMoney(project.total_contribution, project.currency, privateMode)}`;
+                secondary = project.expected_profit === null || project.expected_profit === undefined ? '预计利润未填写' : `预计利润 ${projectMoney(project.expected_profit, project.currency, privateMode)}`;
             } else {
                 const product = names.get(Number(record.product_id));
                 title = sensitive(product?.name || '商品', privateMode);
@@ -119,6 +191,7 @@
                 const baseCurrency = record.base_currency || product?.currency || record.currency;
                 const baseTotal = record.base_total ?? record.total;
                 subtitle += `<span class="finance-row-base">库存核算 ${money(baseTotal, baseCurrency, privateMode)}${income ? ` · 毛利 ${money(record.realized_profit, baseCurrency, privateMode)}` : ''}</span>`;
+                if (record.project_id) subtitle += `<span class="finance-row-project">项目 ${sensitive(record.project_name || projectNames.get(Number(record.project_id)), privateMode)}</span>`;
             }
             const statusLabel = section === 'movements' && !record.voided ? (record.kind === 'opening' ? '期初库存' : record.status === 'unpaid' ? (income ? '未收款' : '未付款') : record.status === 'partial' ? (income ? '部分收款' : '部分付款') : income ? '已收清' : '已付清') : undefined;
             return `<article class="finance-row ${record.voided ? 'is-void' : ''}">
@@ -149,6 +222,25 @@
             if (record && Number(payload.principal) < cleanNumber(record.repaid)) return '本金不能少于已经记录的还款金额。';
         }
         if (type === 'products' && !String(payload.name || '').trim()) return '请填写商品名称。';
+        if (type === 'projects') {
+            if (!String(payload.name || '').trim()) return '请填写项目名称。';
+            if (!currencies.includes(payload.currency)) return '请选择美元或人民币作为项目核算币种。';
+            if (payload.expected_profit !== null && !validProjectDecimal(payload.expected_profit)) return '预计可分配利润必须是非负数字，最多保留 6 位小数。';
+            if (!Array.isArray(payload.participants) || !payload.participants.length || payload.participants.length > 50) return '每个项目需要 1 至 50 位参与人。';
+            const names = new Set();
+            for (const p of payload.participants) {
+                const name = String(p.name || '').trim().toLocaleLowerCase();
+                if (!name) return '请填写每位参与人的姓名。';
+                if (names.has(name)) return '参与人姓名不能重复。';
+                names.add(name);
+                if (!validProjectDecimal(p.contribution_amount)) return '出资金额必须是非负数字，最多保留 6 位小数。';
+                if (!currencies.includes(p.currency)) return '请选择每位参与人的出资币种。';
+                if (!validInventoryRate(p.exchange_rate, p.currency === payload.currency)) return '请填写正确的出资折算汇率，最多保留 12 位小数；同币种为 1。';
+                if (decimalGreater(p.contribution_amount, '0') && !decimalGreater(inventoryAmount(p.contribution_amount, p.exchange_rate), '0')) return '折算后的出资金额必须大于 0，请检查金额与汇率。';
+                if (!validProjectDecimal(p.dividend_percent) || decimalGreater(p.dividend_percent, '100')) return '计划分红比例必须在 0% 至 100% 之间，最多保留 6 位小数。';
+            }
+            if (decimalGreater(decimalSum(payload.participants.map(p => p.dividend_percent)), '100')) return '所有参与人的计划分红比例合计不能超过 100%。';
+        }
         if (type === 'movements') {
             if (!payload.product_id) return '请先添加并选择商品。';
             if (!positive('quantity')) return '数量必须大于 0。';
@@ -221,6 +313,12 @@
             'Exchange currencies must be different': '换出与换入必须是不同币种。',
             'Fee currency must match the source or target currency': '手续费币种必须是换出或换入币种。',
             'Target-currency fee must be less than the gross received amount': '换入币种的手续费必须小于扣费前的换入金额。',
+            'Participant names must be unique': '参与人姓名不能重复。',
+            'Dividend percentages cannot exceed 100 in total': '所有参与人的计划分红比例合计不能超过 100%。',
+            'Converted contribution amount must be positive': '折算后的出资金额必须大于 0，请检查金额与汇率。',
+            'Project currency cannot change after creation': '项目核算币种保存后固定，不能修改。',
+            'Unlink or void the active movements before voiding this project': '请先解除关联或作废项目下仍有效的进出货，再作废项目。',
+            'Choose an active project': '请选择尚未作废的项目。',
         };
         const translate = value => {
             const message = String(value || '').replace(/^Value error, /, '');
@@ -233,7 +331,7 @@
         if (config.demo || typeof document === 'undefined') return { load: async () => {}, refreshPrivacy() {}, setPrivate() {} };
         const $ = id => document.getElementById(id);
         if (!$('financeForm')) return null;
-        let state = { transfers: [], loans: [], products: [], movements: [], exchanges: [], summary: [] };
+        let state = { transfers: [], loans: [], products: [], movements: [], exchanges: [], projects: [], summary: [] };
         let section = 'transfers', loaded = false, loading = null, busy = false, editor = null, voidTarget = null, stateRevision = 0;
         let privateOverride;
         const privateMode = () => privateOverride === undefined ? Boolean(typeof config.private === 'function' ? config.private() : config.private) : privateOverride;
@@ -247,7 +345,7 @@
         };
         const showError = (id, message) => { $(id).textContent = message; $(id).classList.toggle('d-none', !message); };
         function applyState(data) {
-            for (const key of ['transfers', 'loans', 'products', 'movements', 'exchanges', 'summary']) state[key] = Array.isArray(data[key]) ? data[key] : [];
+            for (const key of ['transfers', 'loans', 'products', 'movements', 'exchanges', 'projects', 'summary']) state[key] = Array.isArray(data[key]) ? data[key] : [];
             stateRevision += 1;
             loaded = true;
             render();
@@ -280,6 +378,19 @@
         }
         function renderOverview() {
             const p = privateMode();
+            if (section === 'projects') {
+                const active = state.projects.filter(project => !project.voided).map(projectSnapshot);
+                if (!active.length) { $('financeOverview').innerHTML = '<div class="finance-overview-empty">记录合资项目后，这里会分别显示各币种的出资与预计利润。</div>'; return; }
+                $('financeOverview').innerHTML = [...new Set(active.map(project => project.currency))].map(currency => {
+                    const projects = active.filter(project => project.currency === currency);
+                    const supplied = projects.filter(project => project.expected_profit !== null && project.expected_profit !== undefined);
+                    const missing = projects.length - supplied.length;
+                    const amounts = [['项目总出资', projectMoney(decimalSum(projects.map(project => project.total_contribution)), currency, p)],
+                        [supplied.length && missing ? '已填预计利润（不含本金）' : '预计利润（不含本金）', supplied.length ? projectMoney(decimalSum(supplied.map(project => project.expected_profit)), currency, p) : '未填写']];
+                    return `<div class="finance-currency-ledger"><div class="finance-currency-code">${escape(currency)}</div><div class="finance-currency-values">${amounts.map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join('')}<p class="finance-project-overview-note">${missing ? `${p ? '***' : missing} 个项目未填写预计利润。` : ''}分红计划是估算，不计入已实现收益。</p></div></div>`;
+                }).join('');
+                return;
+            }
             if (!state.summary.length) {
                 $('financeOverview').innerHTML = '<div class="finance-overview-empty">第一笔记录保存后，这里会按币种显示往来与余额。</div>';
                 return;
@@ -300,6 +411,7 @@
             loans: { name: '借贷往来', add: '记录借贷', placeholder: '搜索姓名、备注', empty: '清楚谁还欠谁', description: '记录你借给别人的钱，或你向别人借的钱。每次还款都能单独保存，余额会随之更新。', icon: 'people', filters: [['', '全部借贷'], ['lent', '我借给别人'], ['borrowed', '我向别人借'], ['open', '待还款'], ['partial', '部分结清'], ['settled', '已结清']] },
             movements: { name: '进出货记录', add: '记录进出货', placeholder: '搜索商品、对方、备注', empty: '从第一件商品开始', description: '先添加商品，再记录进货、出货或期初库存。已付款、未付款与分次收款都可以记录。', icon: 'box-seam', filters: [['', '全部类型'], ['purchase', '进货'], ['sale', '出货'], ['opening', '期初库存'], ['unpaid', '未收付'], ['partial', '部分收付'], ['paid', '已结清']] },
             exchanges: { name: '换汇记录', add: '记录换汇', placeholder: '搜索币种、对方、账户、备注', empty: '记下每次换汇的实际支出与到账', description: '填写换出与换入金额，记录成交汇率、手续费与账户。人民币换美元，或美元换人民币，都能清楚回看。', icon: 'currency-exchange', filters: [['', '全部换汇']] },
+            projects: { name: '合资项目', add: '添加项目', placeholder: '搜索项目、参与人、备注', empty: '一起出资，把分红计划记清楚', description: '分别记录每位参与人的出资与约定分红比例。可以先留出待分配份额，预计利润也可以暂不填写。', icon: 'diagram-3', filters: [['', '全部项目']] },
         };
         function render() {
             const type = types[section], p = privateMode();
@@ -312,15 +424,16 @@
             $('financeProducts').classList.toggle('d-none', section !== 'movements');
             $('financeInventoryNote').classList.toggle('d-none', section !== 'movements');
             $('financeExchangeNote').classList.toggle('d-none', section !== 'exchanges');
-            $('financeStatus').classList.toggle('d-none', section === 'exchanges');
+            $('financeProjectNote').classList.toggle('d-none', section !== 'projects');
+            $('financeStatus').classList.toggle('d-none', ['exchanges', 'projects'].includes(section));
             $('financeListCaption').textContent = type.name;
             const currentCurrency = $('financeCurrency').value;
             $('financeCurrency').innerHTML = '<option value="">全部币种</option>' + currencies.map(c => `<option value="${c}">${c}</option>`).join('');
             $('financeCurrency').value = currentCurrency;
             const filter = { search: p ? '' : $('financeSearch').value, currency: $('financeCurrency').value, status: $('financeStatus').value, showVoided: $('financeShowVoided').checked };
-            const records = filterRecords(state[section], filter, state.products);
-            $('financeCount').textContent = `${records.length} 笔`;
-            if (records.length) $('financeList').innerHTML = renderRows(records, section, state.products, p);
+            const records = filterRecords(state[section], filter, state.products, state.projects);
+            $('financeCount').textContent = `${records.length} ${section === 'projects' ? '个' : '笔'}`;
+            if (records.length) $('financeList').innerHTML = renderRows(records, section, state.products, p, state.projects);
             else {
                 const filtered = Boolean(filter.search || filter.currency || filter.status);
                 const title = filtered ? '没有符合筛选条件的记录' : type.empty;
@@ -348,9 +461,70 @@
         const amountField = (name, label, value = '', max) => input(name, label, value, { type: 'number', min: name === 'paid_amount' || name === 'unit_price' ? 0 : '0.000001', step: 'any', required: true, max });
         const currencyField = (value = 'USD', disabled = false, label = '币种') => select('currency', label, value, currencies.map(c => [c, c]), disabled);
         const inventoryRateField = (labelId, value) => `<div class="col-12"><label class="form-label" id="${labelId}" for="financeField-exchange_rate">折算汇率</label><input class="form-control" id="financeField-exchange_rate" name="exchange_rate" type="number" step="any" min="0" required value="${escape(value ?? '')}"><div class="form-text">不同币种请填写本次约定的汇率，最多 12 位小数。</div></div>`;
+        function projectFormValues() {
+            const read = name => String($('financeForm').elements.namedItem(name)?.value ?? '').trim();
+            const currency = read('currency');
+            return { date: read('date'), name: read('name'), currency, expected_profit: read('expected_profit') || null, note: read('note'),
+                participants: Array.from({ length: editor.participantCount }, (_, index) => Object.fromEntries(['name', 'contribution_amount', 'currency', 'exchange_rate', 'dividend_percent', 'note'].map(field => [field, read(`participant-${index}-${field}`)]))) };
+        }
+        function renderParticipants(participants) {
+            editor.participantCount = participants.length;
+            $('financeProjectParticipants').innerHTML = participants.map((participant, index) => {
+                const field = (name, label, value, options = {}) => input(`participant-${index}-${name}`, label, value, options).replace('<input ', `<input data-project-field="${name}" data-project-index="${index}" `);
+                const currency = participant.currency || $('financeForm').elements.namedItem('currency').value;
+                return `<section class="finance-participant" data-project-participant="${index}"><div class="finance-participant-heading"><h6>参与人 ${index + 1}</h6><button type="button" class="btn btn-sm btn-outline-secondary" data-project-remove="${index}"${participants.length === 1 ? ' disabled' : ''}>移除</button></div><div class="row g-3">` +
+                    field('name', '参与人姓名', participant.name, { required: true }) + field('contribution_amount', '出资金额（原币种）', participant.contribution_amount ?? '0', { type: 'number', min: 0, step: 'any', required: true }) +
+                    select(`participant-${index}-currency`, '出资币种', currency, currencies.map(c => [c, c])).replace('<select ', `<select data-project-field="currency" data-project-index="${index}" `) +
+                    `<div class="col-12 col-sm-6"><label class="form-label" id="financeParticipantRateLabel-${index}" for="financeField-participant-${index}-exchange_rate">出资折算汇率</label><input class="form-control" data-project-field="exchange_rate" data-project-index="${index}" id="financeField-participant-${index}-exchange_rate" name="participant-${index}-exchange_rate" type="number" min="0" step="any" required value="${escape(participant.exchange_rate ?? (currency === $('financeForm').elements.namedItem('currency').value ? '1' : ''))}"></div>` +
+                    field('dividend_percent', '计划分红比例（%）', participant.dividend_percent ?? '0', { type: 'number', min: 0, max: 100, step: 'any', required: true, help: '按约定填写，可以与出资比例不同。' }) + field('note', '参与人备注（可不填）', participant.note) +
+                    `</div><div class="finance-participant-preview" id="financeParticipantPreview-${index}" aria-live="polite"></div></section>`;
+            }).join('');
+            $('financeProjectAddParticipant').disabled = participants.length >= 50;
+            updateProjectPreview();
+        }
+        function updateProjectPreview(event) {
+            if (editor?.type !== 'projects') return;
+            const field = name => $('financeForm').elements.namedItem(name);
+            const currency = field('currency').value;
+            for (let index = 0; index < editor.participantCount; index += 1) {
+                const native = field(`participant-${index}-currency`).value, quote = field(`participant-${index}-exchange_rate`);
+                if (event?.target?.name === 'currency' || event?.target?.name === `participant-${index}-currency`) quote.value = native === currency ? '1' : '';
+                quote.disabled = native === currency;
+                if (quote.disabled) quote.value = '1';
+                $('financeParticipantRateLabel-' + index).textContent = `出资折算：1 ${native} = 多少 ${currency}`;
+            }
+            const values = projectFormValues(), preview = projectPreview(values);
+            const available = value => value !== null ? projectMoney(value, currency) : '待填写金额与汇率';
+            $('financeProjectTotal').textContent = available(preview.total_contribution);
+            $('financeProjectDividendTotal').textContent = preview.dividend_percent_total !== null ? `${projectNumber(preview.dividend_percent_total)}%` : '待填写';
+            $('financeProjectUnallocated').textContent = preview.unallocated_percent !== null ? `${projectNumber(preview.unallocated_percent)}%` : '待填写';
+            $('financeProjectProfit').textContent = values.expected_profit === null ? '未填写' : validProjectDecimal(values.expected_profit) ? projectMoney(values.expected_profit, currency) : '待填写有效金额';
+            $('financeProjectUnallocatedProfit').textContent = values.expected_profit === null ? '未填写' : preview.unallocated_profit !== null ? projectMoney(preview.unallocated_profit, currency) : '待填写有效分红比例';
+            $('financeProjectPreviewHint').textContent = preview.unallocated_percent !== null && decimalGreater(preview.dividend_percent_total, '100') ? '计划分红比例合计超过 100%，请调整后保存。' : preview.allocation_complete ? '分红计划已分配 100%。预计分红仅分配利润，不含返还本金。' : '允许保留待分配份额。出资比例自动计算，分红比例按你们的约定填写。';
+            preview.participants.forEach((participant, index) => {
+                $('financeParticipantPreview-' + index).innerHTML = `<span>折算出资 <strong>${available(participant.base_amount)}</strong></span><span>出资比例 <strong>${participant.contribution_percent !== null ? projectNumber(participant.contribution_percent) + '%' : '待计算'}</strong></span><span>预计分红 <strong>${values.expected_profit === null ? '未填写' : participant.expected_dividend !== null ? projectMoney(participant.expected_dividend, currency) : '待计算'}</strong></span>`;
+            });
+        }
+        function handleProjectAction(event) {
+            if (editor?.type !== 'projects' || busy || privateMode()) return;
+            const button = event.target.closest('button');
+            if (!button || button.disabled) return;
+            const values = projectFormValues(), participants = values.participants;
+            if ('projectAdd' in button.dataset && participants.length < 50) {
+                participants.push({ name: '', currency: values.currency, contribution_amount: '0', exchange_rate: '1', dividend_percent: '0', note: '' });
+                renderParticipants(participants);
+            } else if ('projectRemove' in button.dataset && participants.length > 1) {
+                participants.splice(Number(button.dataset.projectRemove), 1); renderParticipants(participants);
+            } else if ('projectProportional' in button.dataset) {
+                const preview = projectPreview(values);
+                if (preview.total_contribution === null || !decimalGreater(preview.total_contribution, '0')) { showError('financeFormError', '先填写有效的出资金额与汇率，再按出资比例填写分红。'); return; }
+                preview.participants.forEach((participant, index) => { $('financeForm').elements.namedItem(`participant-${index}-dividend_percent`).value = participant.contribution_percent; });
+                showError('financeFormError', ''); updateProjectPreview();
+            }
+        }
         function openEditor(type, record = null, parent = null) {
             if (privateMode() || busy) return;
-            const recordCurrencies = record ? type === 'exchanges' ? [record.from_currency, record.to_currency, record.fee_currency] : [record.currency, record.base_currency, type === 'movements' ? state.products.find(p => p.id === record.product_id)?.currency : null] : [];
+            const recordCurrencies = record ? type === 'exchanges' ? [record.from_currency, record.to_currency, record.fee_currency] : [record.currency, record.base_currency, type === 'movements' ? state.products.find(p => p.id === record.product_id)?.currency : null, ...(type === 'projects' ? (record.participants || []).map(p => p.currency) : [])] : [];
             if (recordCurrencies.some(currency => currency && !currencies.includes(currency))) {
                 getModal('financeDetailsModal').hide();
                 getModal('financeEditModal').hide();
@@ -361,7 +535,7 @@
                 return;
             }
             getModal('financeDetailsModal').hide();
-            const r = record || {};
+            const r = type === 'projects' && record?.request_fields ? { ...record, ...record.request_fields } : record || {};
             editor = { type, record, parent, requestId: createRequestTracker(() => root.crypto.randomUUID()) };
             let fields = '', title, intro;
             if (type === 'transfers') {
@@ -375,6 +549,12 @@
                 title = record ? '编辑商品' : '添加商品'; intro = record ? '商品已有进出货历史后，库存核算币种与数量单位不能修改。数量通过进出货记录维护。' : '选择商品库存与毛利的核算币种。每笔进出货的货款和后续收付款可以使用不同币种。';
                 const locked = Boolean(record && state.movements.some(m => m.product_id === r.id));
                 fields = input('name', '商品名称', r.name, { required: true }) + input('sku', '商品编号（可不填）', r.sku) + input('unit', '数量单位', r.unit || '件', { required: true, disabled: locked }) + currencyField(r.currency, locked, '库存核算币种') + input('location', '存放位置（可不填）', r.location, { wide: true }) + note(r.note);
+            } else if (type === 'projects') {
+                title = record ? '编辑合资项目' : '添加合资项目';
+                intro = '出资比例自动按折算金额计算，计划分红比例按约定填写。预计利润只分配利润，不含返还本金；项目核算币种保存后固定。';
+                fields = dateField(r.date) + input('name', '项目名称', r.name, { required: true }) + currencyField(r.currency, Boolean(record), '项目核算币种') + input('expected_profit', '预计可分配利润（不含本金）', r.expected_profit ?? '', { type: 'number', min: 0, step: 'any', help: '可不填写；填 0 表示预计利润为零。这里只记录分红计划。' }) + note(r.note) +
+                    '<div class="col-12"><div class="finance-participant-toolbar"><div><h6>参与人与分红计划</h6><p>不同币种需要填写约定汇率，最多 12 位小数。</p></div><button type="button" class="btn btn-sm btn-outline-primary" data-project-proportional>按出资比例填写分红</button></div><div id="financeProjectParticipants"></div><button type="button" class="btn btn-outline-secondary finance-add-participant" id="financeProjectAddParticipant" data-project-add><i class="bi bi-plus-lg" aria-hidden="true"></i> 添加参与人</button></div>' +
+                    '<div class="col-12"><div class="finance-project-preview" aria-live="polite"><div><span>折算总出资</span><strong id="financeProjectTotal">—</strong></div><div><span>预计可分配利润（不含本金）</span><strong id="financeProjectProfit">未填写</strong></div><div><span>计划分红合计</span><strong id="financeProjectDividendTotal">—</strong></div><div><span>待分配比例</span><strong id="financeProjectUnallocated">—</strong></div><div><span>预计待分配利润</span><strong id="financeProjectUnallocatedProfit">未填写</strong></div><p id="financeProjectPreviewHint"></p></div></div>';
             } else if (type === 'movements') {
                 const availableProducts = state.products.filter(p => !p.voided && currencies.includes(p.currency));
                 if (!availableProducts.length) { openEditor('products'); return; }
@@ -385,7 +565,7 @@
                 const invoiceCurrency = r.currency || product.currency;
                 const rate = r.exchange_rate ?? (invoiceCurrency === product.currency ? '1' : '');
                 fields = dateField(r.date) + select('kind', '记录类型', r.kind || 'purchase', [['purchase', '进货'], ['sale', '出货'], ['opening', '期初库存']], locked) + select('product_id', '商品', r.product_id || product.id, availableProducts.map(p => [p.id, `${p.name} · 核算 ${p.currency} / ${p.unit}`]), locked) + amountField('quantity', '数量', r.quantity) + currencyField(invoiceCurrency, locked, '货款币种') + amountField('unit_price', '每单位价格 / 成本（货款币种）', r.unit_price) + amountField('paid_amount', record ? '最初已收付金额（货款币种）' : '已收付金额（货款币种）', record ? r.initial_paid_amount : 0) + inventoryRateField('financeMovementRateLabel', rate) +
-                    '<div class="col-12"><div class="finance-inventory-preview" aria-live="polite"><div><span>原币种货款总额</span><strong id="financeMovementTotal">—</strong></div><div><span>折算库存核算金额</span><strong id="financeMovementBaseTotal">—</strong></div><p id="financeMovementHint"></p></div></div>' + input('counterparty', '供应商或客户（可不填）', r.counterparty) + note(r.note);
+                    '<div class="col-12"><div class="finance-inventory-preview" aria-live="polite"><div><span>原币种货款总额</span><strong id="financeMovementTotal">—</strong></div><div><span>折算库存核算金额</span><strong id="financeMovementBaseTotal">—</strong></div><p id="financeMovementHint"></p></div></div>' + select('project_id', '项目（可不选）', r.project_id || '', [['', '不关联项目'], ...state.projects.filter(project => !project.voided || project.id === r.project_id).map(project => [project.id, `${project.name}${project.voided ? '（已作废，历史关联）' : ''}`])]) + input('counterparty', '供应商或客户（可不填）', r.counterparty) + note(r.note);
             } else if (type === 'exchanges') {
                 title = record ? '编辑换汇' : '记录换汇';
                 intro = '填写两笔成交金额，自动得到汇率；也可填写换出金额与汇率，自动计算换入金额。手续费单独记录，避免重复扣费。';
@@ -419,6 +599,7 @@
             if (type === 'movements') updateMovementTotal();
             if (type === 'exchanges') updateExchangePreview();
             if (type === 'payments') updatePaymentPreview();
+            if (type === 'projects') renderParticipants(r.participants?.length ? r.participants : [{ currency: r.currency || 'USD' }, { currency: r.currency || 'USD' }]);
             getModal('financeEditModal').show();
         }
         function updateMovementTotal(event) {
@@ -479,7 +660,7 @@
             $('financeExchangeReceipt').textContent = cleanNumber(values.to_amount) > 0 ? money(derived.received_amount, to) : '—';
             $('financeExchangeEffectiveRate').textContent = derived.exchange_rate > 0 && derived.received_amount > 0 ? `含手续费的实际汇率：1 ${from} = ${formatRate(derived.effective_rate)} ${to}。${feeField.value === from ? '手续费加在换出金额上。' : '手续费从换入金额中扣除。'}` : '实际支出与实际到账只计一次手续费。';
         }
-        function updateEditorPreview(event) { updateMovementTotal(event); updateExchangePreview(event); updatePaymentPreview(event); }
+        function updateEditorPreview(event) { updateMovementTotal(event); updateExchangePreview(event); updatePaymentPreview(event); updateProjectPreview(event); }
         function payloadForEditor() {
             const f = new FormData($('financeForm'));
             const get = key => String(f.get(key) || '').trim();
@@ -491,11 +672,13 @@
             else if (type === 'products') payload = Object.fromEntries(['name', 'sku', 'unit', 'location', 'note'].map(k => [k, get(k)]));
             else if (type === 'movements') payload = Object.fromEntries(['date', 'kind', 'counterparty', 'note'].map(k => [k, get(k)]));
             else if (type === 'exchanges') payload = Object.fromEntries(['date', 'from_currency', 'to_currency', 'from_amount', 'to_amount', 'fee_amount', 'fee_currency', 'from_account', 'to_account', 'counterparty', 'method', 'reference', 'note'].map(k => [k, get(k)]));
+            else if (type === 'projects') payload = projectFormValues();
             else payload = { date: get('date'), amount: get('amount'), note: get('note') };
             if (type === 'transfers') payload.amount = get('amount');
             if (type === 'loans') { payload.principal = get('principal'); payload.due_date = get('due_date') || null; payload.direction = get('direction') || record?.direction; payload.currency = get('currency') || record?.currency; }
             if (type === 'products') { payload.currency = get('currency') || record?.currency || 'USD'; payload.unit = get('unit') || record?.unit || '件'; }
             if (type === 'movements') { payload.kind = get('kind') || record?.kind; payload.product_id = Number(get('product_id') || record?.product_id); payload.quantity = get('quantity'); payload.unit_price = get('unit_price'); payload.paid_amount = payload.kind === 'opening' ? '0' : get('paid_amount'); payload.currency = get('currency') || record?.currency; payload.exchange_rate = get('exchange_rate') || ($('financeForm').elements.namedItem('exchange_rate')?.disabled ? '1' : ''); }
+            if (type === 'movements' && (record || get('project_id'))) payload.project_id = get('project_id') ? Number(get('project_id')) : null;
             if (type === 'payments' && currencies.includes(parent.currency)) { payload.currency = get('currency'); payload.exchange_rate = get('exchange_rate') || ($('financeForm').elements.namedItem('exchange_rate')?.disabled ? '1' : ''); }
             const validationRecord = type === 'movements' ? { ...record, base_currency: state.products.find(p => p.id === payload.product_id)?.currency } : parent || record;
             const error = validatePayload(type, payload, validationRecord);
@@ -529,9 +712,10 @@
         function detailField(label, value, wide = false) { return `<div${wide ? ' class="finance-wide"' : ''}><dt>${escape(label)}</dt><dd>${value}</dd></div>`; }
         function showDetails(type, id) {
             if (privateMode()) return;
-            const r = state[type]?.find(r => r.id === id);
-            if (!r) return;
-            const p = privateMode(), text = value => sensitive(value, p), cash = value => money(value, r.currency, p);
+            const record = state[type]?.find(r => r.id === id);
+            if (!record) return;
+            const r = type === 'projects' ? projectSnapshot(record) : record;
+            const p = privateMode(), text = value => sensitive(value, p), cash = value => (type === 'projects' ? projectMoney : money)(value, r.currency, p);
             const movementStatus = type === 'movements' && !r.voided ? r.kind === 'opening' ? '期初库存' : r.status === 'unpaid' ? (r.kind === 'sale' ? '未收款' : '未付款') : r.status === 'partial' ? (r.kind === 'sale' ? '部分收款' : '部分付款') : (r.kind === 'sale' ? '已收清' : '已付清') : undefined;
             let fields = [detailField('日期', text(r.date)), detailField('状态', badge(r.voided ? 'void' : r.status || r.direction, movementStatus))];
             if (type === 'transfers') {
@@ -548,15 +732,33 @@
                     detailField('反向成交汇率（不含费）', `1 ${escape(r.to_currency)} = ${formatRate(r.inverse_rate, p)} ${escape(r.from_currency)}`),
                     detailField('实际汇率（含手续费）', `1 ${escape(r.from_currency)} = ${formatRate(r.effective_rate, p)} ${escape(r.to_currency)}`),
                     detailField('换出账户', text(r.from_account)), detailField('换入账户', text(r.to_account)), detailField('换汇方式', text(r.method)), detailField('凭证或参考编号', text(r.reference)));
+            } else if (type === 'projects') {
+                fields[1] = detailField('状态', badge(r.voided ? 'void' : 'planned'));
+                const knownProfit = r.expected_profit !== null && r.expected_profit !== undefined;
+                fields.push(detailField('项目名称', text(r.name)), detailField('项目核算币种', escape(r.currency)), detailField('折算总出资', cash(r.total_contribution)),
+                    detailField('预计可分配利润（不含本金）', knownProfit ? cash(r.expected_profit) : '未填写'), detailField('计划分红比例合计', `${projectNumber(r.dividend_percent_total, 0, p)}%`), detailField('待分配比例', `${projectNumber(r.unallocated_percent, 0, p)}%`), detailField('预计待分配利润', knownProfit ? cash(r.unallocated_profit) : '未填写'));
             } else {
                 const product = state.products.find(p => p.id === r.product_id);
                 const baseCurrency = r.base_currency || product?.currency || r.currency;
                 const baseCash = value => money(value, baseCurrency, p);
                 fields.push(detailField('记录类型', escape(labels[r.kind])), detailField('商品', text(product?.name)), detailField('数量', `${quantity(r.quantity, p)} ${text(product?.unit)}`), detailField('单位价格 / 成本（货款币种）', cash(r.unit_price)), detailField('原币种货款总额', cash(r.total)), detailField('库存核算币种', escape(baseCurrency)), detailField('库存折算汇率', `1 ${escape(r.currency)} = ${formatRate(r.exchange_rate ?? 1, p)} ${escape(baseCurrency)}`), detailField('折算库存核算金额', baseCash(r.base_total ?? r.total)), detailField('最初已收付（货款币种）', cash(r.initial_paid_amount)), detailField(r.kind === 'sale' ? '累计已收款（折抵货款）' : '累计已付款（折抵货款）', cash(r.paid_amount)), detailField(r.kind === 'sale' ? '待收货款' : '待付货款', cash(r.remaining_payment)), detailField('供应商或客户', text(r.counterparty)));
                 if (r.kind === 'sale') fields.push(detailField('出货成本（库存核算币种）', baseCash(r.cost_of_goods)), detailField('出货毛利（库存核算币种）', baseCash(r.realized_profit)));
+                if (r.project_id) fields.push(detailField('关联项目', `<button type="button" class="btn finance-project-link" data-finance-detail="projects" data-id="${Number(r.project_id)}">${text(r.project_name || state.projects.find(project => project.id === r.project_id)?.name)}</button>`));
             }
             fields.push(detailField('备注', text(r.note), true));
             let history = '';
+            if (type === 'projects') {
+                const knownProfit = r.expected_profit !== null && r.expected_profit !== undefined;
+                const movements = state.movements.filter(movement => movement.project_id === r.id || (r.movement_ids || []).includes(movement.id));
+                history = `<div class="finance-history"><h6>参与人与分红计划</h6>${(r.participants || []).map(participant => {
+                    const native = participant.currency || r.currency;
+                    return `<section class="finance-participant-detail"><h6>${text(participant.name)}</h6><dl class="finance-detail-grid">${[
+                        detailField('原币种出资', projectMoney(participant.contribution_amount, native, p)), detailField('出资折算汇率', `1 ${escape(native)} = ${formatRate(participant.exchange_rate ?? 1, p)} ${escape(r.currency)}`),
+                        detailField('折算出资', cash(participant.base_amount)), detailField('出资比例（自动计算）', `${projectNumber(participant.contribution_percent, 0, p)}%`),
+                        detailField('计划分红比例（约定）', `${projectNumber(participant.dividend_percent, 0, p)}%`), detailField('预计分红（不含本金）', knownProfit ? cash(participant.expected_dividend) : '未填写'), detailField('参与人备注', text(participant.note), true)
+                    ].join('')}</dl></section>`;
+                }).join('')}<p class="finance-private-note mt-3">出资比例与约定分红比例分别记录。预计分红仅分配利润，不含返还本金；进出货关联不会自动改变分红计划。</p></div><div class="finance-history"><h6>关联进出货与历史</h6>${movements.length ? movements.map(movement => `<button type="button" class="finance-linked-movement btn" data-finance-detail="movements" data-id="${Number(movement.id)}"><span>${text(movement.date)} · ${escape(labels[movement.kind])} · ${text(state.products.find(product => product.id === movement.product_id)?.name)} ${movement.voided ? badge('void') : ''}</span><strong>${money(movement.total, movement.currency, p)}</strong><i class="bi bi-chevron-right" aria-hidden="true"></i></button>`).join('') : '<p class="small text-muted mb-0">尚未关联进出货。记录进出货时可以选择这个项目。</p>'}</div>`;
+            }
             if (type === 'loans' || type === 'movements') {
                 const nested = type === 'loans' ? 'repayments' : 'payments';
                 const title = type === 'loans' ? '还款历史' : '分次收付款历史';
@@ -602,6 +804,7 @@
             const explanations = {
                 transfers: '作废后，这笔转账不再计入转入、转出与净额。原记录仍保存在历史中。',
                 exchanges: '作废后，这笔换汇不再计入各币种的换入、换出、手续费与净流动。原记录与成交汇率仍保存在历史中。',
+                projects: '请先解除关联或作废项目下仍有效的进出货。作废后不再显示为可选项目，出资、分红计划与关联历史仍保留供查账。',
                 loans: '请先在还款历史中作废尚有效的还款，再作废这笔借贷。作废后的借贷不计入待还余额，原记录与还款历史仍会保留。',
                 products: '商品作废后不再出现在可选商品中。已有任何进出货历史的商品不能作废，可以编辑名称、位置与备注。',
                 movements: '请先作废尚有效的分次收付款。作废后会重新计算库存、货款余额与出货毛利。如果造成库存不足，需要先处理后续出货。所有历史仍会保留。',
@@ -662,12 +865,13 @@
         $('financeForm').addEventListener('submit', save);
         $('financeForm').addEventListener('input', updateEditorPreview);
         $('financeForm').addEventListener('change', updateEditorPreview);
+        $('financeForm').addEventListener('click', handleProjectAction);
         $('financeVoidConfirm').addEventListener('click', confirmVoid);
         ['financeEditModal', 'financeVoidModal'].forEach(id => $(id).addEventListener('hide.bs.modal', event => { if (busy && !privateMode()) event.preventDefault(); }));
         changeSection('transfers');
         return { load, refreshPrivacy, setPrivate(value) { privateOverride = Boolean(value); refreshPrivacy(); } };
     }
-    const api = { init, escape, money, quantity, formatRate, amountFromRate, inventoryAmount, decimalSum, decimalGreater, exchangeAmounts, filterRecords, renderRows, validatePayload, createRequestTracker, errorMessage };
+    const api = { init, escape, money, quantity, formatRate, amountFromRate, inventoryAmount, decimalSum, decimalGreater, allocateDecimal, projectPreview, projectMoney, exchangeAmounts, filterRecords, renderRows, validatePayload, createRequestTracker, errorMessage };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     root.FinanceUI = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -173,6 +173,14 @@ CREATE TABLE IF NOT EXISTS finance_exchanges (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS finance_projects (
+    id BIGSERIAL PRIMARY KEY,
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    voided BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS finance_loans (
     id BIGSERIAL PRIMARY KEY,
     payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
@@ -231,6 +239,17 @@ CREATE TABLE IF NOT EXISTS finance_requests (
 ALTER TABLE finance_requests DROP CONSTRAINT IF EXISTS finance_requests_entity_kind_check;
 ALTER TABLE finance_requests ADD CONSTRAINT finance_requests_entity_kind_check
     CHECK (entity_kind IN ('transfers','loans','products','movements','repayments','payments','exchanges'));
+-- Keep the legacy request journal compatible with rollback images whose schema
+-- bootstrap restores the seven-kind CHECK above. New project requests live in
+-- their own additive journal; the current writer checks both UUID namespaces.
+CREATE TABLE IF NOT EXISTS finance_project_requests (
+    request_id UUID PRIMARY KEY,
+    entity_kind TEXT NOT NULL CHECK (entity_kind = 'projects'),
+    parent_id BIGINT,
+    entity_id BIGINT NOT NULL,
+    request_payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS finance_audit (
     id BIGSERIAL PRIMARY KEY,
     entity_kind TEXT NOT NULL,

@@ -8,7 +8,7 @@ from . import finance_repository as repository
 from .finance import (ExchangeCreate, ExchangeUpdate, FinanceError, InventoryPaymentCreate,
                       LoanCreate, LoanUpdate, MovementCreate,
                       MovementUpdate, PaymentCreate, ProductCreate, ProductUpdate,
-                      TransferCreate, TransferUpdate)
+                      ProjectCreate, ProjectUpdate, TransferCreate, TransferUpdate)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/api/finance', tags=['finance'])
@@ -57,6 +57,21 @@ async def update_exchange(record_id: int, request: ExchangeUpdate):
 @router.delete('/exchanges/{record_id}')
 async def void_exchange(record_id: int, version: int = Query(..., ge=1)):
     return await _execute(repository.void_record, 'exchanges', record_id, version)
+
+
+@router.post('/projects')
+async def create_project(request: ProjectCreate):
+    return await _execute(repository.create_record, 'projects', request)
+
+
+@router.put('/projects/{record_id}')
+async def update_project(record_id: int, request: ProjectUpdate):
+    return await _execute(repository.update_record, 'projects', record_id, request)
+
+
+@router.delete('/projects/{record_id}')
+async def void_project(record_id: int, version: int = Query(..., ge=1)):
+    return await _execute(repository.void_record, 'projects', record_id, version)
 
 
 @router.post('/loans')

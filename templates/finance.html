@@ -3,7 +3,7 @@
         <header class="finance-heading">
             <div>
                 <h2>Finance</h2>
-                <p>记住重要的资金往来，清楚每一笔借贷、进出货与换汇。</p>
+                <p>记住重要的资金往来，清楚每一笔借贷、进出货、换汇与合资计划。</p>
             </div>
             <button type="button" id="financeReload" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>刷新记录</button>
         </header>
@@ -16,6 +16,7 @@
                 <button type="button" data-finance-section="loans" aria-pressed="false"><i class="bi bi-people" aria-hidden="true"></i>借贷往来</button>
                 <button type="button" data-finance-section="movements" aria-pressed="false"><i class="bi bi-box-seam" aria-hidden="true"></i>进出货</button>
                 <button type="button" data-finance-section="exchanges" aria-pressed="false"><i class="bi bi-currency-exchange" aria-hidden="true"></i>换汇</button>
+                <button type="button" data-finance-section="projects" aria-pressed="false"><i class="bi bi-diagram-3" aria-hidden="true"></i>合资项目</button>
             </div>
             <div class="finance-actions">
                 <button type="button" id="financeProducts" class="btn btn-outline-secondary d-none"><i class="bi bi-boxes me-1" aria-hidden="true"></i>商品库存</button>
@@ -34,6 +35,7 @@
         <div id="financeList" class="finance-list" aria-live="polite"><div class="finance-empty"><i class="bi bi-journal-text" aria-hidden="true"></i><h3>打开财务，查看你的记录</h3><p>转账、借贷、进出货与换汇会分别保存在这里。</p></div></div>
         <p id="financeInventoryNote" class="finance-scope d-none">货款、实际收付款与库存核算可使用不同币种，跨币种汇率由你填写。待收待付按货款币种统计；库存与出货毛利按商品库存核算币种的移动平均成本计算，不含后续收付款的汇兑损益。</p>
         <p id="financeExchangeNote" class="finance-scope d-none">换汇净流动 = 换入金额 − 换出本金 − 手续费，按各币种分别统计。换汇不计入转账汇总；实际到账与实际支出已包含对应币种的手续费。</p>
+        <p id="financeProjectNote" class="finance-scope d-none">合资项目分别记录出资与约定分红比例。预计可分配利润不含本金，分红计划属于估算，不计入已实现收益；进出货关联用于查账，不会自动调整分红计划。</p>
     </section>
 </div>
 

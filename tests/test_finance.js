@@ -10,6 +10,11 @@ const loan = { id: 2, version: 3, date: '2026-10-01', direction: 'lent', princip
 const product = { id: 3, version: 1, name: 'Private product', sku: 'SKU-secret', unit: '箱', currency: 'USD', location: 'Private location', note: 'Private product note', quantity: 8, average_cost: 20, inventory_cost: 160, voided: false };
 const movement = { id: 4, version: 2, date: '2026-10-01', product_id: 3, kind: 'purchase', quantity: 10, unit_price: 20, currency: 'USD', total: 200, initial_paid_amount: 30, paid_amount: 80, remaining_payment: 120, status: 'partial', counterparty: 'Private supplier', note: 'Private shipment note', voided: false, payments: [{ id: 9, version: 1, date: '2026-10-02', amount: 50, note: 'Private payment', voided: false }] };
 const exchange = { id: 5, version: 2, date: '2026-10-01', from_currency: 'USD', to_currency: 'CNY', from_amount: 1000, to_amount: 7200, fee_amount: 35, fee_currency: 'CNY', from_account: 'Private dollar account', to_account: 'Private yuan account', counterparty: 'Private exchange partner', method: 'Private exchange method', reference: 'Secret-exchange-reference', note: 'Private exchange note', exchange_rate: 7.2, inverse_rate: 1 / 7.2, debited_amount: 1000, received_amount: 7165, effective_rate: 7.165, voided: false };
+const projectInput = { date: '2026-10-01', name: 'Private venture', currency: 'USD', expected_profit: '500', note: 'Private venture note', participants: [
+    { name: 'Kevin', contribution_amount: '600', currency: 'USD', exchange_rate: '1', dividend_percent: '50', note: 'Private capital note' },
+    { name: 'Private partner', contribution_amount: '2800', currency: 'CNY', exchange_rate: '0.142857142857', dividend_percent: '30', note: '' },
+] };
+const project = { ...projectInput, ...FinanceUI.projectPreview(projectInput), id: 6, version: 2, status: 'planned', voided: false, request_fields: projectInput, movement_ids: [], active_movement_ids: [] };
 const data = { transfers: [transfer], loans: [loan], products: [product], movements: [movement], exchanges: [exchange], summary: [{ currency: 'USD', transfer_in: 0, transfer_out: 12345.67, transfer_net: -12345.67, lent_outstanding: 400, borrowed_outstanding: 0, inventory_cost: 160, payable: 120, receivable: 0, realized_profit: 0, exchange_out: 1000, exchange_in: 0, exchange_fees: 0, exchange_net: -1000 }, { currency: 'CNY', exchange_out: 0, exchange_in: 7200, exchange_fees: 35, exchange_net: 7165 }, { currency: 'HKD', transfer_in: 1, exchange_out: 0, exchange_in: 0, exchange_fees: 0, exchange_net: 0 }] };
 
 test('finance filters retain void history only on request and keep currencies separate', () => {
@@ -71,8 +76,9 @@ function fixture(options = {}) {
             get innerHTML() { return this.inner; },
             set innerHTML(html) {
                 this.inner = html;
-                if (id !== 'financeFormFields') return;
-                fields.clear();
+                if (!['financeFormFields', 'financeProjectParticipants'].includes(id)) return;
+                if (id === 'financeFormFields') fields.clear();
+                else for (const name of fields.keys()) if (name.startsWith('participant-')) fields.delete(name);
                 for (const match of html.matchAll(/<input\b([^>]+)>/g)) {
                     const attrs = match[1], name = /name="([^"]+)"/.exec(attrs)?.[1];
                     if (name) fields.set(name, { value: /value="([^"]*)"/.exec(attrs)?.[1] || '', disabled: /\bdisabled\b/.test(attrs) });
@@ -89,7 +95,7 @@ function fixture(options = {}) {
         elements.set(id, el); return el;
     }
     element('financeForm').elements = { namedItem: name => fields.get(name) };
-    const sectionButtons = ['transfers', 'loans', 'movements', 'exchanges'].map(s => { const el = element(`section-${s}`); el.dataset.financeSection = s; return el; });
+    const sectionButtons = ['transfers', 'loans', 'movements', 'exchanges', 'projects'].map(s => { const el = element(`section-${s}`); el.dataset.financeSection = s; return el; });
     const context = vm.createContext({
         console, Intl, Date, Number, String, Boolean, Map, Set, JSON, Object, Array,
         document: { getElementById: element, querySelector: () => element('finance-workspace'), querySelectorAll: () => sectionButtons },
@@ -105,7 +111,8 @@ function fixture(options = {}) {
         element(inDetails ? 'financeDetailsModal' : 'finance-workspace').listeners.click({ target: button });
     };
     const submit = () => element('financeForm').listeners.submit({ preventDefault() {} });
-    return { ui, requests, fields, elements, element, click, submit, modals, setResponse(fn) { response = fn; } };
+    const formClick = dataset => element('financeForm').listeners.click({ target: { dataset, disabled: false, closest() { return this; } } });
+    return { ui, requests, fields, elements, element, click, submit, formClick, modals, setResponse(fn) { response = fn; } };
 }
 
 test('demo initialization never accesses finance data', async () => {
@@ -516,4 +523,211 @@ test('legacy product bases cannot silently default a new USD movement to an inve
     onlyLegacy.element('financeProducts').listeners.click();
     assert.ok(onlyLegacy.element('financeDetailsBody').innerHTML.includes('Historical HKD product'));
     assert.ok(onlyLegacy.element('financeDetailsBody').innerHTML.includes('不新增进出货'));
+});
+
+test('project preview separates converted funding, contribution ratio, planned dividend and forecast remainder', () => {
+    const preview = FinanceUI.projectPreview(projectInput);
+    assert.equal(preview.total_contribution, '1000');
+    assert.deepEqual(preview.participants.map(p => p.base_amount), ['600', '400']);
+    assert.deepEqual(preview.participants.map(p => p.contribution_percent), ['60', '40']);
+    assert.deepEqual(preview.participants.map(p => p.expected_dividend), ['250', '150']);
+    assert.equal(preview.unallocated_percent, '20'); assert.equal(preview.unallocated_profit, '100');
+    assert.equal(preview.allocation_complete, false);
+    const missing = FinanceUI.projectPreview({ ...projectInput, expected_profit: null });
+    assert.equal(missing.unallocated_profit, null); assert.ok(missing.participants.every(p => p.expected_dividend === null));
+    const zero = FinanceUI.projectPreview({ ...projectInput, expected_profit: '0' });
+    assert.equal(zero.unallocated_profit, '0'); assert.ok(zero.participants.every(p => p.expected_dividend === '0'));
+});
+
+test('project largest-remainder allocation reconciles six-place shares and payouts with stable ties', () => {
+    assert.deepEqual(FinanceUI.allocateDecimal('100', ['1', '1', '1']), ['33.333334', '33.333333', '33.333333']);
+    assert.equal(FinanceUI.decimalSum(FinanceUI.allocateDecimal('100', ['1', '1', '1'])), '100');
+    assert.deepEqual(FinanceUI.allocateDecimal('0.000001', ['25', '25', '25', '25']), ['0.000001', '0', '0', '0']);
+    assert.deepEqual(FinanceUI.allocateDecimal('999999999999.000001', ['50', '50']), ['499999999999.500001', '499999999999.5']);
+    const zeroFunding = FinanceUI.projectPreview({ ...projectInput, participants: projectInput.participants.map(p => ({ ...p, contribution_amount: '0' })) });
+    assert.deepEqual(zeroFunding.participants.map(p => p.contribution_percent), ['0', '0']);
+    const midpoint = FinanceUI.projectPreview({ currency: 'USD', expected_profit: null, participants: [{ currency: 'CNY', contribution_amount: '1', exchange_rate: '0.0000015', dividend_percent: '0' }] });
+    assert.equal(midpoint.total_contribution, '0.000002');
+});
+
+test('project validation allows partial plans and unknown profits while rejecting invalid sums and names', () => {
+    assert.equal(FinanceUI.validatePayload('projects', projectInput), '');
+    assert.equal(FinanceUI.validatePayload('projects', { ...projectInput, expected_profit: null }), '');
+    assert.equal(FinanceUI.validatePayload('projects', { ...projectInput, expected_profit: '0' }), '');
+    const changed = patch => ({ ...projectInput, participants: projectInput.participants.map((p, i) => i ? { ...p, ...patch } : p) });
+    assert.match(FinanceUI.validatePayload('projects', changed({ dividend_percent: '50.000001' })), /合计不能超过/);
+    assert.match(FinanceUI.validatePayload('projects', changed({ name: 'KEVIN' })), /姓名不能重复/);
+    assert.match(FinanceUI.validatePayload('projects', changed({ exchange_rate: '' })), /折算汇率/);
+    assert.match(FinanceUI.validatePayload('projects', changed({ contribution_amount: '-1' })), /出资金额/);
+    assert.match(FinanceUI.validatePayload('projects', changed({ contribution_amount: '0.000001', exchange_rate: '0.0000005' })), /折算后的出资金额/);
+    assert.match(FinanceUI.validatePayload('projects', { ...projectInput, participants: [] }), /1 至 50/);
+    assert.match(FinanceUI.validatePayload('projects', { ...projectInput, expected_profit: '-1' }), /预计可分配利润/);
+});
+
+test('project editor shows native-to-base rate, independent previews, optional forecast and raw retry payload', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeSection: 'projects' }); f.element('financeAdd').listeners.click();
+    assert.equal(f.fields.get('expected_profit').value, '');
+    assert.equal(f.element('financeProjectProfit').textContent, '未填写');
+    assert.equal(f.fields.get('participant-0-exchange_rate').disabled, true);
+    f.fields.get('name').value = 'New venture';
+    for (const [index, participant] of projectInput.participants.entries()) for (const [key, value] of Object.entries(participant)) f.fields.get(`participant-${index}-${key}`).value = value;
+    f.fields.get('expected_profit').value = '500';
+    f.element('financeForm').listeners.input({ target: { name: 'participant-1-exchange_rate' } });
+    assert.match(f.element('financeParticipantRateLabel-1').textContent, /1 CNY = 多少 USD/);
+    assert.equal(f.element('financeProjectTotal').textContent, 'USD 1,000.00');
+    assert.equal(f.element('financeProjectDividendTotal').textContent, '80%');
+    assert.equal(f.element('financeProjectUnallocated').textContent, '20%');
+    assert.equal(f.element('financeProjectUnallocatedProfit').textContent, 'USD 100.00');
+    assert.ok(f.element('financeParticipantPreview-0').innerHTML.includes('60%'));
+    assert.ok(f.element('financeParticipantPreview-1').innerHTML.includes('USD 150.00'));
+    f.setResponse(async () => { throw new Error('Interrupted'); }); await f.submit();
+    const first = JSON.parse(f.requests.at(-1).body);
+    assert.equal(f.requests.at(-1).url, '/api/finance/projects');
+    assert.equal(first.expected_profit, '500'); assert.equal(first.participants[1].exchange_rate, '0.142857142857');
+    assert.equal(first.participants[0].contribution_amount, '600'); assert.equal(first.participants[0].dividend_percent, '50');
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [project] }) })); await f.submit();
+    assert.equal(JSON.parse(f.requests.at(-1).body).request_id, first.request_id);
+});
+
+test('project participant add/remove preserves inputs and proportional fill sums to exactly 100', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeSection: 'projects' }); f.element('financeAdd').listeners.click();
+    f.fields.get('participant-0-name').value = 'First'; f.fields.get('participant-0-contribution_amount').value = '1';
+    f.fields.get('participant-1-name').value = 'Second'; f.fields.get('participant-1-contribution_amount').value = '1';
+    f.formClick({ projectAdd: '' });
+    assert.equal(f.fields.get('participant-0-name').value, 'First');
+    assert.equal(f.fields.get('participant-2-contribution_amount').value, '0');
+    f.fields.get('participant-2-name').value = 'Third'; f.fields.get('participant-2-contribution_amount').value = '1';
+    f.formClick({ projectProportional: '' });
+    assert.deepEqual([0, 1, 2].map(i => f.fields.get(`participant-${i}-dividend_percent`).value), ['33.333334', '33.333333', '33.333333']);
+    assert.equal(f.element('financeProjectDividendTotal').textContent, '100%');
+    f.formClick({ projectRemove: '1' });
+    assert.equal(f.fields.get('participant-1-name').value, 'Third'); assert.equal(f.fields.has('participant-2-name'), false);
+    f.fields.get('participant-1-currency').value = 'CNY';
+    f.element('financeForm').listeners.change({ target: { name: 'participant-1-currency' } });
+    assert.equal(f.fields.get('participant-1-exchange_rate').value, ''); assert.equal(f.fields.get('participant-1-exchange_rate').disabled, false);
+    f.fields.get('currency').value = 'CNY'; f.element('financeForm').listeners.change({ target: { name: 'currency' } });
+    assert.equal(f.fields.get('participant-1-exchange_rate').value, '1'); assert.equal(f.fields.get('participant-1-exchange_rate').disabled, true);
+    assert.equal(f.fields.get('participant-0-exchange_rate').value, '');
+});
+
+test('project edits preserve exact canonical request fields and immutable currency instead of rounded GET numbers', async () => {
+    const exact = { ...projectInput, expected_profit: '999999999999.000001', participants: projectInput.participants.map((p, i) => ({ ...p, contribution_amount: i ? p.contribution_amount : '999999999999.000001', dividend_percent: i ? '49.999999' : '50.000001' })) };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [{ ...project, expected_profit: 999999999999, request_fields: exact, participants: project.participants.map(p => ({ ...p, contribution_amount: 999999999999 })) }] }) }));
+    await f.ui.load(); f.click({ financeEdit: 'projects', id: '6' }, true);
+    assert.equal(f.fields.get('currency').disabled, true);
+    assert.equal(f.fields.get('expected_profit').value, '999999999999.000001');
+    assert.equal(f.fields.get('participant-0-contribution_amount').value, '999999999999.000001');
+    assert.equal(f.fields.get('participant-0-dividend_percent').value, '50.000001');
+    await f.submit(); const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(f.requests.at(-1).method, 'PUT'); assert.equal(f.requests.at(-1).url, '/api/finance/projects/6');
+    assert.equal(payload.currency, 'USD'); assert.equal(payload.version, 2); assert.equal(payload.expected_profit, '999999999999.000001');
+    assert.equal(payload.participants[0].contribution_amount, '999999999999.000001'); assert.equal(payload.participants[1].dividend_percent, '49.999999');
+});
+
+test('project-only overview remains visible without realized summary and distinguishes missing forecasts from zero', async () => {
+    const f = fixture(); const unknown = { ...project, expected_profit: null, request_fields: { ...projectInput, expected_profit: null } };
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [unknown], summary: [] }) }));
+    await f.ui.load(); f.click({ financeSection: 'projects' });
+    assert.ok(f.element('financeOverview').innerHTML.includes('USD 1,000.00'));
+    assert.ok(f.element('financeOverview').innerHTML.includes('未填写'));
+    assert.ok(!f.element('financeOverview').innerHTML.includes('USD 0.00'));
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [unknown, { ...project, id: 7, expected_profit: '0', request_fields: { ...projectInput, expected_profit: '0' } }], summary: [] }) }));
+    await f.ui.load(true);
+    assert.ok(f.element('financeOverview').innerHTML.includes('已填预计利润'));
+    assert.ok(f.element('financeOverview').innerHTML.includes('USD 0.00'));
+    assert.ok(f.element('financeOverview').innerHTML.includes('1 个项目未填写'));
+    assert.ok(!f.element('financeOverview').innerHTML.includes('出货毛利'));
+});
+
+test('movement project linking supports create omission, explicit unlink and historical linked option', async () => {
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [project] }) }));
+    await f.ui.load(); f.click({ financeSection: 'movements' }); f.element('financeAdd').listeners.click();
+    f.fields.get('quantity').value = '1'; f.fields.get('unit_price').value = '10'; await f.submit();
+    assert.equal(JSON.parse(f.requests.at(-1).body).project_id, undefined);
+    f.element('financeAdd').listeners.click(); f.fields.get('quantity').value = '1'; f.fields.get('unit_price').value = '10'; f.fields.get('project_id').value = '6'; await f.submit();
+    assert.equal(JSON.parse(f.requests.at(-1).body).project_id, 6);
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [{ ...project, voided: true }], movements: [{ ...movement, project_id: 6, project_name: project.name }] }) }));
+    await f.ui.load(true); f.click({ financeEdit: 'movements', id: '4' }, true);
+    assert.equal(f.fields.get('project_id').value, '6');
+    assert.ok(f.element('financeFormFields').innerHTML.includes('已作废，历史关联'));
+    f.fields.get('project_id').value = ''; await f.submit();
+    assert.equal(JSON.parse(f.requests.at(-1).body).project_id, null);
+    assert.equal(JSON.parse(f.requests.at(-1).body).paid_amount, '30');
+});
+
+test('project details retain participant forecasts, linked movement history and versioned void constraints', async () => {
+    const linked = { ...movement, project_id: 6, project_name: project.name };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [{ ...project, movement_ids: [4] }], movements: [linked] }) }));
+    await f.ui.load(); f.click({ financeDetail: 'projects', id: '6' });
+    const details = f.element('financeDetailsBody').innerHTML;
+    for (const text of ['出资比例（自动计算）', '计划分红比例（约定）', '预计分红（不含本金）', 'USD 250.00', 'USD 100.00', 'CNY 2,800.00', 'data-finance-detail="movements"']) assert.ok(details.includes(text), text);
+    f.click({ financeDetail: 'movements', id: '4' }, true);
+    assert.ok(f.element('financeDetailsBody').innerHTML.includes('data-finance-detail="projects"'));
+    assert.equal(FinanceUI.filterRecords([linked], { search: 'private venture' }, [product], [project]).length, 1);
+    f.click({ financeVoid: 'projects', id: '6' }, true);
+    assert.match(f.element('financeVoidMessage').textContent, /先解除关联或作废/);
+    f.setResponse(async () => ({ ok: false, status: 409, json: async () => ({ detail: 'Unlink or void the active movements before voiding this project' }) }));
+    await f.element('financeVoidConfirm').listeners.click();
+    assert.equal(f.requests.at(-1).url, '/api/finance/projects/6?version=2');
+    assert.match(f.element('financeVoidError').textContent, /先解除关联或作废/);
+});
+
+test('projects search participant names, escape hostile names and mask funding, shares, forecasts and linked names', async () => {
+    for (const currency of ['USD', 'CNY']) assert.equal(FinanceUI.filterRecords([project], { currency }).length, 1);
+    assert.equal(FinanceUI.filterRecords([project], { search: 'private partner' }).length, 1);
+    assert.equal(FinanceUI.filterRecords([{ ...project, voided: true }]).length, 0);
+    const hostile = { ...project, name: '<img src=x onerror=alert(1)>', participants: [{ ...project.participants[0], name: '<script>unsafe()</script>' }] };
+    const html = FinanceUI.renderRows([hostile], 'projects'); assert.ok(!html.includes('<img')); assert.ok(!html.includes('<script>'));
+    const hidden = FinanceUI.renderRows([project], 'projects', [], true);
+    for (const secret of ['Private venture', 'Private partner', 'Kevin', '1,000.00', '80%', '20%', '500.00']) assert.ok(!hidden.includes(secret), secret);
+    const hiddenMovement = FinanceUI.renderRows([{ ...movement, project_id: 6 }], 'movements', [product], true, [project]);
+    assert.ok(!hiddenMovement.includes('Private venture'));
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [project] }) }));
+    await f.ui.load(); f.click({ financeSection: 'projects' }); f.click({ financeDetail: 'projects', id: '6' }); f.click({ financeEdit: 'projects', id: '6' }, true);
+    assert.ok(f.fields.has('participant-0-name')); f.ui.setPrivate(true);
+    assert.equal(f.element('financeFormFields').innerHTML, ''); assert.equal(f.element('financeDetailsBody').innerHTML, ''); assert.equal(f.fields.size, 0);
+    for (const secret of ['Private venture', 'Private partner', 'Kevin', '1,000.00', '500.00', '80%', '20%']) {
+        assert.ok(!f.element('financeList').innerHTML.includes(secret)); assert.ok(!f.element('financeOverview').innerHTML.includes(secret));
+    }
+});
+
+test('saved and preview project money preserves high-value micro-units through exact calculation mapping and legacy fallback', async () => {
+    assert.equal(FinanceUI.projectMoney('999999999999.000001', 'USD'), 'USD 999,999,999,999.000001');
+    assert.equal(FinanceUI.projectMoney('0', 'USD'), 'USD 0.00');
+    assert.equal(FinanceUI.projectMoney('0.000001', 'USD'), 'USD 0.000001');
+    assert.equal(FinanceUI.projectMoney('999999999999.000001', 'USD', true), '***');
+    const inputs = { ...projectInput, expected_profit: '999999999999.000001', participants: projectInput.participants.map((participant, index) => ({ ...participant, currency: 'USD', exchange_rate: '1', contribution_amount: index ? '400' : '999999999999.000001', dividend_percent: '33.333333' })) };
+    const exact = FinanceUI.projectPreview(inputs);
+    assert.deepEqual(exact.participants.map(p => p.expected_dividend), ['333333329999.666667', '333333329999.666667']);
+    assert.equal(exact.unallocated_profit, '333333339999.666667');
+    assert.equal(FinanceUI.decimalSum([...exact.participants.map(p => p.expected_dividend), exact.unallocated_profit]), inputs.expected_profit);
+    const numeric = { ...exact, total_contribution: Number(exact.total_contribution), unallocated_profit: Number(exact.unallocated_profit), participants: exact.participants.map(p => ({ ...p, base_amount: Number(p.base_amount), expected_dividend: Number(p.expected_dividend) })) };
+    for (const mapping of [undefined, exact]) {
+        const saved = { ...project, ...numeric, id: 7, expected_profit: Number(inputs.expected_profit), request_fields: inputs, calculation_fields: mapping };
+        const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [saved, project], summary: [] }) }));
+        await f.ui.load(); f.click({ financeSection: 'projects' });
+        assert.ok(f.element('financeOverview').innerHTML.includes('USD 1,000,000,001,399.000001'));
+        assert.ok(f.element('financeOverview').innerHTML.includes('USD 1,000,000,000,499.000001'));
+        assert.ok(f.element('financeList').innerHTML.includes('USD 1,000,000,000,399.000001'));
+        f.click({ financeDetail: 'projects', id: '7' });
+        const html = f.element('financeDetailsBody').innerHTML;
+        assert.equal((html.match(/USD 333,333,329,999\.666667/g) || []).length, 2);
+        assert.ok(html.includes('USD 333,333,339,999.666667')); assert.ok(html.includes('USD 999,999,999,999.000001'));
+        f.click({ financeEdit: 'projects', id: '7' }, true);
+        assert.equal(f.element('financeProjectProfit').textContent, 'USD 999,999,999,999.000001');
+        assert.ok(f.element('financeParticipantPreview-0').innerHTML.includes('USD 333,333,329,999.666667'));
+        f.ui.setPrivate(true);
+        assert.ok(!f.element('financeOverview').innerHTML.includes('1,000,000,001,399'));
+    }
+});
+
+test('project create keeps blank forecast null and known zero as a raw zero string', async () => {
+    for (const value of ['', '0']) {
+        const f = fixture(); await f.ui.load(); f.click({ financeSection: 'projects' }); f.element('financeAdd').listeners.click();
+        f.fields.get('name').value = 'Forecast check'; f.fields.get('expected_profit').value = value;
+        f.fields.get('participant-0-name').value = 'First'; f.fields.get('participant-1-name').value = 'Second';
+        await f.submit();
+        assert.equal(f.requests.at(-1).url, '/api/finance/projects');
+        assert.equal(JSON.parse(f.requests.at(-1).body).expected_profit, value === '' ? null : '0');
+    }
 });
