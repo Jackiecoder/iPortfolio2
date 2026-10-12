@@ -343,3 +343,44 @@ test('a failed pending save cannot reveal server details after privacy is enable
     assert.ok(!f.element('financeNotice').textContent.includes('Sensitive Person'));
     assert.equal(f.element('financeFormFields').innerHTML, '');
 });
+
+test('legacy currency edits cannot silently replace the original currency with USD', async () => {
+    for (const [collection, record] of [
+        ['transfers', { ...transfer, currency: 'HKD' }],
+        ['loans', { ...loan, currency: 'HKD' }],
+        ['products', { ...product, currency: 'EUR' }],
+        ['movements', { ...movement, currency: 'GBP' }],
+        ['exchanges', { ...exchange, from_currency: 'HKD' }],
+        ['exchanges', { ...exchange, to_currency: 'HKD' }],
+        ['exchanges', { ...exchange, fee_currency: 'HKD' }],
+    ]) {
+        const f = fixture();
+        f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, [collection]: [record] }) }));
+        await f.ui.load(); f.click({ financeEdit: collection, id: String(record.id) }, true);
+        assert.match(f.element('financeNotice').textContent, /原币种与金额保留/);
+        assert.equal(f.element('financeFormFields').innerHTML, '');
+        assert.ok(!f.modals.some(([action, id]) => action === 'show' && id === 'financeEditModal'));
+        await f.submit(); assert.equal(f.requests.length, 1);
+    }
+});
+
+test('legacy currency details and voiding remain available without changing stored currency', async () => {
+    const f = fixture();
+    const legacy = { ...transfer, currency: 'HKD' };
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, transfers: [legacy] }) }));
+    await f.ui.load(); f.click({ financeDetail: 'transfers', id: '1' });
+    assert.ok(f.element('financeDetailsBody').innerHTML.includes('HKD 12,345.67'));
+    f.click({ financeVoid: 'transfers', id: '1' }, true); await f.element('financeVoidConfirm').listeners.click();
+    assert.equal(f.requests.at(-1).url, '/api/finance/transfers/1?version=1');
+    assert.equal(f.requests.at(-1).method, 'DELETE');
+});
+
+test('repayment on a legacy loan preserves its original currency', async () => {
+    const f = fixture();
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, loans: [{ ...loan, currency: 'HKD' }] }) }));
+    await f.ui.load(); f.click({ financePayment: 'loans', id: '2' }, true);
+    assert.match(f.element('financeFormIntro').textContent, /HKD 400.00/);
+    await f.submit();
+    assert.equal(f.requests.at(-1).url, '/api/finance/loans/2/repayments');
+    assert.equal(JSON.parse(f.requests.at(-1).body).currency, undefined);
+});

@@ -53,13 +53,18 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
             reload.assert_not_called()
 
     async def test_invalid_numbers_dates_currency_and_extra_fields_do_not_write(self):
-        with patch.object(finance_api.repository, 'create_record') as write:
-            for fields in [dict(amount='NaN'), dict(amount=-1), dict(amount=True), dict(currency='US'),
+        with patch.object(finance_api.repository, 'create_record') as write, \
+             patch.object(finance_api.repository, 'update_record') as update:
+            for fields in [dict(amount='NaN'), dict(amount=-1), dict(amount=True), dict(currency='US'), dict(currency='HKD'),
                            dict(date='2099-01-01'), dict(date='1/1/2026'), dict(investment_transaction_id=123)]:
                 with self.subTest(fields=fields):
                     response = await self.client.post('/api/finance/transfers', json={**self.transfer, **fields}, headers=self.headers)
                     self.assertEqual(response.status_code, 422)
+            body = {k: v for k, v in self.transfer.items() if k != 'request_id'}
+            response = await self.client.put('/api/finance/transfers/1', json={**body, 'currency': 'HKD', 'version': 1}, headers=self.headers)
+            self.assertEqual(response.status_code, 422)
             write.assert_not_called()
+            update.assert_not_called()
 
     async def test_version_required_on_edit_and_void(self):
         with patch.object(finance_api.repository, 'update_record') as update, \
@@ -115,7 +120,7 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
         exchange = dict(date='2026-01-01', from_currency='USD', to_currency='CNY',
                         from_amount=1000, to_amount=7200, request_id=str(uuid4()))
         with patch.object(finance_api.repository, 'create_record') as write:
-            for values in [dict(to_currency='USD'), dict(from_amount=0), dict(fee_currency='JPY'),
+            for values in [dict(to_currency='USD'), dict(from_currency='HKD'), dict(from_amount=0), dict(fee_currency='JPY'),
                            dict(fee_currency='CNY', fee_amount=7200), dict(fee_amount='Infinity')]:
                 response = await self.client.post('/api/finance/exchanges', json={**exchange, **values}, headers=self.headers)
                 self.assertEqual(response.status_code, 422)

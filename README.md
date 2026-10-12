@@ -34,8 +34,9 @@ holdings, cash snapshots, or portfolio returns. The public demo does not load it
   moving average; sales profit is sale value less the allocated stock cost.
   Purchase payables and sale receivables show the amount still unpaid.
 
-USD, CNY, HKD, EUR, GBP, CAD, JPY, and AUD are summarized independently, without
-inventing exchange rates. Saved amounts and quantities use exact Decimal math
+Currency selectors currently offer USD and CNY. Historical records retain their
+original currencies, summarized independently without inventing exchange rates.
+Saved amounts and quantities use exact Decimal math
 with up to six decimal places. Records can be corrected or voided while retaining
 history; changes have version checks and transactional audit records. Backdated
 changes cannot create negative historical stock, and repayment/payment totals

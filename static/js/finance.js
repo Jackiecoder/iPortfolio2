@@ -1,6 +1,6 @@
 (function (root) {
     'use strict';
-    const currencies = ['USD', 'CNY', 'HKD', 'EUR', 'GBP', 'CAD', 'JPY', 'AUD'];
+    const currencies = ['USD', 'CNY'];
     const labels = { in: '转入', out: '转出', internal: '账户间转账', lent: '我借给别人', borrowed: '我向别人借',
         purchase: '进货', sale: '出货', opening: '期初库存', exchange: '换汇', recorded: '已记录', open: '待还款', partial: '部分结清', settled: '已结清', unpaid: '未付款', paid: '已付清', void: '已作废' };
     const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -298,6 +298,16 @@
         const currencyField = (value = 'USD', disabled = false) => select('currency', '币种', value, currencies.map(c => [c, c]), disabled);
         function openEditor(type, record = null, parent = null) {
             if (privateMode() || busy) return;
+            const recordCurrencies = record ? type === 'exchanges' ? [record.from_currency, record.to_currency, record.fee_currency] : [record.currency] : [];
+            if (recordCurrencies.some(currency => currency && !currencies.includes(currency))) {
+                getModal('financeDetailsModal').hide();
+                getModal('financeEditModal').hide();
+                editor = null;
+                $('financeFormFields').innerHTML = '';
+                $('financeFormIntro').textContent = '';
+                notice('这笔历史记录含其他币种，暂不支持编辑。原币种与金额保留，可继续查看或作废。');
+                return;
+            }
             getModal('financeDetailsModal').hide();
             const r = record || {};
             editor = { type, record, parent, requestId: createRequestTracker(() => root.crypto.randomUUID()) };

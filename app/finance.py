@@ -13,7 +13,9 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CURRENCIES = ('USD', 'CNY', 'HKD', 'EUR', 'GBP', 'CAD', 'JPY', 'AUD')
+# Currency choices for new/edit request fields. Persisted historical payloads
+# are replayed directly, retaining their original currency and balances.
+CURRENCIES = ('USD', 'CNY')
 D = Decimal
 ZERO = D(0)
 PRECISION = D('0.000001')

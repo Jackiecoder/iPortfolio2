@@ -45,8 +45,9 @@ class FinanceModelTests(unittest.TestCase):
         for amount in ('NaN', 'Infinity', '-1', '0', '0.0000001', True, '1000000000001'):
             with self.subTest(amount=amount), self.assertRaises(ValidationError):
                 TransferCreate(request_id=uuid4(), date='2026-01-01', direction='in', amount=amount)
-        with self.assertRaises(ValidationError):
-            TransferCreate(request_id=uuid4(), date='2026-01-01', direction='in', amount=1, currency='US')
+        for currency in ('US', 'HKD', 'EUR'):
+            with self.subTest(currency=currency), self.assertRaises(ValidationError):
+                TransferCreate(request_id=uuid4(), date='2026-01-01', direction='in', amount=1, currency=currency)
 
     def test_dates_and_due_dates_are_unambiguous(self):
         for value in ('2026-1-1', '2026-02-30', '2099-01-01', 1700000000):
@@ -210,9 +211,14 @@ class FinanceReplayTests(unittest.TestCase):
     def test_currencies_are_separate_and_internal_transfer_is_neutral(self):
         for index, (currency, direction, amount) in enumerate((('USD', 'in', 100), ('CNY', 'out', 300), ('USD', 'internal', 999))):
             self.state['transfers'].append(record(TransferCreate, index+1, date='2026-01-01', direction=direction, amount=amount, currency=currency))
+        legacy = record(TransferCreate, 4, date='2026-01-01', direction='in', amount=50)
+        legacy['currency'] = 'HKD'  # Previously persisted record, not a new request.
+        self.state['transfers'].append(legacy)
         values = {r['currency']: r for r in replay(self.state)['summary']}
         self.assertEqual(values['USD']['transfer_net'], 100)
         self.assertEqual(values['CNY']['transfer_net'], -300)
+        self.assertEqual(values['HKD']['transfer_net'], 50)
+        self.assertEqual(self.state['transfers'][3]['currency'], 'HKD')
 
     def test_payment_history_restricts_void_and_historical_meaning(self):
         loan = record(LoanCreate, date='2026-01-01', direction='borrowed', counterparty='K', principal=100)
