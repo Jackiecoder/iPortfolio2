@@ -384,3 +384,136 @@ test('repayment on a legacy loan preserves its original currency', async () => {
     assert.equal(f.requests.at(-1).url, '/api/finance/loans/2/repayments');
     assert.equal(JSON.parse(f.requests.at(-1).body).currency, undefined);
 });
+
+test('inventory decimal conversion matches HALF-EVEN rounding and 12-digit rate precision', () => {
+    assert.equal(FinanceUI.inventoryAmount('1', '0.0000005'), '0');
+    assert.equal(FinanceUI.inventoryAmount('1', '0.0000015'), '0.000002');
+    assert.equal(FinanceUI.inventoryAmount('1.234565', '0.1'), '0.123456');
+    assert.equal(FinanceUI.inventoryAmount('700', '0.142857142857'), '100');
+    assert.equal(FinanceUI.inventoryAmount('0', '1'), '0');
+    assert.equal(FinanceUI.decimalSum(['0.1', '0.2', '0.000001']), '0.300001');
+    assert.equal(FinanceUI.decimalGreater('1000000000000.000001', '1000000000000'), true);
+    assert.equal(FinanceUI.inventoryAmount('999999999999.000001', '1'), '999999999999.000001');
+});
+
+test('movement form keeps invoice and base amounts separate and requires explicit cross-currency rate', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeSection: 'movements' }); f.element('financeAdd').listeners.click();
+    assert.equal(f.fields.get('currency').value, 'USD'); assert.equal(f.fields.get('exchange_rate').value, '1');
+    assert.equal(f.fields.get('exchange_rate').disabled, true);
+    f.fields.get('quantity').value = '10'; f.fields.get('unit_price').value = '70'; f.fields.get('currency').value = 'CNY';
+    f.element('financeForm').listeners.change({ target: { name: 'currency' } });
+    assert.equal(f.fields.get('exchange_rate').value, ''); assert.equal(f.fields.get('exchange_rate').disabled, false);
+    assert.equal(f.element('financeMovementTotal').textContent, 'CNY 700.00');
+    assert.equal(f.element('financeMovementBaseTotal').textContent, '待填写汇率');
+    assert.match(f.element('financeMovementRateLabel').textContent, /1 CNY = 多少 USD/);
+    await f.submit(); assert.equal(f.requests.length, 1);
+    f.fields.get('exchange_rate').value = '0.142857142857';
+    f.element('financeForm').listeners.input({ target: { name: 'exchange_rate' } });
+    assert.equal(f.element('financeMovementBaseTotal').textContent, 'USD 100.00');
+    await f.submit();
+    const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.currency, 'CNY'); assert.equal(payload.exchange_rate, '0.142857142857');
+    assert.equal(payload.paid_amount, '0'); assert.equal(payload.base_total, undefined);
+});
+
+test('changing movement product resets cross rate and preserves explicit invoice currency', async () => {
+    const f = fixture();
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [product, { ...product, id: 6, currency: 'CNY' }] }) }));
+    await f.ui.load(); f.click({ financeSection: 'movements' }); f.element('financeAdd').listeners.click();
+    f.fields.get('quantity').value = '10'; f.fields.get('unit_price').value = '70'; f.fields.get('currency').value = 'CNY';
+    f.element('financeForm').listeners.change({ target: { name: 'currency' } }); f.fields.get('exchange_rate').value = '0.14';
+    f.fields.get('product_id').value = '6'; f.element('financeForm').listeners.change({ target: { name: 'product_id' } });
+    assert.equal(f.fields.get('currency').value, 'CNY'); assert.equal(f.fields.get('exchange_rate').value, '1');
+    assert.equal(f.fields.get('exchange_rate').disabled, true);
+    f.fields.get('product_id').value = '3'; f.element('financeForm').listeners.change({ target: { name: 'product_id' } });
+    assert.equal(f.fields.get('exchange_rate').value, ''); assert.equal(f.fields.get('exchange_rate').disabled, false);
+});
+
+test('movement edit locks invoice currency after payment history and never counts actual-currency payments twice', async () => {
+    const record = { ...movement, currency: 'CNY', base_currency: 'USD', exchange_rate: 0.142857142857, total: 700, base_total: 100, unit_price: 70, initial_paid_amount: 30, paid_amount: 380, remaining_payment: 320, payments: [{ ...movement.payments[0], amount: 50, currency: 'USD', exchange_rate: 7, invoice_currency: 'CNY', invoice_amount: 350 }] };
+    const f = fixture();
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [record] }) }));
+    await f.ui.load(); f.click({ financeEdit: 'movements', id: '4' }, true);
+    assert.equal(f.fields.get('currency').value, 'CNY'); assert.equal(f.fields.get('currency').disabled, true);
+    assert.equal(f.fields.get('paid_amount').value, '30');
+    assert.match(f.element('financeFormIntro').textContent, /货款币种不可修改/);
+    assert.equal(f.fields.get('exchange_rate').disabled, false);
+    f.fields.get('paid_amount').value = '351'; await f.submit(); assert.equal(f.requests.length, 1);
+    assert.match(f.element('financeFormError').textContent, /后续收付款/);
+    f.fields.get('paid_amount').value = '350'; await f.submit();
+    const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.currency, 'CNY'); assert.equal(payload.paid_amount, '350'); assert.equal(payload.exchange_rate, '0.142857142857');
+    const voided = fixture();
+    voided.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [{ ...record, payments: record.payments.map(p => ({ ...p, voided: true })) }] }) }));
+    await voided.ui.load(); voided.click({ financeEdit: 'movements', id: '4' }, true);
+    assert.equal(voided.fields.get('currency').disabled, true);
+});
+
+test('actual payment currency converts into invoice currency and validates the converted balance exactly', async () => {
+    const record = { ...movement, currency: 'CNY', base_currency: 'USD', exchange_rate: 0.125, total: 400, base_total: 50, remaining_payment: 400, paid_amount: 0, initial_paid_amount: 0, payments: [] };
+    const f = fixture();
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [record] }) }));
+    await f.ui.load(); f.click({ financePayment: 'movements', id: '4' }, true);
+    assert.equal(f.fields.get('currency').value, 'CNY'); assert.equal(f.fields.get('exchange_rate').value, '1');
+    f.fields.get('currency').value = 'USD'; f.element('financeForm').listeners.change({ target: { name: 'currency' } });
+    assert.equal(f.fields.get('exchange_rate').value, '');
+    f.fields.get('amount').value = '50'; f.fields.get('exchange_rate').value = '7';
+    f.element('financeForm').listeners.input({ target: { name: 'exchange_rate' } });
+    assert.equal(f.element('financePaymentInvoiceAmount').textContent, 'CNY 350.00');
+    assert.match(f.element('financePaymentRateLabel').textContent, /1 USD = 多少 CNY/);
+    f.fields.get('amount').value = '60'; await f.submit(); assert.equal(f.requests.length, 1);
+    assert.match(f.element('financeFormError').textContent, /折算后的货款/);
+    f.fields.get('amount').value = '50'; await f.submit();
+    const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.amount, '50'); assert.equal(payload.currency, 'USD'); assert.equal(payload.exchange_rate, '7');
+    assert.equal(payload.invoice_amount, undefined);
+});
+
+test('inventory rates reject precision overflow but accept exact trailing zeros; conversion uses HALF-EVEN balance', () => {
+    const record = { ...movement, currency: 'CNY', remaining_payment: 0.000002 };
+    assert.equal(FinanceUI.validatePayload('payments', { date: '2026-10-03', currency: 'USD', amount: '0.000001', exchange_rate: '1.5' }, record), '');
+    assert.match(FinanceUI.validatePayload('payments', { date: '2026-10-03', currency: 'USD', amount: '0.000001', exchange_rate: '0.5' }, record), /必须大于 0/);
+    assert.match(FinanceUI.validatePayload('payments', { date: '2026-10-03', currency: 'USD', amount: '1', exchange_rate: '0.1234567890123' }, record), /12 位小数/);
+    assert.equal(FinanceUI.validatePayload('payments', { date: '2026-10-03', currency: 'CNY', amount: '0.000001', exchange_rate: '1.0000000000000' }, record), '');
+    assert.match(FinanceUI.validatePayload('payments', { date: '2026-10-03', currency: 'CNY', amount: '0.000001', exchange_rate: '2' }, record), /同币种/);
+    assert.match(FinanceUI.errorMessage('Use at most 12 decimal places for the exchange rate', 422), /12 位小数/);
+});
+
+test('inventory display separates base profit, native invoice, and original/converted payment history', async () => {
+    const record = { ...movement, kind: 'sale', quantity: 4, unit_price: 100, currency: 'CNY', base_currency: 'USD', exchange_rate: 0.125, total: 400, base_total: 50, cost_of_goods: 40, realized_profit: 10, initial_paid_amount: 0, paid_amount: 350, remaining_payment: 50, payments: [{ ...movement.payments[0], amount: 50, currency: 'USD', exchange_rate: 7, invoice_currency: 'CNY', invoice_amount: 350 }] };
+    assert.equal(FinanceUI.filterRecords([record], { currency: 'USD' }).length, 1);
+    assert.equal(FinanceUI.filterRecords([record], { currency: 'CNY' }).length, 1);
+    const row = FinanceUI.renderRows([record], 'movements', [product]);
+    assert.ok(row.includes('CNY 400.00')); assert.ok(row.includes('库存核算 USD 50.00')); assert.ok(row.includes('毛利 USD 10.00'));
+    const f = fixture();
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [record] }) }));
+    await f.ui.load(); f.click({ financeDetail: 'movements', id: '4' });
+    const detail = f.element('financeDetailsBody').innerHTML;
+    assert.ok(detail.includes('USD 40.00')); assert.ok(detail.includes('USD 10.00'));
+    assert.ok(detail.includes('折抵 CNY 350.00')); assert.ok(detail.includes('USD 50.00'));
+    assert.ok(detail.includes('1 USD = 7 CNY')); assert.ok(detail.includes('不包含后续收付款产生的汇兑损益'));
+    const hidden = FinanceUI.renderRows([record], 'movements', [product], true);
+    for (const secret of ['CNY 400.00', 'USD 50.00', 'USD 10.00', 'Private product']) assert.ok(!hidden.includes(secret));
+    f.click({ financeEdit: 'movements', id: '4' }, true); f.ui.setPrivate(true);
+    assert.equal(f.element('financeFormFields').innerHTML, ''); assert.equal(f.element('financeDetailsBody').innerHTML, '');
+});
+
+test('legacy product bases cannot silently default a new USD movement to an invented rate', async () => {
+    const legacy = { ...product, currency: 'HKD', name: 'Historical HKD product' };
+    const f = fixture();
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [legacy, { ...product, id: 6 }] }) }));
+    await f.ui.load(); f.click({ financeSection: 'movements' }); f.element('financeAdd').listeners.click();
+    assert.equal(f.fields.get('product_id').value, '6'); assert.equal(f.fields.get('currency').value, 'USD');
+    assert.ok(!f.element('financeFormFields').innerHTML.includes('Historical HKD product'));
+    const onlyLegacy = fixture();
+    onlyLegacy.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [legacy], movements: [{ ...movement, currency: 'USD' }] }) }));
+    await onlyLegacy.ui.load(); onlyLegacy.click({ financeSection: 'movements' }); onlyLegacy.element('financeAdd').listeners.click();
+    assert.equal(onlyLegacy.element('financeEditTitle').textContent, '添加商品');
+    assert.equal(onlyLegacy.fields.has('product_id'), false);
+    onlyLegacy.click({ financeEdit: 'movements', id: '4' }, true);
+    assert.match(onlyLegacy.element('financeNotice').textContent, /原币种与金额保留/);
+    assert.equal(onlyLegacy.element('financeFormFields').innerHTML, '');
+    onlyLegacy.element('financeProducts').listeners.click();
+    assert.ok(onlyLegacy.element('financeDetailsBody').innerHTML.includes('Historical HKD product'));
+    assert.ok(onlyLegacy.element('financeDetailsBody').innerHTML.includes('不新增进出货'));
+});

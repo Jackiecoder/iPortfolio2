@@ -12,7 +12,8 @@ from psycopg_pool import ConnectionPool
 
 from app import db
 from app import finance_repository as ledger
-from app.finance import (ExchangeCreate, ExchangeUpdate, FinanceError, LoanCreate, LoanUpdate, MovementCreate,
+from app.finance import (ExchangeCreate, ExchangeUpdate, FinanceError, InventoryPaymentCreate,
+                         LoanCreate, LoanUpdate, MovementCreate,
                          MovementUpdate, PaymentCreate, ProductCreate, ProductUpdate,
                          TransferCreate, TransferUpdate)
 
@@ -54,6 +55,9 @@ class FinancePostgresTests(unittest.TestCase):
 
     def payment(self, **values):
         return PaymentCreate(**dict(dict(request_id=uuid4(), date='2026-01-03', amount=40), **values))
+
+    def inventory_payment(self, **values):
+        return InventoryPaymentCreate(**dict(dict(request_id=uuid4(), date='2026-01-03', amount=40), **values))
 
     def exchange(self, **values):
         return ExchangeCreate(**dict(dict(request_id=uuid4(), date='2026-01-01',
@@ -253,6 +257,93 @@ class FinancePostgresTests(unittest.TestCase):
         values = {r['currency']: r for r in ledger.list_finance()['summary']}
         self.assertEqual((values['USD']['exchange_out'], values['USD']['exchange_net']), (1000, -1000))
         self.assertEqual((values['CNY']['exchange_in'], values['CNY']['exchange_fees'], values['CNY']['exchange_net']), (7200, 35, 7165))
+
+    def test_inventory_fx_payments_rate_edit_and_void_replay_atomically(self):
+        ledger.create_record('products', self.product())
+        ledger.create_record('movements', self.movement(currency='CNY', exchange_rate='.142857142857', unit_price=70, paid_amount=50))
+        ledger.create_record('movements', self.movement(date='2026-01-04', kind='sale', quantity=4, currency='CNY', exchange_rate='.125', unit_price=100))
+        saved = ledger.create_payment('movements', 1, self.inventory_payment(currency='USD', exchange_rate=7, amount=50))
+        self.assertEqual((saved['products'][0]['quantity'], saved['products'][0]['inventory_cost'], saved['products'][0]['realized_profit']), (6, 60, 10))
+        self.assertEqual((saved['movements'][1]['paid_amount'], saved['movements'][1]['remaining_payment']), (400, 300))
+        updated = ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1,
+                         kind='purchase', quantity=10, unit_price=70, paid_amount=50, exchange_rate='.2', version=2))
+        self.assertEqual((updated['products'][0]['inventory_cost'], updated['products'][0]['realized_profit']), (84, -6))
+        self.assertEqual((updated['movements'][1]['currency'], updated['movements'][1]['paid_amount'], updated['movements'][1]['remaining_payment']), ('CNY', 400, 300))
+        with self.assertRaisesRegex(FinanceError, 'Invoice currency'):
+            ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1, kind='purchase', quantity=10, unit_price=70, paid_amount=50, currency='USD', exchange_rate=1, version=3))
+        with self.assertRaisesRegex(FinanceError, 'Payment date'):
+            ledger.update_record('movements', 1, MovementUpdate(date='2026-01-04', product_id=1, kind='purchase', quantity=10, unit_price=70, paid_amount=50, version=3))
+        self.assertEqual(ledger.list_finance(), updated)
+        voided = ledger.void_payment('movements', 1, 1, 1)
+        self.assertEqual((voided['movements'][1]['paid_amount'], voided['movements'][1]['remaining_payment']), (50, 650))
+        self.assertEqual(voided['products'][0]['realized_profit'], -6)
+        with self.assertRaisesRegex(FinanceError, 'Insufficient inventory'):
+            ledger.void_record('movements', 1, 4)
+        self.assertEqual(ledger.list_finance(), voided)
+        ledger.void_record('movements', 2, 1)
+        final = ledger.void_record('movements', 1, 4)
+        self.assertEqual((final['products'][0]['quantity'], final['products'][0]['inventory_cost'], final['products'][0]['realized_profit']), (0, 0, 0))
+        self.assertEqual(self.row_count('transactions'), 0)
+
+    def test_legacy_inventory_request_retries_and_reads_do_not_rewrite_payloads(self):
+        ledger.create_record('products', self.product())
+        request = self.movement()
+        ledger.create_record('movements', request)
+        child = self.payment()
+        before = ledger.create_payment('movements', 1, child)
+        with self.pool.connection() as conn:
+            movement_payload = conn.execute('SELECT payload FROM finance_movements WHERE id=1').fetchone()[0]
+            child_payload = conn.execute('SELECT payload FROM finance_payments WHERE id=1').fetchone()[0]
+            fingerprints = conn.execute('SELECT request_payload FROM finance_requests ORDER BY entity_kind').fetchall()
+        self.assertNotIn('currency', movement_payload)
+        self.assertNotIn('exchange_rate', child_payload)
+        self.assertEqual(ledger.create_record('movements', request.model_copy(update={'currency': None, 'exchange_rate': None})), before)
+        retry = InventoryPaymentCreate(**child.model_dump(), currency=None, exchange_rate=None)
+        self.assertEqual(ledger.create_payment('movements', 1, retry), before)
+        self.assertEqual(ledger.list_finance(), before)
+        with self.pool.connection() as conn:
+            self.assertEqual(conn.execute('SELECT payload FROM finance_movements WHERE id=1').fetchone()[0], movement_payload)
+            self.assertEqual(conn.execute('SELECT payload FROM finance_payments WHERE id=1').fetchone()[0], child_payload)
+            self.assertEqual(conn.execute('SELECT request_payload FROM finance_requests ORDER BY entity_kind').fetchall(), fingerprints)
+        with self.assertRaisesRegex(FinanceError, 'Invoice currency'):
+            ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1, kind='purchase', quantity=10, unit_price=10, currency='CNY', exchange_rate='.1', version=2))
+        self.assertEqual(ledger.list_finance(), before)
+
+    def test_inventory_currency_or_product_base_edit_cannot_reuse_wrong_rate(self):
+        ledger.create_record('products', self.product())
+        ledger.create_record('products', self.product(name='CNY Tea', sku='CNY', currency='CNY'))
+        first = ledger.create_record('movements', self.movement(currency='USD', exchange_rate=1))
+        with self.assertRaisesRegex(FinanceError, 'Enter the exchange rate'):
+            ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1, kind='purchase', quantity=10, unit_price=70, currency='CNY', version=1))
+        self.assertEqual(ledger.list_finance(), first)
+        ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1, kind='purchase', quantity=10, unit_price=70, currency='CNY', exchange_rate='.142857142857', version=1))
+        changed = ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=2, kind='purchase', quantity=10, unit_price=70, version=2))
+        self.assertEqual((changed['movements'][0]['currency'], changed['movements'][0]['base_currency'], changed['movements'][0]['exchange_rate'], changed['movements'][0]['base_total']), ('CNY', 'CNY', 1, 700))
+        ledger.create_record('movements', self.movement())  # Legacy absent currency/rate.
+        with self.assertRaisesRegex(FinanceError, 'Enter the exchange rate'):
+            ledger.update_record('movements', 2, MovementUpdate(date='2026-01-02', product_id=2, kind='purchase', quantity=10, unit_price=10, version=1))
+        corrected = ledger.update_record('movements', 2, MovementUpdate(date='2026-01-02', product_id=2, kind='purchase', quantity=10, unit_price=10, exchange_rate=7, version=1))
+        movement = next(m for m in corrected['movements'] if m['id'] == 2)
+        self.assertEqual((movement['currency'], movement['base_currency'], movement['exchange_rate'], movement['base_total']), ('USD', 'CNY', 7, 700))
+
+    def test_competing_converted_inventory_payments_cannot_overpay(self):
+        ledger.create_record('products', self.product())
+        ledger.create_record('movements', self.movement(currency='CNY', exchange_rate='.142857142857', unit_price=70))
+        barrier = threading.Barrier(2)
+        def pay():
+            barrier.wait()
+            try:
+                return ledger.create_payment('movements', 1, self.inventory_payment(currency='USD', exchange_rate=7, amount=60))
+            except FinanceError:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: pay(), range(2)))
+        self.assertEqual(sum(r is not None for r in results), 1)
+        final = ledger.list_finance()['movements'][0]
+        self.assertEqual((final['paid_amount'], final['remaining_payment']), (420, 280))
+        self.assertEqual(self.row_count('finance_payments'), 1)
+        self.assertEqual(self.row_count('finance_requests'), 3)
+        self.assertEqual(self.row_count('finance_audit'), 4)
 
 
 if __name__ == '__main__':

@@ -19,6 +19,7 @@ CURRENCIES = ('USD', 'CNY')
 D = Decimal
 ZERO = D(0)
 PRECISION = D('0.000001')
+RATE_PRECISION = D('0.000000000001')
 
 
 class FinanceError(ValueError):
@@ -87,6 +88,25 @@ class FinanceModel(BaseModel):
             raise ValueError('Use at most 6 decimal places')
         if result < 0 or (result == 0 and info.field_name not in ('unit_price', 'paid_amount', 'fee_amount')):
             raise ValueError('Amount must be positive')
+        return result
+
+    @field_validator('exchange_rate', mode='before', check_fields=False)
+    @classmethod
+    def exact_exchange_rate(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError('Exchange rate must be a positive finite number')
+        try:
+            result = D(str(value))
+        except Exception as exc:
+            raise ValueError('Exchange rate must be a positive finite number') from exc
+        if not result.is_finite() or result <= 0:
+            raise ValueError('Exchange rate must be a positive finite number')
+        if result > D('1000000000000'):
+            raise ValueError('Exchange rate is too large')
+        if result != result.quantize(RATE_PRECISION):
+            raise ValueError('Use at most 12 decimal places for the exchange rate')
         return result
 
 
@@ -200,6 +220,8 @@ class MovementFields(FinanceModel):
     quantity: Decimal
     unit_price: Decimal
     paid_amount: Decimal = D(0)
+    currency: Optional[str] = None
+    exchange_rate: Optional[Decimal] = None
     counterparty: str = Field(default='', max_length=200)
     note: str = Field(default='', max_length=2000)
 
@@ -227,6 +249,11 @@ class PaymentCreate(FinanceModel):
     request_id: UUID
 
 
+class InventoryPaymentCreate(PaymentCreate):
+    currency: Optional[str] = None
+    exchange_rate: Optional[Decimal] = None
+
+
 CREATE_MODELS = {'transfers': TransferCreate, 'loans': LoanCreate,
                  'products': ProductCreate, 'movements': MovementCreate,
                  'exchanges': ExchangeCreate}
@@ -239,6 +266,8 @@ def request_data(request):
     """Stable canonical JSON, including decimal strings for storage/idempotency."""
     values = request.model_dump(mode='json')
     for key, value in request.model_dump().items():
+        if value is None and key in ('currency', 'exchange_rate'):
+            values.pop(key, None)
         if isinstance(value, Decimal):
             values[key] = format(value.normalize(), 'f')
     return values
@@ -274,6 +303,10 @@ def validate_edit(state, kind, record, values):
     elif kind == 'movements' and record.get('payments'):
         if any(record[f] != values[f] for f in ('product_id', 'kind')):
             raise FinanceError('Product and kind cannot change after payment history exists', 409)
+        product = find_record(state, 'products', record['product_id'])
+        old_currency = record.get('currency') or product['currency']
+        if (values.get('currency') or old_currency) != old_currency:
+            raise FinanceError('Invoice currency cannot change after payment history exists', 409)
 
 
 def validate_void(state, kind, record):
@@ -292,6 +325,37 @@ def _active_payments(record, key):
         if not payment['voided'] and payment['date'] < record['date']:
             raise FinanceError('Payment date cannot precede the original record date')
     return sum((money(p['amount']) for p in items if not p['voided']), ZERO)
+
+
+def resolve_currency_rate(record, default_currency):
+    """Use recorded rates only; missing legacy fields mean same-currency 1:1."""
+    currency = record.get('currency') or default_currency
+    raw_rate = record.get('exchange_rate')
+    if currency != default_currency and raw_rate is None:
+        raise FinanceError('Enter the exchange rate for a different currency')
+    rate = D(1) if raw_rate is None else money(raw_rate)
+    if not rate.is_finite() or rate <= 0:
+        raise FinanceError('Exchange rate must be a positive finite number')
+    if currency == default_currency and rate != 1:
+        raise FinanceError('Same-currency exchange rate must be 1')
+    return currency, rate
+
+
+def _inventory_payments(movement, invoice_currency):
+    total = ZERO
+    for payment in movement.get('payments', []):
+        payment['amount'] = money(payment['amount'])
+        if not payment['voided'] and payment['date'] < movement['date']:
+            raise FinanceError('Payment date cannot precede the original record date')
+        currency, rate = resolve_currency_rate(payment, invoice_currency)
+        converted = rounded(payment['amount'] * rate)
+        if converted <= 0:
+            raise FinanceError('Converted payment amount must be positive')
+        payment.update(currency=currency, exchange_rate=rate,
+                       invoice_currency=invoice_currency, invoice_amount=converted)
+        if not payment['voided']:
+            total += converted
+    return total
 
 
 def replay(state):
@@ -379,14 +443,17 @@ def replay(state):
             qty = money(movement['quantity'])
             price = money(movement['unit_price'])
             initial = money(movement['paid_amount'])
-            extra = _active_payments(movement, 'payments')
+            invoice_currency, rate = resolve_currency_rate(movement, product['currency'])
+            extra = _inventory_payments(movement, invoice_currency)
             total = rounded(qty * price)
+            base_total = rounded(total * rate)
             paid = initial + extra
             if paid > total:
                 raise FinanceError('Payments cannot exceed the movement total')
             if movement['kind'] == 'opening' and (initial or movement.get('payments')):
                 raise FinanceError('Opening inventory cannot have payments')
-            movement.update(currency=product['currency'], quantity=qty, unit_price=price,
+            movement.update(currency=invoice_currency, base_currency=product['currency'],
+                            exchange_rate=rate, base_total=base_total, quantity=qty, unit_price=price,
                             total=total, initial_paid_amount=initial, paid_amount=paid,
                             remaining_payment=ZERO if movement['voided'] or movement['kind'] == 'opening' else total - paid,
                             cost_of_goods=ZERO, realized_profit=ZERO,
@@ -394,10 +461,11 @@ def replay(state):
                             else 'partial' if paid else 'unpaid')
             if movement['voided']:
                 continue
-            values = bucket(product['currency'])
+            values = bucket(invoice_currency)
+            base_values = bucket(product['currency'])
             if movement['kind'] in ('purchase', 'opening'):
                 product['quantity'] += qty
-                product['inventory_cost'] += total
+                product['inventory_cost'] += base_total
                 if movement['kind'] == 'purchase':
                     values['purchase_total'] += total
                     values['payable'] += total - paid
@@ -408,13 +476,13 @@ def replay(state):
                 cost = product['inventory_cost'] if qty == product['quantity'] else rounded(
                     product['inventory_cost'] * qty / product['quantity'])
                 movement['cost_of_goods'] = cost
-                movement['realized_profit'] = total - cost
+                movement['realized_profit'] = base_total - cost
                 product['quantity'] -= qty
                 product['inventory_cost'] -= cost
-                product['realized_profit'] += total - cost
+                product['realized_profit'] += base_total - cost
                 values['sales_total'] += total
                 values['receivable'] += total - paid
-                values['realized_profit'] += total - cost
+                base_values['realized_profit'] += base_total - cost
             product['average_cost'] = rounded(product['inventory_cost'] / product['quantity']) if product['quantity'] else ZERO
         for product in products.values():
             if not product['voided']:

@@ -101,6 +101,16 @@ def update_record(kind, record_id, request):
         require_version(record, version)
         validate_edit(state, kind, record, values)
         before = deepcopy(record)
+        if kind == 'movements':
+            old_product = find_record(state, 'products', record['product_id'])
+            new_product = find_record(state, 'products', values['product_id'])
+            old_currency = record.get('currency') or old_product['currency']
+            if new_product['currency'] != old_product['currency'] and not values.get('currency'):
+                record['currency'] = old_currency
+            currency_changed = values.get('currency', old_currency) != old_currency
+            base_changed = new_product['currency'] != old_product['currency']
+            if (currency_changed or base_changed) and 'exchange_rate' not in values:
+                record.pop('exchange_rate', None)
         record.update(values)
         record['version'] += 1
         result = replay(state)

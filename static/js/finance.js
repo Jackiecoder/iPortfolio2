@@ -32,6 +32,39 @@
         const digits = coefficient.toString().padStart(7, '0');
         return `${digits.slice(0, -6)}.${digits.slice(-6)}`.replace(/\.?0+$/, '');
     }
+    function inventoryAmount(left, right) {
+        const a = decimalParts(left), b = decimalParts(right);
+        if (!a || !b) return null;
+        let coefficient = a.coefficient * b.coefficient;
+        const scale = a.scale + b.scale;
+        if (scale > 6) {
+            const divisor = 10n ** BigInt(scale - 6), remainder = coefficient % divisor;
+            coefficient /= divisor;
+            if (remainder * 2n > divisor || (remainder * 2n === divisor && coefficient % 2n === 1n)) coefficient += 1n;
+        } else coefficient *= 10n ** BigInt(6 - scale);
+        const digits = coefficient.toString().padStart(7, '0');
+        return `${digits.slice(0, -6)}.${digits.slice(-6)}`.replace(/\.?0+$/, '');
+    }
+    function decimalSum(values) {
+        const parts = values.map(decimalParts);
+        if (parts.some(p => !p)) return null;
+        const scale = Math.max(0, ...parts.map(p => p.scale));
+        const coefficient = parts.reduce((sum, p) => sum + p.coefficient * 10n ** BigInt(scale - p.scale), 0n);
+        if (!scale) return coefficient.toString();
+        const digits = coefficient.toString().padStart(scale + 1, '0');
+        return `${digits.slice(0, -scale)}.${digits.slice(-scale)}`.replace(/\.?0+$/, '');
+    }
+    function decimalGreater(left, right) {
+        const a = decimalParts(left), b = decimalParts(right);
+        if (!a || !b) return false;
+        const scale = Math.max(a.scale, b.scale);
+        return a.coefficient * 10n ** BigInt(scale - a.scale) > b.coefficient * 10n ** BigInt(scale - b.scale);
+    }
+    function validInventoryRate(rate, sameCurrency) {
+        const parts = decimalParts(rate);
+        if (parts) while (parts.scale > 0 && parts.coefficient % 10n === 0n) { parts.coefficient /= 10n; parts.scale -= 1; }
+        return Boolean(parts && parts.coefficient > 0n && parts.scale <= 12 && (!sameCurrency || !decimalGreater(rate, '1') && !decimalGreater('1', rate)));
+    }
     function exchangeAmounts(record) {
         const from = cleanNumber(record.from_amount), to = cleanNumber(record.to_amount), fee = cleanNumber(record.fee_amount);
         const debited = from + (record.fee_currency === record.from_currency ? fee : 0);
@@ -47,11 +80,11 @@
         const query = String(filter.search || '').trim().toLocaleLowerCase();
         return records.filter(record => {
             if (!filter.showVoided && record.voided) return false;
-            if (filter.currency && ![record.currency, record.from_currency, record.to_currency].includes(filter.currency)) return false;
+            if (filter.currency && ![record.currency, record.base_currency, record.from_currency, record.to_currency].includes(filter.currency)) return false;
             if (filter.status && record.status !== filter.status && record.direction !== filter.status && record.kind !== filter.status) return false;
             if (!query) return true;
             return [record.counterparty, record.from_account, record.to_account, record.reference, record.method, record.note,
-                record.date, record.currency, record.from_currency, record.to_currency, names.get(Number(record.product_id))].some(v => String(v || '').toLocaleLowerCase().includes(query));
+                record.date, record.currency, record.base_currency, record.from_currency, record.to_currency, names.get(Number(record.product_id))].some(v => String(v || '').toLocaleLowerCase().includes(query));
         }).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || Number(b.id) - Number(a.id));
     }
     function renderRows(records, section, products = [], privateMode = false) {
@@ -83,6 +116,9 @@
                 amount = money(record.total, record.currency, privateMode);
                 secondary = record.kind === 'opening' ? '期初成本' : record.remaining_payment > 0 ? `${record.kind === 'sale' ? '待收' : '待付'} ${money(record.remaining_payment, record.currency, privateMode)}` : '已结清';
                 income = type === 'sale';
+                const baseCurrency = record.base_currency || product?.currency || record.currency;
+                const baseTotal = record.base_total ?? record.total;
+                subtitle += `<span class="finance-row-base">库存核算 ${money(baseTotal, baseCurrency, privateMode)}${income ? ` · 毛利 ${money(record.realized_profit, baseCurrency, privateMode)}` : ''}</span>`;
             }
             const statusLabel = section === 'movements' && !record.voided ? (record.kind === 'opening' ? '期初库存' : record.status === 'unpaid' ? (income ? '未收款' : '未付款') : record.status === 'partial' ? (income ? '部分收款' : '部分付款') : income ? '已收清' : '已付清') : undefined;
             return `<article class="finance-row ${record.voided ? 'is-void' : ''}">
@@ -118,14 +154,22 @@
             if (!positive('quantity')) return '数量必须大于 0。';
             if (!nonnegative('unit_price')) return '单价不能为负数。';
             if (!nonnegative('paid_amount')) return '已收付金额不能为负数。';
+            if (payload.currency !== undefined && !currencies.includes(payload.currency)) return '请选择美元或人民币作为货款币种。';
+            if (payload.exchange_rate !== undefined && !validInventoryRate(payload.exchange_rate, payload.currency === (payload.base_currency || record?.base_currency))) return '折算汇率必须大于 0，最多保留 12 位小数；同币种汇率必须为 1。';
             if (payload.kind === 'opening' && Number(payload.paid_amount) !== 0) return '期初库存不记录付款，请将已收付金额设为 0。';
-            const historicalPayments = record ? cleanNumber(record.paid_amount) - cleanNumber(record.initial_paid_amount) : 0;
-            if (payload.kind !== 'opening' && Number(payload.paid_amount) + historicalPayments > Number(payload.quantity) * Number(payload.unit_price) + 0.0000001) return '已收付金额与后续收付款之和不能超过总金额。';
+            const historicalPayments = record?.payments ? record.payments.filter(p => !p.voided).map(p => p.invoice_amount ?? p.amount) : [record ? cleanNumber(record.paid_amount) - cleanNumber(record.initial_paid_amount) : '0'];
+            if (payload.kind !== 'opening' && decimalGreater(decimalSum([payload.paid_amount, ...historicalPayments]), inventoryAmount(payload.quantity, payload.unit_price))) return '已收付金额与后续收付款之和不能超过总金额。';
         }
         if (type === 'repayments' || type === 'payments') {
             if (!positive('amount')) return '收付款金额必须大于 0。';
             const outstanding = type === 'repayments' ? record?.outstanding : record?.remaining_payment;
-            if (Number(payload.amount) > cleanNumber(outstanding) + 0.0000001) return '金额不能超过尚未结清的余额。';
+            if (type === 'payments' && payload.currency !== undefined) {
+                if (!currencies.includes(payload.currency)) return '请选择美元或人民币作为实际收付款币种。';
+                if (!validInventoryRate(payload.exchange_rate, payload.currency === record?.currency)) return '折算汇率必须大于 0，最多保留 12 位小数；同币种汇率必须为 1。';
+                const converted = inventoryAmount(payload.amount, payload.exchange_rate);
+                if (!converted || !decimalGreater(converted, '0')) return '换算后的货款金额必须大于 0。';
+                if (decimalGreater(converted, outstanding)) return '折算后的货款金额不能超过尚未结清的余额。';
+            } else if (Number(payload.amount) > cleanNumber(outstanding) + 0.0000001) return '金额不能超过尚未结清的余额。';
             if (record && payload.date < record.date) return '收付款日期不能早于原记录日期。';
         }
         return '';
@@ -146,6 +190,13 @@
             'Currency and unit cannot change after inventory history exists': '商品已有进出货历史，币种与数量单位不能修改。',
             'Currency and direction cannot change after repayment history exists': '借贷已有还款历史，币种与借贷方向不能修改。',
             'Product and kind cannot change after payment history exists': '已有收付款历史，不能更换商品或进出货类型。',
+            'Invoice currency cannot change after payment history exists': '已有收付款历史，不能修改货款币种。可以更正库存折算汇率。',
+            'Enter the exchange rate for a different currency': '不同币种请填写本次折算汇率。',
+            'Exchange rate must be a positive finite number': '折算汇率必须是大于 0 的有效数字。',
+            'Same-currency exchange rate must be 1': '同币种的折算汇率必须为 1。',
+            'Converted payment amount must be positive': '换算后的货款金额必须大于 0。',
+            'Use at most 12 decimal places for the exchange rate': '折算汇率最多保留 12 位小数。',
+            'Exchange rate is too large': '折算汇率过大，请检查输入。',
             'A product with inventory history cannot be voided': '商品已有进出货历史，需要保留。可以修改名称、位置与备注。',
             'Void the repayments before voiding this loan': '请先在还款历史中作废尚有效的还款，再作废借贷记录。',
             'Void the payments before voiding this movement': '请先作废尚有效的分次收付款，再作废进出货记录。',
@@ -274,7 +325,7 @@
                 const filtered = Boolean(filter.search || filter.currency || filter.status);
                 const title = filtered ? '没有符合筛选条件的记录' : type.empty;
                 const description = filtered ? '试试其他关键词，或清除筛选条件。' : type.description;
-                $('financeList').innerHTML = `<div class="finance-empty"><i class="bi bi-${type.icon}" aria-hidden="true"></i><h3>${title}</h3><p>${description}</p>${filtered ? '<button type="button" data-finance-clear class="btn btn-outline-secondary">清除筛选</button>' : `<button type="button" data-finance-new class="btn btn-primary"${p || !loaded ? ' disabled' : ''}>${section === 'movements' && !state.products.some(r => !r.voided) ? '添加商品' : type.add}</button>`}</div>`;
+                $('financeList').innerHTML = `<div class="finance-empty"><i class="bi bi-${type.icon}" aria-hidden="true"></i><h3>${title}</h3><p>${description}</p>${filtered ? '<button type="button" data-finance-clear class="btn btn-outline-secondary">清除筛选</button>' : `<button type="button" data-finance-new class="btn btn-primary"${p || !loaded ? ' disabled' : ''}>${section === 'movements' && !state.products.some(r => !r.voided && currencies.includes(r.currency)) ? '添加商品' : type.add}</button>`}</div>`;
             }
             if (p) $('financeCount').textContent = '隐私模式';
         }
@@ -295,10 +346,11 @@
         const note = value => `<div class="col-12"><label class="form-label" for="financeField-note">备注</label><textarea class="form-control" id="financeField-note" name="note" maxlength="4000">${escape(value || '')}</textarea></div>`;
         const dateField = (value, min) => input('date', '记录日期', value || today(), { type: 'date', required: true, min, max: today() });
         const amountField = (name, label, value = '', max) => input(name, label, value, { type: 'number', min: name === 'paid_amount' || name === 'unit_price' ? 0 : '0.000001', step: 'any', required: true, max });
-        const currencyField = (value = 'USD', disabled = false) => select('currency', '币种', value, currencies.map(c => [c, c]), disabled);
+        const currencyField = (value = 'USD', disabled = false, label = '币种') => select('currency', label, value, currencies.map(c => [c, c]), disabled);
+        const inventoryRateField = (labelId, value) => `<div class="col-12"><label class="form-label" id="${labelId}" for="financeField-exchange_rate">折算汇率</label><input class="form-control" id="financeField-exchange_rate" name="exchange_rate" type="number" step="any" min="0" required value="${escape(value ?? '')}"><div class="form-text">不同币种请填写本次约定的汇率，最多 12 位小数。</div></div>`;
         function openEditor(type, record = null, parent = null) {
             if (privateMode() || busy) return;
-            const recordCurrencies = record ? type === 'exchanges' ? [record.from_currency, record.to_currency, record.fee_currency] : [record.currency] : [];
+            const recordCurrencies = record ? type === 'exchanges' ? [record.from_currency, record.to_currency, record.fee_currency] : [record.currency, record.base_currency, type === 'movements' ? state.products.find(p => p.id === record.product_id)?.currency : null] : [];
             if (recordCurrencies.some(currency => currency && !currencies.includes(currency))) {
                 getModal('financeDetailsModal').hide();
                 getModal('financeEditModal').hide();
@@ -320,15 +372,20 @@
                 const locked = Boolean(r.repayments?.length);
                 fields = dateField(r.date) + select('direction', '借贷方向', r.direction || 'lent', [['lent', '我借给别人'], ['borrowed', '我向别人借']], locked) + input('counterparty', '对方姓名', r.counterparty, { required: true }) + amountField('principal', '借款本金', r.principal) + currencyField(r.currency, locked) + input('due_date', '约定还款日期（可不填）', r.due_date || '', { type: 'date' }) + note(r.note);
             } else if (type === 'products') {
-                title = record ? '编辑商品' : '添加商品'; intro = record ? '商品已有进出货历史后，币种与数量单位不能修改。数量通过进出货记录维护。' : '为商品选择一个记账币种。数量与成本会根据进出货记录自动更新。';
+                title = record ? '编辑商品' : '添加商品'; intro = record ? '商品已有进出货历史后，库存核算币种与数量单位不能修改。数量通过进出货记录维护。' : '选择商品库存与毛利的核算币种。每笔进出货的货款和后续收付款可以使用不同币种。';
                 const locked = Boolean(record && state.movements.some(m => m.product_id === r.id));
-                fields = input('name', '商品名称', r.name, { required: true }) + input('sku', '商品编号（可不填）', r.sku) + input('unit', '数量单位', r.unit || '件', { required: true, disabled: locked }) + currencyField(r.currency, locked) + input('location', '存放位置（可不填）', r.location, { wide: true }) + note(r.note);
+                fields = input('name', '商品名称', r.name, { required: true }) + input('sku', '商品编号（可不填）', r.sku) + input('unit', '数量单位', r.unit || '件', { required: true, disabled: locked }) + currencyField(r.currency, locked, '库存核算币种') + input('location', '存放位置（可不填）', r.location, { wide: true }) + note(r.note);
             } else if (type === 'movements') {
-                if (!state.products.some(p => !p.voided)) { openEditor('products'); return; }
-                title = record ? '编辑进出货' : '记录进出货'; intro = record ? '已收付金额填写这笔记录最初的收付款。后续的分次收付款保留在详情历史中。' : '选择商品后沿用商品币种。可以先记货款，再补充每次付款或收款。';
-                const product = state.products.find(p => p.id === r.product_id) || state.products.find(p => !p.voided);
+                const availableProducts = state.products.filter(p => !p.voided && currencies.includes(p.currency));
+                if (!availableProducts.length) { openEditor('products'); return; }
+                title = record ? '编辑进出货' : '记录进出货'; intro = '单价与最初已收付金额使用货款币种。库存与毛利折算到商品的库存核算币种；后续分次收付款保留在详情历史中。';
+                const product = availableProducts.find(p => p.id === r.product_id) || availableProducts[0];
                 const locked = Boolean(r.payments?.length);
-                fields = dateField(r.date) + select('kind', '记录类型', r.kind || 'purchase', [['purchase', '进货'], ['sale', '出货'], ['opening', '期初库存']], locked) + select('product_id', '商品', r.product_id || product.id, state.products.filter(p => !p.voided).map(p => [p.id, `${p.name} · ${p.currency} / ${p.unit}`]), locked) + amountField('quantity', '数量', r.quantity) + amountField('unit_price', '每单位价格 / 成本', r.unit_price) + amountField('paid_amount', record ? '最初已收付金额' : '已收付金额', record ? r.initial_paid_amount : 0) + input('counterparty', '供应商或客户（可不填）', r.counterparty) + '<div class="col-12 col-sm-6"><label class="form-label">总金额</label><div class="form-control bg-light" id="financeMovementTotal" aria-live="polite">—</div><div class="form-text" id="financeMovementHint"></div></div>' + note(r.note);
+                if (locked) intro += ' 已有收付款历史，货款币种不可修改，库存折算汇率仍可更正。';
+                const invoiceCurrency = r.currency || product.currency;
+                const rate = r.exchange_rate ?? (invoiceCurrency === product.currency ? '1' : '');
+                fields = dateField(r.date) + select('kind', '记录类型', r.kind || 'purchase', [['purchase', '进货'], ['sale', '出货'], ['opening', '期初库存']], locked) + select('product_id', '商品', r.product_id || product.id, availableProducts.map(p => [p.id, `${p.name} · 核算 ${p.currency} / ${p.unit}`]), locked) + amountField('quantity', '数量', r.quantity) + currencyField(invoiceCurrency, locked, '货款币种') + amountField('unit_price', '每单位价格 / 成本（货款币种）', r.unit_price) + amountField('paid_amount', record ? '最初已收付金额（货款币种）' : '已收付金额（货款币种）', record ? r.initial_paid_amount : 0) + inventoryRateField('financeMovementRateLabel', rate) +
+                    '<div class="col-12"><div class="finance-inventory-preview" aria-live="polite"><div><span>原币种货款总额</span><strong id="financeMovementTotal">—</strong></div><div><span>折算库存核算金额</span><strong id="financeMovementBaseTotal">—</strong></div><p id="financeMovementHint"></p></div></div>' + input('counterparty', '供应商或客户（可不填）', r.counterparty) + note(r.note);
             } else if (type === 'exchanges') {
                 title = record ? '编辑换汇' : '记录换汇';
                 intro = '填写两笔成交金额，自动得到汇率；也可填写换出金额与汇率，自动计算换入金额。手续费单独记录，避免重复扣费。';
@@ -348,7 +405,10 @@
                 title = isLoan ? (isReceiving ? '记录收到的还款' : '记录我的还款') : (isReceiving ? '记录收款' : '记录付款');
                 const remaining = isLoan ? parent.outstanding : parent.remaining_payment;
                 intro = `尚未结清 ${money(remaining, parent.currency)}。填写本次金额，可以记录部分或全部结清。`;
-                fields = dateField(today(), parent.date) + amountField('amount', `本次${isReceiving ? '收到' : '支付'}金额（${parent.currency}）`, remaining, remaining) + note('');
+                if (!isLoan && currencies.includes(parent.currency)) {
+                    intro = `尚未结清的货款为 ${money(remaining, parent.currency)}。实际收付款可以使用另一币种，按本次汇率折抵货款。`;
+                    fields = dateField(today(), parent.date) + currencyField(parent.currency, false, '实际收付款币种') + amountField('amount', `本次实际${isReceiving ? '收到' : '支付'}金额`, remaining) + inventoryRateField('financePaymentRateLabel', '1') + '<div class="col-12"><div class="finance-inventory-preview finance-payment-preview" aria-live="polite"><div><span>折抵货款金额</span><strong id="financePaymentInvoiceAmount">—</strong></div><p id="financePaymentHint"></p></div></div>' + note('');
+                } else fields = dateField(today(), parent.date) + amountField('amount', `本次${isReceiving ? '收到' : '支付'}金额（${parent.currency}）`, remaining, remaining) + note('');
             }
             $('financeEditTitle').textContent = title;
             $('financeFormIntro').textContent = intro;
@@ -358,18 +418,41 @@
             showError('financeFormError', '');
             if (type === 'movements') updateMovementTotal();
             if (type === 'exchanges') updateExchangePreview();
+            if (type === 'payments') updatePaymentPreview();
             getModal('financeEditModal').show();
         }
-        function updateMovementTotal() {
+        function updateMovementTotal(event) {
             if (editor?.type !== 'movements') return;
             const read = name => $('financeForm').elements.namedItem(name)?.value;
             const product = state.products.find(p => p.id === Number(read('product_id')));
-            $('financeMovementTotal').textContent = product ? money(cleanNumber(read('quantity')) * cleanNumber(read('unit_price')), product.currency) : '—';
+            const invoiceCurrency = read('currency');
+            const quote = $('financeForm').elements.namedItem('exchange_rate');
+            if (product && ['currency', 'product_id'].includes(event?.target?.name)) quote.value = invoiceCurrency === product.currency ? '1' : '';
+            quote.disabled = invoiceCurrency === product?.currency;
+            if (quote.disabled) quote.value = '1';
+            const originalTotal = inventoryAmount(read('quantity'), read('unit_price'));
+            const baseTotal = validInventoryRate(quote.value, quote.disabled) ? inventoryAmount(originalTotal, quote.value) : null;
+            $('financeMovementTotal').textContent = originalTotal !== null ? money(originalTotal, invoiceCurrency) : '—';
+            $('financeMovementBaseTotal').textContent = product && baseTotal !== null ? money(baseTotal, product.currency) : '待填写汇率';
+            $('financeMovementRateLabel').textContent = `库存折算汇率：1 ${invoiceCurrency} = 多少 ${product?.currency || '库存核算币种'}`;
             const opening = read('kind') === 'opening';
             const paid = $('financeForm').elements.namedItem('paid_amount');
             paid.disabled = opening;
             if (opening) paid.value = 0;
-            $('financeMovementHint').textContent = opening ? '期初库存只记录数量与成本，不记录货款收付。' : `当前库存 ${quantity(product?.quantity)} ${product?.unit || '件'}；${read('kind') === 'sale' ? '出货按移动平均成本计算毛利。' : '未付的货款可以在详情中继续记录。'}`;
+            $('financeMovementHint').textContent = `${product ? `库存核算币种 ${product.currency}；当前库存 ${quantity(product.quantity)} ${product.unit}。` : ''}${opening ? '期初库存只记录数量与成本，不记录货款收付。' : `货款与最初已收付金额使用 ${invoiceCurrency}；${read('kind') === 'sale' ? '出货毛利按库存核算币种的移动平均成本计算。' : '后续收付款可在详情中继续记录。'}`}`;
+        }
+        function updatePaymentPreview(event) {
+            if (editor?.type !== 'payments' || !currencies.includes(editor.parent.currency)) return;
+            const field = name => $('financeForm').elements.namedItem(name);
+            const paymentCurrency = field('currency').value, invoiceCurrency = editor.parent.currency;
+            const quote = field('exchange_rate');
+            if (event?.target?.name === 'currency') quote.value = paymentCurrency === invoiceCurrency ? '1' : '';
+            quote.disabled = paymentCurrency === invoiceCurrency;
+            if (quote.disabled) quote.value = '1';
+            const converted = validInventoryRate(quote.value, quote.disabled) ? inventoryAmount(field('amount').value, quote.value) : null;
+            $('financePaymentRateLabel').textContent = `货款折抵汇率：1 ${paymentCurrency} = 多少 ${invoiceCurrency}`;
+            $('financePaymentInvoiceAmount').textContent = converted !== null ? money(converted, invoiceCurrency) : '待填写汇率';
+            $('financePaymentHint').textContent = `本次实际收付使用 ${paymentCurrency}；只按折算后的 ${invoiceCurrency} 金额抵扣待收或待付货款。尚未结清 ${money(editor.parent.remaining_payment, invoiceCurrency)}。`;
         }
         function updateExchangePreview(event) {
             if (editor?.type !== 'exchanges') return;
@@ -396,7 +479,7 @@
             $('financeExchangeReceipt').textContent = cleanNumber(values.to_amount) > 0 ? money(derived.received_amount, to) : '—';
             $('financeExchangeEffectiveRate').textContent = derived.exchange_rate > 0 && derived.received_amount > 0 ? `含手续费的实际汇率：1 ${from} = ${formatRate(derived.effective_rate)} ${to}。${feeField.value === from ? '手续费加在换出金额上。' : '手续费从换入金额中扣除。'}` : '实际支出与实际到账只计一次手续费。';
         }
-        function updateEditorPreview(event) { updateMovementTotal(); updateExchangePreview(event); }
+        function updateEditorPreview(event) { updateMovementTotal(event); updateExchangePreview(event); updatePaymentPreview(event); }
         function payloadForEditor() {
             const f = new FormData($('financeForm'));
             const get = key => String(f.get(key) || '').trim();
@@ -412,8 +495,10 @@
             if (type === 'transfers') payload.amount = get('amount');
             if (type === 'loans') { payload.principal = get('principal'); payload.due_date = get('due_date') || null; payload.direction = get('direction') || record?.direction; payload.currency = get('currency') || record?.currency; }
             if (type === 'products') { payload.currency = get('currency') || record?.currency || 'USD'; payload.unit = get('unit') || record?.unit || '件'; }
-            if (type === 'movements') { payload.kind = get('kind') || record?.kind; payload.product_id = Number(get('product_id') || record?.product_id); payload.quantity = get('quantity'); payload.unit_price = get('unit_price'); payload.paid_amount = payload.kind === 'opening' ? '0' : get('paid_amount'); }
-            const error = validatePayload(type, payload, parent || record);
+            if (type === 'movements') { payload.kind = get('kind') || record?.kind; payload.product_id = Number(get('product_id') || record?.product_id); payload.quantity = get('quantity'); payload.unit_price = get('unit_price'); payload.paid_amount = payload.kind === 'opening' ? '0' : get('paid_amount'); payload.currency = get('currency') || record?.currency; payload.exchange_rate = get('exchange_rate') || ($('financeForm').elements.namedItem('exchange_rate')?.disabled ? '1' : ''); }
+            if (type === 'payments' && currencies.includes(parent.currency)) { payload.currency = get('currency'); payload.exchange_rate = get('exchange_rate') || ($('financeForm').elements.namedItem('exchange_rate')?.disabled ? '1' : ''); }
+            const validationRecord = type === 'movements' ? { ...record, base_currency: state.products.find(p => p.id === payload.product_id)?.currency } : parent || record;
+            const error = validatePayload(type, payload, validationRecord);
             if (error) throw new Error(error);
             if (record) payload.version = record.version;
             else payload.request_id = editor.requestId(payload);
@@ -465,15 +550,21 @@
                     detailField('换出账户', text(r.from_account)), detailField('换入账户', text(r.to_account)), detailField('换汇方式', text(r.method)), detailField('凭证或参考编号', text(r.reference)));
             } else {
                 const product = state.products.find(p => p.id === r.product_id);
-                fields.push(detailField('记录类型', escape(labels[r.kind])), detailField('商品', text(product?.name)), detailField('数量', `${quantity(r.quantity, p)} ${text(product?.unit)}`), detailField('单位价格 / 成本', cash(r.unit_price)), detailField('总金额', cash(r.total)), detailField('最初已收付', cash(r.initial_paid_amount)), detailField(r.kind === 'sale' ? '累计已收款' : '累计已付款', cash(r.paid_amount)), detailField(r.kind === 'sale' ? '待收金额' : '待付金额', cash(r.remaining_payment)), detailField('供应商或客户', text(r.counterparty)));
-                if (r.kind === 'sale') fields.push(detailField('出货成本', cash(r.cost_of_goods)), detailField('出货毛利', cash(r.realized_profit)));
+                const baseCurrency = r.base_currency || product?.currency || r.currency;
+                const baseCash = value => money(value, baseCurrency, p);
+                fields.push(detailField('记录类型', escape(labels[r.kind])), detailField('商品', text(product?.name)), detailField('数量', `${quantity(r.quantity, p)} ${text(product?.unit)}`), detailField('单位价格 / 成本（货款币种）', cash(r.unit_price)), detailField('原币种货款总额', cash(r.total)), detailField('库存核算币种', escape(baseCurrency)), detailField('库存折算汇率', `1 ${escape(r.currency)} = ${formatRate(r.exchange_rate ?? 1, p)} ${escape(baseCurrency)}`), detailField('折算库存核算金额', baseCash(r.base_total ?? r.total)), detailField('最初已收付（货款币种）', cash(r.initial_paid_amount)), detailField(r.kind === 'sale' ? '累计已收款（折抵货款）' : '累计已付款（折抵货款）', cash(r.paid_amount)), detailField(r.kind === 'sale' ? '待收货款' : '待付货款', cash(r.remaining_payment)), detailField('供应商或客户', text(r.counterparty)));
+                if (r.kind === 'sale') fields.push(detailField('出货成本（库存核算币种）', baseCash(r.cost_of_goods)), detailField('出货毛利（库存核算币种）', baseCash(r.realized_profit)));
             }
             fields.push(detailField('备注', text(r.note), true));
             let history = '';
             if (type === 'loans' || type === 'movements') {
                 const nested = type === 'loans' ? 'repayments' : 'payments';
                 const title = type === 'loans' ? '还款历史' : '分次收付款历史';
-                history = `<div class="finance-history"><h6>${title}</h6>${(r[nested] || []).length ? r[nested].map(payment => `<div class="finance-history-row"><span>${text(payment.date)}</span><span>${text(payment.note)}${payment.voided ? ` ${badge('void')}` : ''}</span><strong>${cash(payment.amount)}</strong>${!r.voided && !payment.voided ? `<button type="button" class="btn btn-outline-secondary" data-finance-void="${nested}" data-id="${payment.id}" data-parent="${r.id}">作废</button>` : '<span></span>'}</div>`).join('') : '<p class="small text-muted mb-0">尚未记录分次收付款。</p>'}</div>`;
+                history = `<div class="finance-history"><h6>${title}</h6>${(r[nested] || []).length ? r[nested].map(payment => {
+                    const paymentCurrency = payment.currency || r.currency;
+                    const conversion = type === 'movements' ? `<small class="finance-history-conversion">折抵 ${money(payment.invoice_amount ?? payment.amount, payment.invoice_currency || r.currency, p)}；1 ${escape(paymentCurrency)} = ${formatRate(payment.exchange_rate ?? 1, p)} ${escape(payment.invoice_currency || r.currency)}</small>` : '';
+                    return `<div class="finance-history-row"><span>${text(payment.date)}</span><span>${text(payment.note)}${payment.voided ? ` ${badge('void')}` : ''}${conversion}</span><strong>${money(payment.amount, type === 'movements' ? paymentCurrency : r.currency, p)}</strong>${!r.voided && !payment.voided ? `<button type="button" class="btn btn-outline-secondary" data-finance-void="${nested}" data-id="${payment.id}" data-parent="${r.id}">作废</button>` : '<span></span>'}</div>`;
+                }).join('') : '<p class="small text-muted mb-0">尚未记录分次收付款。</p>'}${type === 'movements' ? '<p class="finance-private-note mt-3 mb-0">折抵金额只计入一次货款余额。出货毛利不包含后续收付款产生的汇兑损益。</p>' : ''}</div>`;
             }
             $('financeDetailsTitle').textContent = `${types[type].name}详情`;
             $('financeDetailsBody').innerHTML = `<dl class="finance-detail-grid">${fields.join('')}</dl>${history}${r.voided ? '<p class="finance-private-note mt-4 mb-0">这笔记录已作废，保留在历史中，不计入余额与汇总。</p>' : ''}`;
@@ -486,10 +577,10 @@
             if (privateMode() || busy) return;
             const records = state.products.filter(p => $('financeShowVoided').checked || !p.voided);
             $('financeDetailsTitle').textContent = '商品库存';
-            $('financeDetailsBody').innerHTML = '<div class="finance-product-toolbar"><p class="small text-muted mb-0">数量、平均成本与库存成本随进出货更新。</p><button type="button" class="btn btn-sm btn-primary" data-finance-product-new>添加商品</button></div>' + (records.length ? records.map(p => {
+            $('financeDetailsBody').innerHTML = '<div class="finance-product-toolbar"><p class="small text-muted mb-0">平均成本与库存成本均使用商品的库存核算币种。</p><button type="button" class="btn btn-sm btn-primary" data-finance-product-new>添加商品</button></div>' + (records.length ? records.map(p => {
                 const hasHistory = state.movements.some(m => m.product_id === p.id);
                 const actions = p.voided ? '' : `<div class="d-flex gap-1"><button type="button" class="btn btn-outline-secondary" data-finance-edit="products" data-id="${p.id}">编辑</button>${hasHistory ? '' : `<button type="button" class="btn btn-outline-secondary" data-finance-void="products" data-id="${p.id}">作废</button>`}</div>`;
-                return `<section class="finance-product-row"><div class="finance-product-title"><strong>${escape(p.name)} ${p.voided ? badge('void') : ''}</strong>${actions}</div><p>${escape(p.sku || '未填写编号')} · ${escape(p.location || '未填写位置')}${p.note ? ` · ${escape(p.note)}` : ''}</p><div class="finance-product-values"><span>库存 <strong>${quantity(p.quantity)} ${escape(p.unit)}</strong></span><span>平均成本 <strong>${money(p.average_cost, p.currency)}</strong></span><span>库存成本 <strong>${money(p.inventory_cost, p.currency)}</strong></span></div>${hasHistory ? '<p class="mb-0">已有进出货历史，保留商品供日后查账。</p>' : ''}</section>`;
+                return `<section class="finance-product-row"><div class="finance-product-title"><strong>${escape(p.name)} ${p.voided ? badge('void') : ''}</strong>${actions}</div><p>库存核算币种 ${escape(p.currency)} · ${escape(p.sku || '未填写编号')} · ${escape(p.location || '未填写位置')}${p.note ? ` · ${escape(p.note)}` : ''}</p><div class="finance-product-values"><span>库存 <strong>${quantity(p.quantity)} ${escape(p.unit)}</strong></span><span>平均成本 <strong>${money(p.average_cost, p.currency)}</strong></span><span>库存成本 <strong>${money(p.inventory_cost, p.currency)}</strong></span></div>${!currencies.includes(p.currency) ? '<p class="mb-0">历史商品保留供查账，不新增进出货。</p>' : hasHistory ? '<p class="mb-0">已有进出货历史，保留商品供日后查账。</p>' : ''}</section>`;
             }).join('') : '<div class="finance-empty"><i class="bi bi-box-seam" aria-hidden="true"></i><h3>还没有商品</h3><p>添加商品后，就能记录进出货并查看库存。</p></div>');
             $('financeDetailsActions').innerHTML = '<button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>';
             getModal('financeDetailsModal').show();
@@ -547,7 +638,7 @@
             else if (d.financePayment) openEditor(d.financePayment === 'loans' ? 'repayments' : 'payments', null, state[d.financePayment].find(r => r.id === id));
             else if (d.financeVoid) openVoid(d.financeVoid, id, Number(d.parent));
             else if ('financeProductNew' in d) openEditor('products');
-            else if ('financeNew' in d) openEditor(section === 'movements' && !state.products.some(r => !r.voided) ? 'products' : section);
+            else if ('financeNew' in d) openEditor(section === 'movements' && !state.products.some(r => !r.voided && currencies.includes(r.currency)) ? 'products' : section);
             else if ('financeClear' in d) { $('financeSearch').value = ''; $('financeCurrency').value = ''; $('financeStatus').value = ''; render(); }
         }
         function refreshPrivacy() {
@@ -576,7 +667,7 @@
         changeSection('transfers');
         return { load, refreshPrivacy, setPrivate(value) { privateOverride = Boolean(value); refreshPrivacy(); } };
     }
-    const api = { init, escape, money, quantity, formatRate, amountFromRate, exchangeAmounts, filterRecords, renderRows, validatePayload, createRequestTracker, errorMessage };
+    const api = { init, escape, money, quantity, formatRate, amountFromRate, inventoryAmount, decimalSum, decimalGreater, exchangeAmounts, filterRecords, renderRows, validatePayload, createRequestTracker, errorMessage };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     root.FinanceUI = api;
 })(typeof window !== 'undefined' ? window : globalThis);

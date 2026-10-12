@@ -7,7 +7,7 @@ import httpx
 
 from app import main
 from app import finance_api
-from app.finance import FinanceError
+from app.finance import FinanceError, InventoryPaymentCreate, request_data
 
 
 class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
@@ -125,6 +125,31 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
                 response = await self.client.post('/api/finance/exchanges', json={**exchange, **values}, headers=self.headers)
                 self.assertEqual(response.status_code, 422)
             write.assert_not_called()
+
+    async def test_inventory_currency_and_twelve_place_rates_reach_domain(self):
+        movement = dict(date='2026-01-01', product_id=1, kind='purchase', quantity=10,
+                        unit_price=70, currency='CNY', exchange_rate='.142857142857', request_id=str(uuid4()))
+        with patch.object(finance_api.repository, 'create_record', return_value=self.state) as write:
+            response = await self.client.post('/api/finance/movements', json=movement, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(write.call_args.args[1].currency, 'CNY')
+            self.assertEqual(str(write.call_args.args[1].exchange_rate), '0.142857142857')
+            for values in [dict(exchange_rate=0), dict(exchange_rate='NaN'), dict(exchange_rate='.0000000000001'), dict(currency='HKD')]:
+                response = await self.client.post('/api/finance/movements', json={**movement, **values}, headers=self.headers)
+                self.assertEqual(response.status_code, 422)
+            self.assertEqual(write.call_count, 1)
+
+    async def test_inventory_payment_fx_fields_do_not_change_loan_payment_schema(self):
+        payment = dict(date='2026-01-01', amount=50, currency='USD', exchange_rate=7, request_id=str(uuid4()))
+        with patch.object(finance_api.repository, 'create_payment', return_value=self.state) as write:
+            response = await self.client.post('/api/finance/movements/7/payments', json=payment, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertIsInstance(write.call_args.args[2], InventoryPaymentCreate)
+            self.assertEqual(write.call_args.args[:2], ('movements', 7))
+            self.assertEqual(request_data(write.call_args.args[2])['exchange_rate'], '7')
+            response = await self.client.post('/api/finance/loans/7/repayments', json=payment, headers=self.headers)
+            self.assertEqual(response.status_code, 422)
+            self.assertEqual(write.call_count, 1)
 
 
 if __name__ == '__main__':

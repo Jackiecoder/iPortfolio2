@@ -39,6 +39,7 @@
 .finance-row-title { align-items: center; display: flex; flex-wrap: wrap; gap: 9px; }
 .finance-row-title strong { color: #19365a; font-size: .94rem; font-weight: 650; overflow-wrap: anywhere; }
 .finance-row-note { color: #76879a; font-size: .76rem; margin-top: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.finance-row-base { color: #526980; display: block; font-size: .72rem; margin-top: 6px; }
 .finance-row-money { min-width: 110px; text-align: right; }
 .finance-row-money strong { display: block; font-size: .99rem; font-weight: 700; }
 .finance-row-money small { color: #76879a; display: block; font-size: .73rem; margin-top: 5px; }
@@ -73,6 +74,7 @@
 .finance-history-row + .finance-history-row { border-top: 1px solid #edf0f4; }
 .finance-history-row span, .finance-history-row small { color: #76879a; font-size: .77rem; overflow-wrap: anywhere; }
 .finance-history-row strong { font-size: .88rem; white-space: nowrap; }
+.finance-history-conversion { display: block; font-size: .72rem; line-height: 1.7; margin-top: 4px; }
 .finance-history-row .btn { font-size: .72rem; padding: 4px 8px; }
 .finance-product-toolbar { display: flex; gap: 12px; justify-content: space-between; margin-bottom: 15px; }
 .finance-product-row { border-top: 1px solid #edf0f4; padding: 17px 0; }
@@ -89,6 +91,11 @@
 .finance-exchange-preview p { color: #657990; font-size: .76rem; grid-column: 1 / -1; line-height: 1.7; margin: 0; overflow-wrap: anywhere; }
 .finance-exchange-rate-label { color: #526980; display: block; font-size: .81rem; font-weight: 600; margin-bottom: .5rem; }
 .finance-exchange-rate-help { color: #76879a; font-size: .73rem; line-height: 1.7; margin-top: .4rem; }
+.finance-inventory-preview { background: #f1f6fa; border: 1px solid #dbe6ef; border-radius: 9px; display: grid; gap: 16px; grid-template-columns: 1fr 1fr; padding: 16px; }
+.finance-inventory-preview span { color: #657990; display: block; font-size: .76rem; margin-bottom: 5px; }
+.finance-inventory-preview strong { color: #19365a; font-size: 1.03rem; overflow-wrap: anywhere; }
+.finance-inventory-preview p { color: #657990; font-size: .76rem; grid-column: 1 / -1; line-height: 1.7; margin: 0; overflow-wrap: anywhere; }
+.finance-payment-preview { grid-template-columns: 1fr; }
 @media (max-width: 1100px) {
     .finance-currency-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .finance-section-bar { align-items: stretch; flex-direction: column; gap: 12px; }

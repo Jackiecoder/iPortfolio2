@@ -5,7 +5,8 @@ from fastapi import APIRouter, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 
 from . import finance_repository as repository
-from .finance import (ExchangeCreate, ExchangeUpdate, FinanceError, LoanCreate, LoanUpdate, MovementCreate,
+from .finance import (ExchangeCreate, ExchangeUpdate, FinanceError, InventoryPaymentCreate,
+                      LoanCreate, LoanUpdate, MovementCreate,
                       MovementUpdate, PaymentCreate, ProductCreate, ProductUpdate,
                       TransferCreate, TransferUpdate)
 
@@ -114,7 +115,7 @@ async def void_movement(record_id: int, version: int = Query(..., ge=1)):
 
 
 @router.post('/movements/{record_id}/payments')
-async def create_movement_payment(record_id: int, request: PaymentCreate):
+async def create_movement_payment(record_id: int, request: InventoryPaymentCreate):
     return await _execute(repository.create_payment, 'movements', record_id, request)
 
 

@@ -13,7 +13,7 @@ performance charts, dividend tracking, and an independent financial ledger.
 
 ## 财务
 
-The personal **财务** tab is a separate PostgreSQL ledger for important transfers,
+The personal **Finance** tab is a separate PostgreSQL ledger for important transfers,
 money lent/borrowed, and merchandise purchases/sales. It does not change investment
 holdings, cash snapshots, or portfolio returns. The public demo does not load it.
 
@@ -29,15 +29,23 @@ holdings, cash snapshots, or portfolio returns. The public demo does not load it
   destination currency per one source currency, with its reciprocal and the
   effective rate after fees. Currency summaries keep exchange inflows, outflows,
   fees, and net movement separate from transfer totals.
-- **进出货** keeps product/SKU/unit/currency/location details, opening stock,
-  purchases, sales, and payment histories. Inventory cost uses a chronological
-  moving average; sales profit is sale value less the allocated stock cost.
-  Purchase payables and sale receivables show the amount still unpaid.
+- **进出货** keeps product/SKU/unit/location details, opening stock, purchases,
+  sales, and payment histories. Each product has a fixed inventory accounting
+  currency; individual purchases and sales may use another currency with an
+  explicit transaction exchange rate. Native invoice totals are rounded before
+  conversion into the accounting currency. Inventory cost uses a chronological
+  moving average; merchandise gross profit is converted sale value less the
+  allocated stock cost, excluding settlement foreign-exchange gains or losses.
+  Purchase payables and sale receivables retain the invoice currency. Payments
+  may use a different currency and an explicit rate into the invoice currency.
+  The original payment amount and its invoice-equivalent amount are both saved.
+  Invoice currency is fixed once any payment history exists.
 
 Currency selectors currently offer USD and CNY. Historical records retain their
 original currencies, summarized independently without inventing exchange rates.
-Saved amounts and quantities use exact Decimal math
-with up to six decimal places. Records can be corrected or voided while retaining
+Saved amounts and quantities use exact Decimal math with up to six decimal
+places and half-even rounding; inventory exchange rates allow twelve decimal
+places. Records can be corrected or voided while retaining
 history; changes have version checks and transactional audit records. Backdated
 changes cannot create negative historical stock, and repayment/payment totals
 cannot exceed the original principal/invoice. Duplicate create retries use a
