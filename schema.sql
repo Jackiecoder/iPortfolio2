@@ -153,3 +153,78 @@ CREATE TABLE IF NOT EXISTS option_contract_checks (
     checked_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (call_id, market_date)
 );
+
+-- Independent personal/business financial ledger. It never writes investment
+-- transactions or portfolio cash. JSONB payloads retain canonical decimal text;
+-- versions, soft voids, request keys and audit entries are written atomically.
+CREATE TABLE IF NOT EXISTS finance_transfers (
+    id BIGSERIAL PRIMARY KEY,
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    voided BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS finance_loans (
+    id BIGSERIAL PRIMARY KEY,
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    voided BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS finance_products (
+    id BIGSERIAL PRIMARY KEY,
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    voided BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS finance_movements (
+    id BIGSERIAL PRIMARY KEY,
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    voided BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finance_movements_product ON finance_movements ((payload->>'product_id'));
+CREATE TABLE IF NOT EXISTS finance_repayments (
+    id BIGSERIAL PRIMARY KEY,
+    parent_id BIGINT NOT NULL REFERENCES finance_loans(id),
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    voided BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finance_repayments_parent ON finance_repayments(parent_id);
+CREATE TABLE IF NOT EXISTS finance_payments (
+    id BIGSERIAL PRIMARY KEY,
+    parent_id BIGINT NOT NULL REFERENCES finance_movements(id),
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    voided BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finance_payments_parent ON finance_payments(parent_id);
+CREATE TABLE IF NOT EXISTS finance_requests (
+    request_id UUID PRIMARY KEY,
+    entity_kind TEXT NOT NULL CHECK (entity_kind IN ('transfers','loans','products','movements','repayments','payments')),
+    parent_id BIGINT,
+    entity_id BIGINT NOT NULL,
+    request_payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS finance_audit (
+    id BIGSERIAL PRIMARY KEY,
+    entity_kind TEXT NOT NULL,
+    entity_id BIGINT NOT NULL,
+    action TEXT NOT NULL,
+    before_data JSONB,
+    after_data JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finance_audit_entity ON finance_audit(entity_kind, entity_id, id);

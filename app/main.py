@@ -42,6 +42,7 @@ from .split_service import split_service
 from .simulator import run_simulation
 from .scheduler_auth import SCHEDULER_PATH, verify_scheduler_token
 from .ticker_technicals import ticker_technicals
+from .finance_api import router as finance_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -68,6 +69,7 @@ app = FastAPI(
     description="Track your investment portfolio with live market data",
     version="1.0.0",
 )
+app.include_router(finance_router)
 
 # Mount static files
 # Ensure the web app manifest is served with a manifest content-type (the

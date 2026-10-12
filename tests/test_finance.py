@@ -1,0 +1,169 @@
+"""Financial balance and chronological inventory replay regression tests."""
+from copy import deepcopy
+from decimal import Decimal
+import unittest
+from uuid import uuid4
+
+from pydantic import ValidationError
+
+from app.finance import (FinanceError, LoanCreate, LoanUpdate, MovementCreate,
+                         ProductCreate, ProductUpdate, PaymentCreate, TransferCreate,
+                         empty_state, replay, request_data, validate_edit, validate_void)
+
+
+def record(model, record_id=1, **values):
+    return {**request_data(model(request_id=uuid4(), **values)),
+            'id': record_id, 'version': 1, 'voided': False}
+
+
+def product(record_id=1, **values):
+    return record(ProductCreate, record_id, name='Tea', **values)
+
+
+def movement(record_id=1, **values):
+    defaults = dict(date='2026-01-02', product_id=1, kind='purchase', quantity=10,
+                    unit_price=10, paid_amount=0)
+    defaults.update(values)
+    return {**record(MovementCreate, record_id, **defaults), 'payments': []}
+
+
+def payment(record_id=1, **values):
+    defaults = dict(date='2026-01-03', amount=20)
+    defaults.update(values)
+    return record(PaymentCreate, record_id, **defaults)
+
+
+class FinanceModelTests(unittest.TestCase):
+    def test_decimal_precision_finite_positive_and_currency_guards(self):
+        for amount in ('NaN', 'Infinity', '-1', '0', '0.0000001', True, '1000000000001'):
+            with self.subTest(amount=amount), self.assertRaises(ValidationError):
+                TransferCreate(request_id=uuid4(), date='2026-01-01', direction='in', amount=amount)
+        with self.assertRaises(ValidationError):
+            TransferCreate(request_id=uuid4(), date='2026-01-01', direction='in', amount=1, currency='US')
+
+    def test_dates_and_due_dates_are_unambiguous(self):
+        for value in ('2026-1-1', '2026-02-30', '2099-01-01', 1700000000):
+            with self.subTest(date=value), self.assertRaises(ValidationError):
+                LoanCreate(request_id=uuid4(), date=value, direction='lent', counterparty='K', principal=1)
+        with self.assertRaises(ValidationError):
+            LoanCreate(request_id=uuid4(), date='2026-01-01', due_date='2025-12-31', direction='lent', counterparty='K', principal=1)
+
+    def test_idempotency_canonicalizes_decimal_spelling(self):
+        request_id = uuid4()
+        a = TransferCreate(request_id=request_id, date='2026-01-01', direction='in', amount='10.00')
+        b = TransferCreate(request_id=request_id, date='2026-01-01', direction='in', amount=10)
+        self.assertEqual(request_data(a), request_data(b))
+
+    def test_initial_payment_limits_and_opening_inventory(self):
+        for values in (dict(paid_amount=101), dict(kind='opening', paid_amount=1)):
+            with self.assertRaises(ValidationError):
+                movement(**values)
+        self.assertEqual(movement(kind='opening', unit_price=0)['paid_amount'], '0')
+
+
+class FinanceReplayTests(unittest.TestCase):
+    def setUp(self):
+        self.state = empty_state()
+        self.state['products'] = [product()]
+
+    def test_moving_average_partial_payments_and_profit(self):
+        a = movement(quantity=10, unit_price=10, paid_amount=50)
+        a['payments'] = [payment(amount=25)]
+        b = movement(2, date='2026-01-03', quantity=10, unit_price=20)
+        sale = movement(3, date='2026-01-04', kind='sale', quantity=4, unit_price=30, paid_amount=20)
+        self.state['movements'] = [sale, b, a]  # Input order cannot determine costing.
+        result = replay(self.state)
+        p = result['products'][0]
+        self.assertEqual((p['quantity'], p['average_cost'], p['inventory_cost'], p['realized_profit']), (16, 15, 240, 60))
+        sale = result['movements'][0]
+        self.assertEqual((sale['cost_of_goods'], sale['realized_profit'], sale['remaining_payment']), (60, 60, 100))
+        purchase = result['movements'][2]
+        self.assertEqual((purchase['initial_paid_amount'], purchase['paid_amount'], purchase['remaining_payment'], purchase['status']), (50, 75, 25, 'partial'))
+        self.assertEqual(purchase['payments'][0]['amount'], 25)
+        values = result['summary'][0]
+        self.assertEqual((values['purchase_total'], values['sales_total'], values['payable'], values['receivable']), (300, 120, 225, 100))
+        self.assertEqual(self.state['movements'][2]['paid_amount'], '50')
+
+    def test_backdated_sale_or_voided_purchase_cannot_create_negative_stock(self):
+        self.state['movements'] = [movement(), movement(2, date='2026-01-01', kind='sale', quantity=1)]
+        with self.assertRaisesRegex(FinanceError, 'Insufficient inventory'):
+            replay(self.state)
+        self.state['movements'][1]['date'] = '2026-01-03'
+        self.state['movements'][0]['voided'] = True
+        with self.assertRaisesRegex(FinanceError, 'Insufficient inventory'):
+            replay(self.state)
+
+    def test_same_date_respects_stable_creation_order(self):
+        self.state['movements'] = [movement(2, kind='sale', quantity=10), movement(1)]
+        self.assertEqual(replay(self.state)['products'][0]['quantity'], 0)
+        self.state['movements'][0]['id'] = 0
+        with self.assertRaises(FinanceError):
+            replay(self.state)
+
+    def test_last_sale_clears_rounding_residue(self):
+        self.state['movements'] = [movement(quantity=3, unit_price='0.333333'),
+                                   movement(2, date='2026-01-03', kind='sale', quantity=1, unit_price=1),
+                                   movement(3, date='2026-01-04', kind='sale', quantity=2, unit_price=1)]
+        p = replay(self.state)['products'][0]
+        self.assertEqual(p['quantity'], 0)
+        self.assertEqual(p['inventory_cost'], 0)
+        self.assertEqual(p['realized_profit'], 2.000001)
+
+    def test_repayment_balance_voiding_and_edit_integrity(self):
+        loan = record(LoanCreate, date='2026-01-01', direction='lent', counterparty='K', principal=100)
+        loan['repayments'] = [payment(amount=40), payment(2, amount=10)]
+        self.state['loans'] = [loan]
+        result = replay(self.state)['loans'][0]
+        self.assertEqual((result['repaid'], result['outstanding'], result['status']), (50, 50, 'partial'))
+        loan['repayments'][1]['voided'] = True
+        self.assertEqual(replay(self.state)['loans'][0]['outstanding'], 60)
+        loan['principal'] = '30'
+        with self.assertRaisesRegex(FinanceError, 'principal'):
+            replay(self.state)
+        loan['principal'] = '100'
+        loan['date'] = '2026-01-04'
+        with self.assertRaisesRegex(FinanceError, 'date'):
+            replay(self.state)
+
+    def test_currencies_are_separate_and_internal_transfer_is_neutral(self):
+        for index, (currency, direction, amount) in enumerate((('USD', 'in', 100), ('CNY', 'out', 300), ('USD', 'internal', 999))):
+            self.state['transfers'].append(record(TransferCreate, index+1, date='2026-01-01', direction=direction, amount=amount, currency=currency))
+        values = {r['currency']: r for r in replay(self.state)['summary']}
+        self.assertEqual(values['USD']['transfer_net'], 100)
+        self.assertEqual(values['CNY']['transfer_net'], -300)
+
+    def test_payment_history_restricts_void_and_historical_meaning(self):
+        loan = record(LoanCreate, date='2026-01-01', direction='borrowed', counterparty='K', principal=100)
+        loan['repayments'] = [payment()]
+        self.state['loans'] = [loan]
+        with self.assertRaisesRegex(FinanceError, 'repayments'):
+            validate_void(self.state, 'loans', loan)
+        values = request_data(LoanUpdate(date='2026-01-01', direction='lent', counterparty='K', principal=100, version=1))
+        with self.assertRaisesRegex(FinanceError, 'direction'):
+            validate_edit(self.state, 'loans', loan, values)
+        loan['repayments'][0]['voided'] = True
+        validate_void(self.state, 'loans', loan)
+
+    def test_product_currency_unit_sku_and_history_are_protected(self):
+        self.state['movements'] = [movement()]
+        p = self.state['products'][0]
+        values = request_data(ProductUpdate(name='Tea', currency='CNY', version=1))
+        with self.assertRaisesRegex(FinanceError, 'Currency'):
+            validate_edit(self.state, 'products', p, values)
+        with self.assertRaisesRegex(FinanceError, 'history'):
+            validate_void(self.state, 'products', p)
+        self.state['products'] = [product(sku='TEA'), product(2, sku='tea')]
+        with self.assertRaisesRegex(FinanceError, 'SKU'):
+            replay(self.state)
+
+    def test_opening_inventory_has_cost_but_no_payables(self):
+        self.state['movements'] = [movement(kind='opening', quantity=5, unit_price=4)]
+        result = replay(self.state)
+        self.assertEqual(result['products'][0]['inventory_cost'], 20)
+        self.assertEqual(result['summary'][0]['purchase_total'], 0)
+        self.assertEqual(result['summary'][0]['payable'], 0)
+        self.assertEqual(result['movements'][0]['status'], 'paid')
+
+
+if __name__ == '__main__':
+    unittest.main()

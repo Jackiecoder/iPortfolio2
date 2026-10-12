@@ -11,7 +11,13 @@
     // Missing estimates leave the original holdings amount and return usable.
     function valuation(point) {
         const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
-        const holdings = finite(point?.holdings_daily_pnl) ?? finite(point?.daily_pnl);
+        // An explicitly unavailable holdings subtotal is authoritative. Only
+        // older snapshots without the field use the combined legacy amount.
+        const holdings = Object.prototype.hasOwnProperty.call(point || {}, 'holdings_daily_pnl')
+            ? finite(point.holdings_daily_pnl) : finite(point?.daily_pnl);
+        const missingSymbols = [...new Set(Array.isArray(point?.missing_baseline_symbols)
+            ? point.missing_baseline_symbols : [])];
+        const partial = missingSymbols.length > 0;
         const details = Array.isArray(point?.option_details) ? point.option_details : [];
         const hasOptions = !!point?.options_present || details.length > 0 || point?.options_complete === false;
         const options = hasOptions ? finite(point?.option_daily_pnl) : null;
@@ -22,10 +28,29 @@
         const baseline = finite(point?.baseline_value);
         // Retain the existing return basis; this is contribution to the same
         // portfolio daily return, not return on option premium or net option NAV.
-        const percent = complete
+        const percent = holdings === null ? null : complete
             ? (baseline > 0 && display !== null ? display / baseline * 100 : null)
             : finite(point?.daily_pnl_percent);
-        return { holdings, options, complete, contribution, display, percent, hasOptions, details };
+        const available = display !== null;
+        return { holdings, options, complete, contribution, display, percent, hasOptions, details,
+            missingSymbols, partial, available };
+    }
+
+    function holdingsView(holdings) {
+        const assets = (holdings || []).filter(row => row.symbol !== 'CASH');
+        const known = assets.filter(row => row.daily_change_amount != null);
+        const missing = assets.filter(row => row.daily_change_amount == null);
+        const display = known.length || !assets.length
+            ? known.reduce((sum, row) => sum + row.daily_change_amount, 0) : null;
+        const marketValue = known.reduce((sum, row) => sum + (row.market_value || 0), 0);
+        const basis = display == null ? null : marketValue - display;
+        return {
+            display,
+            percent: basis > 0 ? display / basis * 100 : null,
+            partial: missing.length > 0,
+            missingSymbols: missing.filter(row => !row.today_pending).map(row => row.symbol),
+            available: display !== null,
+        };
     }
 
     function activity(row) {
@@ -53,33 +78,42 @@
     function project(holdings, snapshot, date) {
         const point = latest(snapshot, date);
         const changes = new Map((point?.asset_changes || []).map(item => [item.symbol, item]));
+        const missingSymbols = new Set(point?.missing_baseline_symbols || []);
+        const amounts = (symbol, change) => {
+            if (!point || missingSymbols.has(symbol)) return { amount: null, percent: null };
+            if (change) return { amount: change.pnl ?? null, percent: change.pnl_percent ?? null };
+            // Cash is omitted from asset_changes because its daily gain is zero.
+            return symbol === 'CASH' ? { amount: 0, percent: 0 } : { amount: null, percent: null };
+        };
         const rows = (holdings || []).map(holding => {
             const change = changes.get(holding.symbol);
+            const today = amounts(holding.symbol, change);
             changes.delete(holding.symbol);
             return {
                 ...holding,
                 trade_activity: change?.trade_activity ?? null,
                 today_pending: !point,
-                daily_change_amount: point ? (change?.pnl ?? 0) : null,
-                daily_change_percent: point ? (change?.pnl_percent ?? 0) : null,
+                daily_change_amount: today.amount,
+                daily_change_percent: today.percent,
             };
         });
         // Closed positions are absent from holdings but still earned/lost money
         // today. Give each its own row without adding to current value or cost.
         for (const change of changes.values()) {
+            const today = amounts(change.symbol, change);
             rows.push({
                 symbol: change.symbol, quantity: change.quantity,
                 current_price: change.current_price,
                 trade_activity: change.trade_activity ?? null,
                 cost_basis: 0, market_value: 0, today_only: true,
                 prices_pending: change.quantity > 0,
-                daily_change_amount: change.pnl, daily_change_percent: change.pnl_percent,
+                daily_change_amount: today.amount, daily_change_percent: today.percent,
             });
         }
         return rows;
     }
 
-    const api = { latest, project, valuation, activity, displayPrice };
+    const api = { latest, project, valuation, holdingsView, activity, displayPrice };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.TodayPnl = api;
 })(globalThis);

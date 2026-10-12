@@ -1,0 +1,62 @@
+<div class="tab-pane fade" id="trackerFinance" role="tabpanel" aria-labelledby="finance-tab" tabindex="0">
+    <section class="finance-workspace" aria-label="财务记录">
+        <header class="finance-heading">
+            <div>
+                <h2>财务</h2>
+                <p>记住重要的资金往来，清楚每一笔借贷与进出货。</p>
+            </div>
+            <button type="button" id="financeReload" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>刷新记录</button>
+        </header>
+        <div id="financeNotice" class="finance-notice d-none" role="status" aria-live="polite"></div>
+        <div id="financeOverview" class="finance-overview" aria-label="按币种汇总"></div>
+        <p class="finance-scope">仅汇总这里记录的往来，各币种分别统计。财务记录独立于投资组合。</p>
+        <div class="finance-section-bar">
+            <div class="finance-sections" role="group" aria-label="财务分类">
+                <button type="button" data-finance-section="transfers" aria-pressed="true" class="active"><i class="bi bi-arrow-left-right" aria-hidden="true"></i>转账记录</button>
+                <button type="button" data-finance-section="loans" aria-pressed="false"><i class="bi bi-people" aria-hidden="true"></i>借贷往来</button>
+                <button type="button" data-finance-section="movements" aria-pressed="false"><i class="bi bi-box-seam" aria-hidden="true"></i>进出货</button>
+            </div>
+            <div class="finance-actions">
+                <button type="button" id="financeProducts" class="btn btn-outline-secondary d-none"><i class="bi bi-boxes me-1" aria-hidden="true"></i>商品库存</button>
+                <button type="button" id="financeAdd" class="btn btn-primary"><i class="bi bi-plus-lg me-1" aria-hidden="true"></i><span>记录转账</span></button>
+            </div>
+        </div>
+        <div class="finance-filter-bar">
+            <div class="finance-search"><i class="bi bi-search" aria-hidden="true"></i><label class="visually-hidden" for="financeSearch">搜索财务记录</label><input type="search" id="financeSearch" class="form-control" placeholder="搜索对方、账户、备注" autocomplete="off"></div>
+            <label class="visually-hidden" for="financeCurrency">币种</label>
+            <select id="financeCurrency" class="form-select finance-filter" aria-label="按币种筛选"><option value="">全部币种</option></select>
+            <label class="visually-hidden" for="financeStatus">记录类型或状态</label>
+            <select id="financeStatus" class="form-select finance-filter" aria-label="按类型或状态筛选"></select>
+            <label class="finance-void-filter"><input type="checkbox" id="financeShowVoided" class="form-check-input">显示已作废</label>
+        </div>
+        <div class="finance-list-caption"><span id="financeListCaption">转账记录</span><span id="financeCount" class="text-muted"></span></div>
+        <div id="financeList" class="finance-list" aria-live="polite"><div class="finance-empty"><i class="bi bi-journal-text" aria-hidden="true"></i><h3>打开财务，查看你的记录</h3><p>转账、借贷和进出货会分别保存在这里。</p></div></div>
+        <p id="financeInventoryNote" class="finance-scope d-none">进货计入采购额，出货计入销售额；付款与收款可分次记录。库存与出货毛利按移动平均成本计算。</p>
+    </section>
+</div>
+
+<div class="modal fade finance-modal" id="financeEditModal" tabindex="-1" aria-labelledby="financeEditTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title" id="financeEditTitle">记录转账</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
+        <form id="financeForm">
+            <div class="modal-body"><p id="financeFormIntro" class="finance-form-intro"></p><div id="financeFormFields" class="row g-3"></div><div id="financeFormError" class="alert alert-danger mt-3 mb-0 d-none" role="alert"></div></div>
+            <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" id="financeSave" class="btn btn-primary">保存记录</button></div>
+        </form>
+    </div></div>
+</div>
+
+<div class="modal fade finance-modal" id="financeDetailsModal" tabindex="-1" aria-labelledby="financeDetailsTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title" id="financeDetailsTitle">记录详情</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
+        <div class="modal-body" id="financeDetailsBody"></div>
+        <div class="modal-footer" id="financeDetailsActions"></div>
+    </div></div>
+</div>
+
+<div class="modal fade finance-modal" id="financeVoidModal" tabindex="-1" aria-labelledby="financeVoidTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title" id="financeVoidTitle">作废记录</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
+        <div class="modal-body"><p id="financeVoidMessage"></p><div id="financeVoidError" class="alert alert-danger mb-0 d-none" role="alert"></div></div>
+        <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">保留记录</button><button type="button" id="financeVoidConfirm" class="btn btn-danger">确认作废</button></div>
+    </div></div>
+</div>

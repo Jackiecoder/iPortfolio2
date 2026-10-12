@@ -1,6 +1,7 @@
 # Portfolio Tracker
 
-A Python-based portfolio tracking application that reads transaction data from CSV files and displays a comprehensive dashboard with holdings, performance charts, and dividend tracking.
+A Python-based portfolio tracker backed by PostgreSQL, with holdings,
+performance charts, dividend tracking, and an independent financial ledger.
 
 ## Features
 
@@ -9,6 +10,35 @@ A Python-based portfolio tracking application that reads transaction data from C
 - **Asset Allocation**: Visualize portfolio distribution with a pie chart
 - **Dividend Tracking**: Monitor dividend income by asset
 - **CSV Import**: Easy transaction import via CSV files
+
+## 财务
+
+The personal **财务** tab is a separate PostgreSQL ledger for important transfers,
+money lent/borrowed, and merchandise purchases/sales. It does not change investment
+holdings, cash snapshots, or portfolio returns. The public demo does not load it.
+
+- **转账记录** saves the date, direction, original currency, counterparty,
+  accounts, payment method, reference, and notes. Internal transfers are excluded
+  from transfer inflow/outflow totals.
+- **借贷往来** distinguishes lending from borrowing, tracks optional due dates,
+  and keeps each partial repayment and the remaining principal.
+- **进出货** keeps product/SKU/unit/currency/location details, opening stock,
+  purchases, sales, and payment histories. Inventory cost uses a chronological
+  moving average; sales profit is sale value less the allocated stock cost.
+  Purchase payables and sale receivables show the amount still unpaid.
+
+USD, CNY, HKD, EUR, GBP, CAD, JPY, and AUD are summarized independently, without
+inventing exchange rates. Saved amounts and quantities use exact Decimal math
+with up to six decimal places. Records can be corrected or voided while retaining
+history; changes have version checks and transactional audit records. Backdated
+changes cannot create negative historical stock, and repayment/payment totals
+cannot exceed the original principal/invoice. Duplicate create retries use a
+stable request ID. APIs use the existing application-token authentication and
+are never cached by the service worker. The anonymous toggle also masks this tab.
+
+The inventory flow and payment-status conventions reference
+[cmpManager](https://github.com/Jackiecoder/cmpManager); this personal ledger adds
+moving-average valuation and sales profit calculations.
 
 ## Installation
 
@@ -32,7 +62,9 @@ A Python-based portfolio tracking application that reads transaction data from C
 
 2. Open your browser to `http://localhost:8000`
 
-3. Upload a CSV file or place CSV files in the `data/` directory
+3. Use **Add Transaction** to record investments or **财务** for transfers,
+   borrowing/lending, and merchandise. CSV import remains available for historical
+   migration; files under `data/` are not the source of truth for new records.
 
 ## Live snapshot refresh
 

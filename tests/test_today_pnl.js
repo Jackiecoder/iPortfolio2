@@ -41,6 +41,170 @@ test('yesterday or incomplete top-ten data cannot supply Today amounts', () => {
     }
 });
 
+test('complete partial snapshots preserve unavailable holding amounts and known contributions', () => {
+    const point = {
+        time: '06:59', holdings_complete: true,
+        holdings_daily_pnl: 20, daily_pnl: 20, daily_pnl_percent: 10, baseline_value: 200,
+        missing_baseline_symbols: ['NIGHT-USD'],
+        asset_changes: [
+            { symbol: 'NIGHT-USD', quantity: 100, pnl: null, pnl_percent: null },
+            { symbol: 'AAPL', quantity: 2, pnl: 20, pnl_percent: 10 },
+        ],
+    };
+    const data = { date, intraday: [point] };
+    const current = [
+        { symbol: 'NIGHT-USD', quantity: 100, daily_change_amount: 4299.16, daily_change_percent: 0 },
+        { symbol: 'AAPL', quantity: 2, daily_change_amount: -999 },
+        { symbol: 'CASH', quantity: 1 },
+    ];
+    assert.equal(TodayPnl.latest(data, date), point);
+    const rows = TodayPnl.project(current, data, date);
+    assert.equal(rows[0].daily_change_amount, null);
+    assert.equal(rows[0].daily_change_percent, null);
+    assert.equal(rows[0].today_pending, false);
+    assert.equal(rows[1].daily_change_amount, 20);
+    assert.equal(rows[1].daily_change_percent, 10);
+    assert.equal(rows[2].daily_change_amount, 0);
+    assert.equal(rows[2].daily_change_percent, 0);
+    assert.equal(current[0].daily_change_amount, 4299.16);
+    assert.equal(cents(rows), 2000);
+    const view = TodayPnl.valuation(point);
+    assert.equal(view.display, 20);
+    assert.equal(view.percent, 10);
+    assert.equal(view.partial, true);
+    assert.equal(view.available, true);
+    assert.deepEqual(view.missingSymbols, ['NIGHT-USD']);
+});
+
+test('missing-symbol markers override stale amounts, including closed-position rows', () => {
+    const closed = snapshot.intraday[0].asset_changes[1];
+    const point = {
+        holdings_complete: true, missing_baseline_symbols: ['NIGHT-USD', 'SOLD'],
+        asset_changes: [{ symbol: 'NIGHT-USD', pnl: 4299.16, pnl_percent: 0 }, closed],
+    };
+    const rows = TodayPnl.project([
+        { symbol: 'NIGHT-USD', quantity: 100 }, { symbol: 'CASH', quantity: 1 },
+        { symbol: 'ABSENT', quantity: 1 },
+    ], { date, intraday: [point] }, date);
+    assert.equal(rows[0].daily_change_amount, null);
+    assert.equal(rows[0].daily_change_percent, null);
+    assert.equal(rows[1].daily_change_amount, 0);
+    assert.equal(rows[2].daily_change_amount, null);
+    const sold = rows.find(row => row.symbol === 'SOLD');
+    assert.equal(sold.daily_change_amount, null);
+    assert.equal(sold.daily_change_percent, null);
+    assert.equal(sold.today_only, true);
+    assert.equal(sold.market_value, 0);
+    assert.equal(sold.trade_activity, closed.trade_activity);
+    assert.equal(TodayPnl.activity(sold).kind, 'closed');
+    assert.equal(TodayPnl.displayPrice(sold), 24.99);
+    const absent = TodayPnl.project([{ symbol: 'NIGHT-USD' }], {
+        date, intraday: [{ ...point, asset_changes: [] }],
+    }, date)[0];
+    assert.equal(absent.daily_change_amount, null);
+    assert.equal(absent.daily_change_percent, null);
+});
+
+test('explicit unavailable holding values never fall back to stale totals or returns', () => {
+    const point = {
+        holdings_daily_pnl: null, daily_pnl: 4299.16, daily_pnl_percent: 0,
+        baseline_value: 0, missing_baseline_symbols: ['NIGHT-USD', 'NIGHT-USD'],
+    };
+    const view = TodayPnl.valuation(point);
+    assert.equal(view.holdings, null);
+    assert.equal(view.display, null);
+    assert.equal(view.percent, null);
+    assert.equal(view.partial, true);
+    assert.equal(view.available, false);
+    assert.deepEqual(view.missingSymbols, ['NIGHT-USD']);
+    view.missingSymbols.push('OTHER');
+    assert.deepEqual(point.missing_baseline_symbols, ['NIGHT-USD', 'NIGHT-USD']);
+    const legacy = TodayPnl.valuation({ daily_pnl: 20, daily_pnl_percent: 10 });
+    assert.equal(legacy.holdings, 20);
+    assert.equal(legacy.display, 20);
+    assert.equal(legacy.percent, 10);
+    assert.equal(legacy.partial, false);
+    assert.equal(legacy.available, true);
+    assert.deepEqual(legacy.missingSymbols, []);
+});
+
+test('unavailable asset percentage remains null even when the amount is known', () => {
+    const rows = TodayPnl.project([{ symbol: 'AAPL' }], {
+        date, intraday: [{ holdings_complete: true,
+            asset_changes: [{ symbol: 'AAPL', pnl: 20, pnl_percent: null }] }],
+    }, date);
+    assert.equal(rows[0].daily_change_amount, 20);
+    assert.equal(rows[0].daily_change_percent, null);
+});
+
+test('partial holdings keep existing option contribution behavior without inventing unavailable totals', () => {
+    const point = {
+        holdings_daily_pnl: 1000, daily_pnl: 1000, daily_pnl_percent: 2,
+        baseline_value: 50000, missing_baseline_symbols: ['NIGHT-USD'],
+        options_present: true, options_complete: true, option_daily_pnl: -150,
+    };
+    const known = TodayPnl.valuation(point);
+    assert.equal(known.complete, true);
+    assert.equal(known.contribution, -150);
+    assert.equal(known.display, 850);
+    assert.ok(Math.abs(known.percent - 1.7) < 1e-12);
+    assert.equal(known.partial, true);
+    const missing = TodayPnl.valuation({ ...point, holdings_daily_pnl: null });
+    assert.equal(missing.complete, true);
+    assert.equal(missing.options, -150);
+    assert.equal(missing.contribution, -150);
+    assert.equal(missing.display, null);
+    assert.equal(missing.percent, null);
+    assert.equal(missing.available, false);
+    const pending = TodayPnl.valuation({ ...point, options_complete: false, option_daily_pnl: null });
+    assert.equal(pending.complete, false);
+    assert.equal(pending.contribution, 0);
+    assert.equal(pending.display, 1000);
+    assert.equal(pending.percent, 2);
+    assert.equal(pending.partial, true);
+});
+
+test('holdings fallback excludes unknown assets from both gain and percentage basis', () => {
+    const view = TodayPnl.holdingsView([
+        { symbol: 'NIGHT-USD', market_value: 4299.16, daily_change_amount: null },
+        { symbol: 'AAPL', market_value: 220, daily_change_amount: 20 },
+        { symbol: 'CASH', market_value: 10000, daily_change_amount: 50 },
+    ]);
+    assert.equal(view.display, 20);
+    assert.equal(view.percent, 10);
+    assert.equal(view.partial, true);
+    assert.equal(view.available, true);
+    assert.deepEqual(view.missingSymbols, ['NIGHT-USD']);
+});
+
+test('holdings fallback distinguishes unknown, pending, zero and cash-only totals', () => {
+    const missing = TodayPnl.holdingsView([
+        { symbol: 'NIGHT-USD', market_value: 4299.16, daily_change_amount: null },
+        { symbol: 'AAPL', market_value: 220, daily_change_amount: null, today_pending: true },
+        { symbol: 'CASH', market_value: 10000, daily_change_amount: 0 },
+    ]);
+    assert.equal(missing.display, null);
+    assert.equal(missing.percent, null);
+    assert.equal(missing.partial, true);
+    assert.equal(missing.available, false);
+    assert.deepEqual(missing.missingSymbols, ['NIGHT-USD']);
+    const zero = TodayPnl.holdingsView([
+        { symbol: 'AAPL', market_value: 200, daily_change_amount: 0 },
+    ]);
+    assert.equal(zero.display, 0);
+    assert.equal(zero.percent, 0);
+    assert.equal(zero.partial, false);
+    assert.equal(zero.available, true);
+    for (const holdings of [undefined, [], [{ symbol: 'CASH', market_value: 10000 }]]) {
+        const cash = TodayPnl.holdingsView(holdings);
+        assert.equal(cash.display, 0);
+        assert.equal(cash.percent, null);
+        assert.equal(cash.partial, false);
+        assert.equal(cash.available, true);
+        assert.deepEqual(cash.missingSymbols, []);
+    }
+});
+
 function navigationContext() {
     const picker = { value: '2026-09-07', max: '2026-09-07' };
     const next = {}, prev = {}, events = [];
