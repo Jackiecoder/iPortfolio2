@@ -151,6 +151,9 @@
                 record.date, record.currency, record.base_currency, record.from_currency, record.to_currency, names.get(Number(record.product_id)), record.project_name, projectNames.get(Number(record.project_id)), ...(record.participants || []).flatMap(p => [p.name, p.note, p.currency])].some(v => String(v || '').toLocaleLowerCase().includes(query));
         }).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || Number(b.id) - Number(a.id));
     }
+    function isZeroPriceSale(record) {
+        return record.kind === 'sale' && decimalParts(record.unit_price)?.coefficient === 0n;
+    }
     function renderRows(records, section, products = [], privateMode = false, projects = []) {
         const names = new Map(products.map(p => [Number(p.id), p]));
         const projectNames = new Map(projects.map(p => [Number(p.id), p.name]));
@@ -186,17 +189,17 @@
                 title = sensitive(product?.name || '商品', privateMode);
                 subtitle = `${quantity(record.quantity, privateMode)} ${sensitive(product?.unit || '件', privateMode)}${record.counterparty ? ` · ${sensitive(record.counterparty, privateMode)}` : ''}${record.note ? ` · ${sensitive(record.note, privateMode)}` : ''}`;
                 amount = money(record.total, record.currency, privateMode);
-                secondary = record.kind === 'opening' ? '期初成本' : record.remaining_payment > 0 ? `${record.kind === 'sale' ? '待收' : '待付'} ${money(record.remaining_payment, record.currency, privateMode)}` : '已结清';
+                secondary = isZeroPriceSale(record) && !privateMode ? '无需收款' : record.kind === 'opening' ? '期初成本' : record.remaining_payment > 0 ? `${record.kind === 'sale' ? '待收' : '待付'} ${money(record.remaining_payment, record.currency, privateMode)}` : '已结清';
                 income = type === 'sale';
                 const baseCurrency = record.base_currency || product?.currency || record.currency;
                 const baseTotal = record.base_total ?? record.total;
                 subtitle += `<span class="finance-row-base">库存核算 ${money(baseTotal, baseCurrency, privateMode)}${income ? ` · 毛利 ${money(record.realized_profit, baseCurrency, privateMode)}` : ''}</span>`;
                 if (record.project_id) subtitle += `<span class="finance-row-project">项目 ${sensitive(record.project_name || projectNames.get(Number(record.project_id)), privateMode)}</span>`;
             }
-            const statusLabel = section === 'movements' && !record.voided ? (record.kind === 'opening' ? '期初库存' : record.status === 'unpaid' ? (income ? '未收款' : '未付款') : record.status === 'partial' ? (income ? '部分收款' : '部分付款') : income ? '已收清' : '已付清') : undefined;
+            const statusLabel = section === 'movements' && !record.voided ? (isZeroPriceSale(record) && !privateMode ? '无需收款' : record.kind === 'opening' ? '期初库存' : record.status === 'unpaid' ? (income ? '未收款' : '未付款') : record.status === 'partial' ? (income ? '部分收款' : '部分付款') : income ? '已收清' : '已付清') : undefined;
             return `<article class="finance-row ${record.voided ? 'is-void' : ''}">
                 <div class="finance-row-date">${sensitive(record.date, privateMode)}</div>
-                <div class="finance-row-main"><div class="finance-row-title"><strong>${title}</strong>${badge(status, statusLabel)}${section === 'movements' && record.kind !== 'opening' ? badge(type) : ''}</div><div class="finance-row-note">${subtitle}</div></div>
+                <div class="finance-row-main"><div class="finance-row-title"><strong>${title}</strong>${badge(status, statusLabel)}${section === 'movements' && record.kind !== 'opening' ? badge(type, isZeroPriceSale(record) && !privateMode ? '赠送 / 零价出货' : undefined) : ''}</div><div class="finance-row-note">${subtitle}</div></div>
                 <div class="finance-row-money ${income ? 'is-income' : ''}"><strong>${amount}</strong><small>${secondary}</small></div>
                 <button type="button" class="btn finance-detail-button" data-finance-detail="${escape(section)}" data-id="${Number(record.id)}"${privateMode ? ' disabled' : ''}>详情</button>
             </article>`;
@@ -558,7 +561,7 @@
             } else if (type === 'movements') {
                 const availableProducts = state.products.filter(p => !p.voided && currencies.includes(p.currency));
                 if (!availableProducts.length) { openEditor('products'); return; }
-                title = record ? '编辑进出货' : '记录进出货'; intro = '单价与最初已收付金额使用货款币种。库存与毛利折算到商品的库存核算币种；后续分次收付款保留在详情历史中。';
+                title = record ? '编辑进出货' : '记录进出货'; intro = '赠送商品时选择「出货」，单价和已收付金额都填 0。库存照常扣减，商品成本计入出货毛利。单价与最初已收付金额使用货款币种。';
                 const product = availableProducts.find(p => p.id === r.product_id) || availableProducts[0];
                 const locked = Boolean(r.payments?.length);
                 if (locked) intro += ' 已有收付款历史，货款币种不可修改，库存折算汇率仍可更正。';
@@ -620,7 +623,8 @@
             const paid = $('financeForm').elements.namedItem('paid_amount');
             paid.disabled = opening;
             if (opening) paid.value = 0;
-            $('financeMovementHint').textContent = `${product ? `库存核算币种 ${product.currency}；当前库存 ${quantity(product.quantity)} ${product.unit}。` : ''}${opening ? '期初库存只记录数量与成本，不记录货款收付。' : `货款与最初已收付金额使用 ${invoiceCurrency}；${read('kind') === 'sale' ? '出货毛利按库存核算币种的移动平均成本计算。' : '后续收付款可在详情中继续记录。'}`}`;
+            const zeroSale = isZeroPriceSale({ kind: read('kind'), unit_price: read('unit_price') });
+            $('financeMovementHint').textContent = `${product ? `库存核算币种 ${product.currency}；当前库存 ${quantity(product.quantity)} ${product.unit}。` : ''}${opening ? '期初库存只记录数量与成本，不记录货款收付。' : zeroSale ? '赠送 / 零价出货：已收付金额请填 0，不产生待收款；库存照常扣减，毛利为这批商品成本的负数。可在对方和备注中记录赠送对象与用途。' : `货款与最初已收付金额使用 ${invoiceCurrency}；${read('kind') === 'sale' ? '出货单价允许为 0，用于赠送；出货毛利按库存核算币种的移动平均成本计算。' : '后续收付款可在详情中继续记录。'}`}`;
         }
         function updatePaymentPreview(event) {
             if (editor?.type !== 'payments' || !currencies.includes(editor.parent.currency)) return;
@@ -716,7 +720,7 @@
             if (!record) return;
             const r = type === 'projects' ? projectSnapshot(record) : record;
             const p = privateMode(), text = value => sensitive(value, p), cash = value => (type === 'projects' ? projectMoney : money)(value, r.currency, p);
-            const movementStatus = type === 'movements' && !r.voided ? r.kind === 'opening' ? '期初库存' : r.status === 'unpaid' ? (r.kind === 'sale' ? '未收款' : '未付款') : r.status === 'partial' ? (r.kind === 'sale' ? '部分收款' : '部分付款') : (r.kind === 'sale' ? '已收清' : '已付清') : undefined;
+            const movementStatus = type === 'movements' && !r.voided ? isZeroPriceSale(r) ? '无需收款' : r.kind === 'opening' ? '期初库存' : r.status === 'unpaid' ? (r.kind === 'sale' ? '未收款' : '未付款') : r.status === 'partial' ? (r.kind === 'sale' ? '部分收款' : '部分付款') : (r.kind === 'sale' ? '已收清' : '已付清') : undefined;
             let fields = [detailField('日期', text(r.date)), detailField('状态', badge(r.voided ? 'void' : r.status || r.direction, movementStatus))];
             if (type === 'transfers') {
                 fields.push(detailField('转账类型', escape(labels[r.direction])), detailField('金额', cash(r.amount)), detailField('对方', text(r.counterparty)), detailField('转账方式', text(r.method)), detailField('转出账户', text(r.from_account)), detailField('转入账户', text(r.to_account)), detailField('凭证或参考编号', text(r.reference), true));
@@ -741,7 +745,7 @@
                 const product = state.products.find(p => p.id === r.product_id);
                 const baseCurrency = r.base_currency || product?.currency || r.currency;
                 const baseCash = value => money(value, baseCurrency, p);
-                fields.push(detailField('记录类型', escape(labels[r.kind])), detailField('商品', text(product?.name)), detailField('数量', `${quantity(r.quantity, p)} ${text(product?.unit)}`), detailField('单位价格 / 成本（货款币种）', cash(r.unit_price)), detailField('原币种货款总额', cash(r.total)), detailField('库存核算币种', escape(baseCurrency)), detailField('库存折算汇率', `1 ${escape(r.currency)} = ${formatRate(r.exchange_rate ?? 1, p)} ${escape(baseCurrency)}`), detailField('折算库存核算金额', baseCash(r.base_total ?? r.total)), detailField('最初已收付（货款币种）', cash(r.initial_paid_amount)), detailField(r.kind === 'sale' ? '累计已收款（折抵货款）' : '累计已付款（折抵货款）', cash(r.paid_amount)), detailField(r.kind === 'sale' ? '待收货款' : '待付货款', cash(r.remaining_payment)), detailField('供应商或客户', text(r.counterparty)));
+                fields.push(detailField('记录类型', escape(isZeroPriceSale(r) ? '赠送 / 零价出货' : labels[r.kind])), detailField('商品', text(product?.name)), detailField('数量', `${quantity(r.quantity, p)} ${text(product?.unit)}`), detailField('单位价格 / 成本（货款币种）', cash(r.unit_price)), detailField('原币种货款总额', cash(r.total)), detailField('库存核算币种', escape(baseCurrency)), detailField('库存折算汇率', `1 ${escape(r.currency)} = ${formatRate(r.exchange_rate ?? 1, p)} ${escape(baseCurrency)}`), detailField('折算库存核算金额', baseCash(r.base_total ?? r.total)), detailField('最初已收付（货款币种）', cash(r.initial_paid_amount)), detailField(r.kind === 'sale' ? '累计已收款（折抵货款）' : '累计已付款（折抵货款）', cash(r.paid_amount)), detailField(r.kind === 'sale' ? '待收货款' : '待付货款', cash(r.remaining_payment)), detailField('供应商或客户', text(r.counterparty)));
                 if (r.kind === 'sale') fields.push(detailField('出货成本（库存核算币种）', baseCash(r.cost_of_goods)), detailField('出货毛利（库存核算币种）', baseCash(r.realized_profit)));
                 if (r.project_id) fields.push(detailField('关联项目', `<button type="button" class="btn finance-project-link" data-finance-detail="projects" data-id="${Number(r.project_id)}">${text(r.project_name || state.projects.find(project => project.id === r.project_id)?.name)}</button>`));
             }

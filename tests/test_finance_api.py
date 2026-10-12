@@ -140,6 +140,23 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 422)
             self.assertEqual(write.call_count, 1)
 
+    async def test_zero_price_sale_create_and_edit_are_accepted_without_weakening_number_guards(self):
+        gift = dict(date='2026-01-03', product_id=1, kind='sale', quantity=4, unit_price=0,
+                    paid_amount=0, note='Gifted merchandise', request_id=str(uuid4()))
+        with patch.object(finance_api.repository, 'create_record', return_value=self.state) as create, \
+             patch.object(finance_api.repository, 'update_record', return_value=self.state) as update:
+            response = await self.client.post('/api/finance/movements', json=gift, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(request_data(create.call_args.args[1])['unit_price'], '0')
+            changed = {key: value for key, value in gift.items() if key != 'request_id'}
+            response = await self.client.put('/api/finance/movements/7', json={**changed, 'unit_price': '0.000000', 'version': 1}, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(request_data(update.call_args.args[2])['unit_price'], '0')
+            for values in (dict(unit_price=-1), dict(quantity=0), dict(paid_amount='.000001')):
+                response = await self.client.post('/api/finance/movements', json={**gift, **values}, headers=self.headers)
+                self.assertEqual(response.status_code, 422)
+            self.assertEqual((create.call_count, update.call_count), (1, 1))
+
     async def test_inventory_payment_fx_fields_do_not_change_loan_payment_schema(self):
         payment = dict(date='2026-01-01', amount=50, currency='USD', exchange_rate=7, request_id=str(uuid4()))
         with patch.object(finance_api.repository, 'create_payment', return_value=self.state) as write:

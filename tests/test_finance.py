@@ -412,6 +412,42 @@ class FinanceReplayTests(unittest.TestCase):
         self.assertEqual((values['purchase_total'], values['sales_total'], values['payable'], values['receivable']), (300, 120, 225, 100))
         self.assertEqual(self.state['movements'][2]['paid_amount'], '50')
 
+    def test_zero_price_gift_deducts_moving_average_cost_without_payment_balance(self):
+        for currency, rate in (('USD', 1), ('CNY', '.125')):
+            with self.subTest(currency=currency):
+                gift = movement(3, date='2026-01-04', kind='sale', quantity=4, unit_price=0,
+                                currency=currency, exchange_rate=rate, note='Gifted merchandise')
+                self.state['movements'] = [gift,
+                    movement(2, date='2026-01-03', quantity=10, unit_price=20, paid_amount=200),
+                    movement(quantity=10, unit_price=10, paid_amount=100)]
+                result = replay(self.state)
+                saved = result['movements'][0]
+                self.assertEqual((saved['total'], saved['base_total'], saved['paid_amount'],
+                                  saved['remaining_payment'], saved['status']), (0, 0, 0, 0, 'paid'))
+                self.assertEqual((saved['cost_of_goods'], saved['realized_profit']), (60, -60))
+                stock = result['products'][0]
+                self.assertEqual((stock['quantity'], stock['average_cost'], stock['inventory_cost'],
+                                  stock['realized_profit']), (16, 15, 240, -60))
+                for values in result['summary']:
+                    self.assertEqual((values['sales_total'], values['payable'], values['receivable']), (0, 0, 0))
+                gift['voided'] = True
+                stock = replay(self.state)['products'][0]
+                self.assertEqual((stock['quantity'], stock['inventory_cost'], stock['realized_profit']), (20, 300, 0))
+
+    def test_zero_price_last_gift_clears_cost_and_rejects_receipts(self):
+        gift = movement(2, date='2026-01-03', kind='sale', quantity=3, unit_price='0.000000')
+        self.state['movements'] = [movement(quantity=3, unit_price='.333333', paid_amount='.999999'), gift]
+        result = replay(self.state)
+        saved = result['movements'][0]
+        self.assertEqual((saved['cost_of_goods'], saved['realized_profit']), (.999999, -.999999))
+        self.assertEqual((result['products'][0]['quantity'], result['products'][0]['inventory_cost']), (0, 0))
+        self.assertEqual((result['summary'][0]['payable'], result['summary'][0]['receivable']), (0, 0))
+        with self.assertRaisesRegex(ValidationError, 'Paid amount cannot exceed'):
+            movement(kind='sale', unit_price=0, paid_amount='.000001')
+        gift['payments'] = [inventory_payment(amount='.000001')]
+        with self.assertRaisesRegex(FinanceError, 'Payments cannot exceed'):
+            replay(self.state)
+
     def test_backdated_sale_or_voided_purchase_cannot_create_negative_stock(self):
         self.state['movements'] = [movement(), movement(2, date='2026-01-01', kind='sale', quantity=1)]
         with self.assertRaisesRegex(FinanceError, 'Insufficient inventory'):

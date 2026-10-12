@@ -47,6 +47,28 @@ test('partial payments validate against outstanding, not original principal', ()
     assert.equal(FinanceUI.validatePayload('movements', { date: '2026-10-01', kind: 'purchase', product_id: 3, quantity: 10, unit_price: 20, paid_amount: 150 }, movement), '');
 });
 
+test('zero-price sale is valid but cannot hide existing receipts or create a receivable', () => {
+    const values = { date: '2026-10-01', kind: 'sale', product_id: 3, quantity: '2', unit_price: '0', paid_amount: '0', currency: 'USD', exchange_rate: '1', base_currency: 'USD' };
+    assert.equal(FinanceUI.validatePayload('movements', values), '');
+    assert.match(FinanceUI.validatePayload('movements', { ...values, quantity: '0' }), /数量/);
+    assert.match(FinanceUI.validatePayload('movements', { ...values, unit_price: '-1' }), /单价/);
+    assert.match(FinanceUI.validatePayload('movements', { ...values, paid_amount: '0.000001' }), /总金额/);
+    assert.match(FinanceUI.validatePayload('movements', values, { ...movement, kind: 'sale' }), /后续收付款/);
+    assert.match(FinanceUI.validatePayload('payments', { date: '2026-10-02', amount: '1', currency: 'USD', exchange_rate: '1' }, { ...movement, kind: 'sale', remaining_payment: 0 }), /余额/);
+});
+
+test('gift labels use zero unit price rather than a rounded invoice and do not reveal zero price in privacy mode', () => {
+    const gift = { ...movement, kind: 'sale', unit_price: 0, total: 0, base_total: 0, paid_amount: 0, remaining_payment: 0, realized_profit: -40, status: 'paid' };
+    const shown = FinanceUI.renderRows([gift], 'movements', [product]);
+    assert.match(shown, /赠送 \/ 零价出货/); assert.match(shown, /无需收款/); assert.match(shown, /毛利 USD -40.00/);
+    for (const other of [{ ...gift, unit_price: 0.000001 }, { ...gift, kind: 'purchase' }, { ...gift, unit_price: undefined }]) {
+        assert.doesNotMatch(FinanceUI.renderRows([other], 'movements', [product]), /赠送 \/ 零价出货/);
+    }
+    const hidden = FinanceUI.renderRows([gift], 'movements', [product], true);
+    assert.doesNotMatch(hidden, /赠送|无需收款|-40.00|USD 0.00/);
+    assert.match(FinanceUI.renderRows([{ ...gift, voided: true }], 'movements', [product]), /已作废/);
+});
+
 test('idempotency retains UUID for unchanged retries and replaces it for changed payloads', () => {
     let counter = 0;
     const track = FinanceUI.createRequestTracker(() => `request-${++counter}`);
@@ -119,6 +141,24 @@ test('demo initialization never accesses finance data', async () => {
     const f = fixture({ demo: true });
     await f.ui.load(); f.ui.refreshPrivacy();
     assert.equal(f.requests.length, 0);
+});
+
+test('gift editor explains zero price, preserves explicit zero on save, and details offer no receipt action', async () => {
+    const gift = { ...movement, kind: 'sale', unit_price: 0, total: 0, base_total: 0, paid_amount: 0, initial_paid_amount: 0, remaining_payment: 0, cost_of_goods: 40, realized_profit: -40, status: 'paid', payments: [] };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [gift] }) }));
+    await f.ui.load(); f.click({ financeDetail: 'movements', id: '4' });
+    assert.match(f.element('financeDetailsBody').innerHTML, /赠送 \/ 零价出货/);
+    assert.match(f.element('financeDetailsBody').innerHTML, /无需收款/);
+    assert.doesNotMatch(f.element('financeDetailsActions').innerHTML, /data-finance-payment/);
+    f.click({ financeEdit: 'movements', id: '4' }, true);
+    assert.match(f.element('financeFormIntro').textContent, /单价和已收付金额都填 0/);
+    assert.match(f.element('financeFormFields').innerHTML, /name="unit_price"[^>]*min="0"/);
+    assert.match(f.element('financeMovementHint').textContent, /不产生待收款/);
+    assert.equal(f.element('financeMovementTotal').textContent, 'USD 0.00');
+    await f.submit();
+    const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.unit_price, '0'); assert.equal(payload.paid_amount, '0');
+    assert.equal(payload.kind, 'sale'); assert.equal(payload.version, 2);
 });
 
 test('editing inventory payment uses initial amount and preserves subsequent payments', async () => {

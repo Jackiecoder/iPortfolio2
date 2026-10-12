@@ -154,6 +154,63 @@ class FinancePostgresTests(unittest.TestCase):
         self.assertEqual(self.row_count('finance_audit'), 3)
         self.assertEqual(self.row_count('transactions'), 0)
 
+    def test_zero_price_gift_persists_retries_edits_and_void_restores_stock(self):
+        ledger.create_record('products', self.product())
+        ledger.create_record('movements', self.movement(paid_amount=100))
+        ledger.create_record('movements', self.movement(date='2026-01-03', unit_price=20, paid_amount=200))
+        gift = self.movement(date='2026-01-04', kind='sale', quantity=4, unit_price=0,
+                             paid_amount=0, note='Gifted merchandise')
+        first = ledger.create_record('movements', gift)
+        saved = first['movements'][0]
+        self.assertEqual((saved['total'], saved['paid_amount'], saved['remaining_payment'], saved['status']), (0, 0, 0, 'paid'))
+        self.assertEqual((saved['cost_of_goods'], saved['realized_profit']), (60, -60))
+        self.assertEqual((first['products'][0]['quantity'], first['products'][0]['inventory_cost']), (16, 240))
+        self.assertEqual((first['summary'][0]['sales_total'], first['summary'][0]['payable'], first['summary'][0]['receivable']), (0, 0, 0))
+        with self.pool.connection() as conn:
+            self.assertEqual(conn.execute('SELECT payload FROM finance_movements WHERE id=3').fetchone()[0]['unit_price'], '0')
+        retry = self.movement(request_id=gift.request_id, date='2026-01-04', kind='sale', quantity='4.000000',
+                              unit_price='0.000000', paid_amount='0.000000', note='Gifted merchandise')
+        self.assertEqual(ledger.create_record('movements', retry), first)
+        with self.assertRaisesRegex(FinanceError, 'Payments cannot exceed'):
+            ledger.create_payment('movements', 3, self.inventory_payment(date='2026-01-04', amount='.000001'))
+        self.assertEqual(ledger.list_finance(), first)
+        self.assertEqual((self.row_count('finance_payments'), self.row_count('finance_audit')), (0, 4))
+        changed = ledger.update_record('movements', 3, MovementUpdate(date='2026-01-04', product_id=1,
+                      kind='sale', quantity=6, unit_price=0, paid_amount=0, note='Gifted merchandise', version=1))
+        self.assertEqual((changed['movements'][0]['cost_of_goods'], changed['movements'][0]['realized_profit']), (90, -90))
+        self.assertEqual((changed['products'][0]['quantity'], changed['products'][0]['inventory_cost']), (14, 210))
+        self.assertEqual(ledger.list_finance(), changed)
+        final = ledger.void_record('movements', 3, 2)
+        self.assertEqual((final['products'][0]['quantity'], final['products'][0]['inventory_cost'], final['products'][0]['realized_profit']), (20, 300, 0))
+        self.assertEqual(final['movements'][0]['status'], 'void')
+        self.assertEqual((self.row_count('finance_movements'), self.row_count('finance_audit'), self.row_count('transactions')), (3, 6, 0))
+
+    def test_edit_to_zero_price_preserves_receipts_and_requires_them_voided_first(self):
+        ledger.create_record('products', self.product())
+        ledger.create_record('movements', self.movement(paid_amount=100))
+        ledger.create_record('movements', self.movement(date='2026-01-03', kind='sale', quantity=4, unit_price=20))
+        paid = ledger.create_payment('movements', 2, self.inventory_payment(date='2026-01-03', amount=10))
+        zero_fields = dict(date='2026-01-03', product_id=1, kind='sale', quantity=4, unit_price=0, paid_amount=0)
+        with self.assertRaisesRegex(FinanceError, 'Payments cannot exceed'):
+            ledger.update_record('movements', 2, MovementUpdate(**zero_fields, version=2))
+        self.assertEqual(ledger.list_finance(), paid)
+        self.assertEqual((self.row_count('finance_payments'), self.row_count('finance_audit')), (1, 5))
+        ledger.void_payment('movements', 2, 1, 1)
+        changed = ledger.update_record('movements', 2, MovementUpdate(**zero_fields, version=3))
+        saved = changed['movements'][0]
+        self.assertEqual((saved['total'], saved['paid_amount'], saved['remaining_payment'], saved['status']), (0, 0, 0, 'paid'))
+        self.assertEqual((saved['cost_of_goods'], saved['realized_profit']), (40, -40))
+        self.assertTrue(saved['payments'][0]['voided'])
+        self.assertEqual(changed['summary'][0]['receivable'], 0)
+        with self.pool.connection() as conn:
+            self.assertEqual(conn.execute('SELECT payload FROM finance_payments WHERE id=1').fetchone()[0]['amount'], '10')
+        initial_paid = ledger.create_record('movements', self.movement(date='2026-01-04', kind='sale',
+                                            quantity=1, unit_price=20, paid_amount=5))
+        with self.assertRaisesRegex(ValueError, 'Paid amount cannot exceed'):
+            ledger.update_record('movements', 3, MovementUpdate(date='2026-01-04', product_id=1,
+                                 kind='sale', quantity=1, unit_price=0, paid_amount=5, version=1))
+        self.assertEqual(ledger.list_finance(), initial_paid)
+
     def test_purchase_payments_and_product_history_protection(self):
         ledger.create_record('products', self.product())
         ledger.create_record('movements', self.movement(paid_amount=20))

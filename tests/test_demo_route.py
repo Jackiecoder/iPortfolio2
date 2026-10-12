@@ -35,4 +35,4 @@ class DemoRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('data-portfolio-mode="personal"', response.text)
             self.assertNotIn('src="/static/js/demo-portfolio.js', response.text)
             self.assertIn('id="finance-tab"', response.text)
-            self.assertIn('src="/static/js/finance.js?v=5"', response.text)
+            self.assertIn('src="/static/js/finance.js?v=6"', response.text)

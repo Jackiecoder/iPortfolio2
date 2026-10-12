@@ -40,6 +40,9 @@ holdings, cash snapshots, or portfolio returns. The public demo does not load it
   may use a different currency and an explicit rate into the invoice currency.
   The original payment amount and its invoice-equivalent amount are both saved.
   Invoice currency is fixed once any payment history exists.
+  For gifts or zero-price consumption, record a sale with unit price and paid
+  amount both zero. Stock and its moving-average cost still leave inventory,
+  gross profit is negative cost, and no receivable or receipt is created.
 - **合资项目** records each participant's contribution amount and currency,
   an explicit exchange rate into the project's fixed accounting currency, and
   their automatically calculated contribution percentage. Planned dividend
