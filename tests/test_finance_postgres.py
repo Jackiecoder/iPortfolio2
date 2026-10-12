@@ -57,6 +57,14 @@ class FinancePostgresTests(unittest.TestCase):
     def movement(self, **values):
         return MovementCreate(**dict(dict(request_id=uuid4(), date='2026-01-02', product_id=1, kind='purchase', quantity=10, unit_price=10), **values))
 
+    def product_transaction(self, **values):
+        return MovementCreate(**dict(dict(request_id=uuid4(), date='2026-01-02', product_id=1,
+                                          kind='purchase', quantity=3, total_amount=100), **values))
+
+    def product_expense(self, **values):
+        return MovementCreate(**dict(dict(request_id=uuid4(), date='2026-01-01', product_id=1,
+                                          kind='expense', category='物流', total_amount=20), **values))
+
     def payment(self, **values):
         return PaymentCreate(**dict(dict(request_id=uuid4(), date='2026-01-03', amount=40), **values))
 
@@ -346,6 +354,150 @@ class FinancePostgresTests(unittest.TestCase):
             results = list(executor.map(lambda _: sell(), range(2)))
         self.assertEqual(sum(r is not None for r in results), 1)
         self.assertEqual(ledger.list_finance()['products'][0]['quantity'], 3)
+
+    def test_product_cost_entries_persist_before_stock_and_recalculate_after_sold_out(self):
+        ledger.create_record('products', self.product())
+        fee = self.product_expense(handler='Carrier agent', payer='Kevin', recipient='Carrier')
+        pending = ledger.create_record('movements', fee)
+        self.assertEqual((pending['products'][0]['inventory_cost'], pending['products'][0]['unallocated_cost']), (0, 20))
+        ledger.create_record('movements', self.product_transaction())
+        ledger.create_record('movements', self.product_transaction(date='2026-01-03', kind='sale',
+                             quantity=3, total_amount=150, handler='Sales agent'))
+        sold = ledger.list_finance()
+        self.assertEqual((sold['products'][0]['inventory_cost'], sold['products'][0]['realized_profit']), (0, 30))
+        late = ledger.create_record('movements', self.product_expense(date='2026-01-04', total_amount=6, category='包装'))
+        self.assertEqual((late['products'][0]['total_cost'], late['products'][0]['realized_profit']), (126, 24))
+        saved = next(entry for entry in late['movements'] if entry['kind'] == 'sale')
+        self.assertEqual((saved['cost_of_goods'], saved['realized_profit'], saved['handler']), (126, 24, 'Sales agent'))
+        changed = ledger.update_record('movements', 4, MovementUpdate(date='2026-01-04', product_id=1,
+                     kind='expense', total_amount=9, version=1))
+        self.assertEqual(changed['products'][0]['realized_profit'], 21)
+        self.assertEqual(changed['movements'][0]['category'], '包装')
+        final = ledger.void_record('movements', 4, 2)
+        self.assertEqual(final['products'][0]['realized_profit'], 30)
+        self.assertEqual(ledger.list_finance(), final)
+        self.assertEqual(ledger.create_record('movements', fee), final)
+        self.assertEqual(self.row_count('transactions'), 0)
+
+    def test_total_input_round_trip_and_switching_price_modes_remove_stale_fields(self):
+        ledger.create_record('products', self.product())
+        request = self.product_transaction(total_amount='1.000000', handler='Kevin')
+        first = ledger.create_record('movements', request)
+        saved = first['movements'][0]
+        self.assertEqual(saved['request_fields']['total_amount'], '1')
+        self.assertNotIn('unit_price', saved['request_fields'])
+        repeated = self.product_transaction(request_id=request.request_id, total_amount='1.0', handler=' Kevin ')
+        self.assertEqual(ledger.create_record('movements', repeated), first)
+        exact_edit = ledger.update_record('movements', 1, MovementUpdate(**saved['request_fields'], version=1))
+        self.assertEqual(exact_edit['movements'][0]['total'], 1)
+        unit_edit = ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1,
+                    kind='purchase', quantity=3, unit_price=2, version=2))
+        self.assertEqual((unit_edit['movements'][0]['total'], unit_edit['movements'][0]['price_basis']), (6, 'unit'))
+        total_edit = ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1,
+                     kind='purchase', quantity=3, total_amount=100, version=3))
+        self.assertEqual((total_edit['movements'][0]['total'], total_edit['movements'][0]['handler']), (100, 'Kevin'))
+        with self.pool.connection() as conn:
+            payload = conn.execute('SELECT payload FROM finance_movements WHERE id=1').fetchone()[0]
+        self.assertEqual(payload['total_amount'], '100')
+        self.assertNotIn('unit_price', payload)
+        self.assertNotIn('request_fields', payload)
+        cleared = ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1,
+                  kind='purchase', quantity=3, total_amount=100, handler='', version=4))
+        self.assertEqual(cleared['movements'][0]['handler'], '')
+        with self.assertRaisesRegex(FinanceError, 'different values'):
+            ledger.create_record('movements', self.product_transaction(request_id=request.request_id,
+                                 total_amount=1, handler='Someone else'))
+
+    def test_expense_kind_conversion_requires_category_and_settled_history_stays_locked(self):
+        ledger.create_record('products', self.product())
+        ledger.create_record('movements', self.product_transaction())
+        with self.assertRaisesRegex(FinanceError, 'expense category'):
+            ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1,
+                                 kind='expense', total_amount=20, version=1))
+        self.assertEqual(ledger.list_finance()['products'][0]['quantity'], 3)
+        converted = ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1,
+                    kind='expense', total_amount=20, category='Custom', version=1))
+        self.assertEqual((converted['products'][0]['quantity'], converted['products'][0]['unallocated_cost']), (0, 20))
+        paid = ledger.create_payment('movements', 1, self.inventory_payment(amount=5, handler='Pay agent'))
+        self.assertEqual(paid['movements'][0]['payments'][0]['handler'], 'Pay agent')
+        ledger.void_payment('movements', 1, 1, 1)
+        with self.assertRaisesRegex(FinanceError, 'Product and kind'):
+            ledger.update_record('movements', 1, MovementUpdate(date='2026-01-02', product_id=1,
+                    kind='purchase', quantity=3, total_amount=100, version=4))
+        self.assertEqual(ledger.list_finance()['movements'][0]['kind'], 'expense')
+
+    def test_cost_entry_native_partial_payments_preserve_totals_rates_and_each_handler(self):
+        ledger.create_record('products', self.product())
+        fee = self.product_expense(currency='CNY', exchange_rate='.125', total_amount=140,
+                                  paid_amount=20, handler='Invoice agent')
+        ledger.create_record('movements', fee)
+        ledger.create_record('movements', self.product_transaction())
+        paid = ledger.create_payment('movements', 1, self.inventory_payment(amount=5, currency='USD',
+                                     exchange_rate=8, handler='Cashier', payer='Partner', recipient='Carrier'))
+        entry = next(item for item in paid['movements'] if item['kind'] == 'expense')
+        self.assertEqual((entry['paid_amount'], entry['remaining_payment'], entry['base_total']), (60, 80, 17.5))
+        self.assertEqual((entry['handler'], entry['payments'][0]['handler']), ('Invoice agent', 'Cashier'))
+        self.assertEqual(paid['products'][0]['inventory_cost'], 117.5)
+        with self.assertRaisesRegex(FinanceError, 'Payments cannot exceed'):
+            ledger.create_payment('movements', 1, self.inventory_payment(amount=11, currency='USD', exchange_rate=8))
+        self.assertEqual(ledger.list_finance(), paid)
+        with self.pool.connection() as conn:
+            self.assertEqual(conn.execute('SELECT payload FROM finance_movements WHERE id=1').fetchone()[0]['total_amount'], '140')
+            self.assertEqual(conn.execute('SELECT payload FROM finance_payments WHERE id=1').fetchone()[0]['handler'], 'Cashier')
+
+    def test_reassigning_cost_between_profiles_rebalances_both_stock_and_sale_profit(self):
+        ledger.create_record('products', self.product())
+        ledger.create_record('products', self.product(name='Other Tea', sku='OTHER'))
+        ledger.create_record('movements', self.product_transaction(quantity=2))
+        ledger.create_record('movements', self.product_transaction(product_id=2, quantity=2))
+        ledger.create_record('movements', self.product_transaction(date='2026-01-03', kind='sale', quantity=1, total_amount=75))
+        before = ledger.create_record('movements', self.product_expense(date='2026-01-04', handler='Cost agent'))
+        profiles = {item['id']: item for item in before['products']}
+        self.assertEqual((profiles[1]['inventory_cost'], profiles[1]['realized_profit'], profiles[2]['inventory_cost']), (60, 15, 100))
+        changed = ledger.update_record('movements', 4, MovementUpdate(date='2026-01-04', product_id=2,
+                      kind='expense', total_amount=20, version=1))
+        profiles = {item['id']: item for item in changed['products']}
+        self.assertEqual((profiles[1]['inventory_cost'], profiles[1]['realized_profit'], profiles[2]['inventory_cost']), (50, 25, 120))
+        moved = next(item for item in changed['movements'] if item['id'] == 4)
+        self.assertEqual((moved['handler'], moved['category']), ('Cost agent', '物流'))
+        final = ledger.void_record('movements', 4, 2)
+        profiles = {item['id']: item for item in final['products']}
+        self.assertEqual((profiles[1]['inventory_cost'], profiles[1]['realized_profit'], profiles[2]['inventory_cost']), (50, 25, 100))
+        self.assertEqual(ledger.list_finance(), final)
+
+    def test_concurrent_cost_create_retry_edit_and_void_preserve_pool_and_versions(self):
+        ledger.create_record('products', self.product())
+        ledger.create_record('movements', self.product_transaction())
+        request = self.product_expense(date='2026-01-03', total_amount=10, handler='Agent')
+        barrier = threading.Barrier(2)
+        def create():
+            barrier.wait()
+            return ledger.create_record('movements', request)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: create(), range(2)))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(self.row_count('finance_movements'), 2)
+        self.assertEqual(self.row_count('finance_audit'), 3)
+        self.assertEqual(results[0]['products'][0]['total_cost'], 110)
+        barrier = threading.Barrier(2)
+        def change(action):
+            barrier.wait()
+            try:
+                if action == 'edit':
+                    return ledger.update_record('movements', 2, MovementUpdate(date='2026-01-03',
+                        product_id=1, kind='expense', total_amount=20, version=1))
+                return ledger.void_record('movements', 2, 1)
+            except FinanceError as error:
+                self.assertEqual(error.status_code, 409)
+                return None
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(change, ('edit', 'void')))
+        self.assertEqual(sum(result is not None for result in results), 1)
+        final = ledger.list_finance()
+        self.assertIn(final['products'][0]['total_cost'], (100, 120))
+        self.assertEqual(next(entry for entry in final['movements'] if entry['id'] == 2)['version'], 2)
+        self.assertEqual(self.row_count('finance_audit'), 4)
+        self.assertEqual(self.row_count('transactions'), 0)
 
     def test_competing_duplicate_requests_commit_once(self):
         request = self.transfer()

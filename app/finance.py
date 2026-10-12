@@ -1,7 +1,8 @@
 """Independent financial ledger, validated with exact decimal arithmetic.
 
-Inventory uses chronological moving-average cost. These records never become
-investment transactions or contribute to the portfolio's cash or performance.
+Inventory uses product-level pooled cost, with chronological stock validation.
+These records never become investment transactions or contribute to the
+portfolio's cash or performance.
 """
 from copy import deepcopy
 from datetime import date, datetime
@@ -71,11 +72,11 @@ class FinanceModel(BaseModel):
 
     @field_validator('amount', 'principal', 'quantity', 'unit_price', 'paid_amount',
                      'from_amount', 'to_amount', 'fee_amount', 'expected_profit',
-                     'contribution_amount', 'dividend_percent',
+                     'contribution_amount', 'dividend_percent', 'total_amount',
                      mode='before', check_fields=False)
     @classmethod
     def exact_number(cls, value, info):
-        if value is None and info.field_name == 'expected_profit':
+        if value is None and info.field_name in ('expected_profit', 'total_amount', 'quantity', 'unit_price'):
             return None
         if isinstance(value, bool):
             raise ValueError('Amount must be a number')
@@ -91,7 +92,7 @@ class FinanceModel(BaseModel):
             raise ValueError('Use at most 6 decimal places')
         if result < 0 or (result == 0 and info.field_name not in (
                 'unit_price', 'paid_amount', 'fee_amount', 'expected_profit',
-                'contribution_amount', 'dividend_percent')):
+                'contribution_amount', 'dividend_percent', 'total_amount')):
             raise ValueError('Amount must be positive')
         return result
 
@@ -269,9 +270,12 @@ class ProjectUpdate(ProjectFields):
 class MovementFields(MoneyActors):
     date: date
     product_id: int = Field(ge=1, strict=True)
-    kind: Literal['purchase', 'sale', 'opening']
-    quantity: Decimal
-    unit_price: Decimal
+    kind: Literal['purchase', 'sale', 'opening', 'expense']
+    quantity: Optional[Decimal] = None
+    unit_price: Optional[Decimal] = None
+    total_amount: Optional[Decimal] = None
+    category: str = Field(default='', max_length=100)
+    handler: str = Field(default='', max_length=200)
     paid_amount: Decimal = D(0)
     currency: Optional[str] = None
     exchange_rate: Optional[Decimal] = None
@@ -281,7 +285,23 @@ class MovementFields(MoneyActors):
 
     @model_validator(mode='after')
     def valid_initial_payment(self):
-        if self.paid_amount > rounded(self.quantity * self.unit_price):
+        if self.kind == 'expense':
+            if self.quantity is not None or self.unit_price is not None:
+                raise ValueError('Expenses use a total amount without quantity or unit price')
+            if self.total_amount is None or self.total_amount <= 0:
+                raise ValueError('Expense amount must be positive')
+            if not self.category and (not isinstance(self, MovementUpdate) or 'category' in self.model_fields_set):
+                raise ValueError('Enter an expense category')
+        else:
+            if self.quantity is None:
+                raise ValueError('Enter the transaction quantity')
+            if self.unit_price is None and self.total_amount is None:
+                raise ValueError('Enter a unit price or total amount')
+            if self.unit_price is not None and self.total_amount is not None and rounded(
+                    self.quantity * self.unit_price) != self.total_amount:
+                raise ValueError('Unit price and total amount do not match')
+        total = self.total_amount if self.total_amount is not None else rounded(self.quantity * self.unit_price)
+        if self.paid_amount > total:
             raise ValueError('Paid amount cannot exceed the movement total')
         if self.kind == 'opening' and self.paid_amount:
             raise ValueError('Opening inventory cannot have a payment')
@@ -306,6 +326,7 @@ class PaymentCreate(MoneyActors):
 class InventoryPaymentCreate(PaymentCreate):
     currency: Optional[str] = None
     exchange_rate: Optional[Decimal] = None
+    handler: str = Field(default='', max_length=200)
 
 
 CREATE_MODELS = {'transfers': TransferCreate, 'loans': LoanCreate,
@@ -334,7 +355,14 @@ def request_data(request):
     if values.get('project_id') is None:
         if not isinstance(request, MovementUpdate) or 'project_id' not in request.model_fields_set:
             values.pop('project_id', None)
-    for key in ('payer', 'recipient'):
+    if isinstance(request, (MovementCreate, MovementUpdate)):
+        for key in ('quantity', 'unit_price', 'total_amount'):
+            if values[key] is None:
+                values.pop(key)
+        # A supplied total is authoritative; the matching unit price is redundant.
+        if 'total_amount' in values:
+            values.pop('unit_price', None)
+    for key in ('payer', 'recipient', 'handler', 'category'):
         if key in values:
             is_update = isinstance(request, (TransferUpdate, LoanUpdate, MovementUpdate, ExchangeUpdate))
             if (is_update and key not in request.model_fields_set) or (not is_update and values[key] == ''):
@@ -496,6 +524,18 @@ def project_forecast(project):
     } for participant in project['participants']]
 
 
+def movement_request_fields(movement):
+    """Keep the original exact price input, never a rounded derived unit price."""
+    keys = ('date', 'product_id', 'kind', 'quantity', 'unit_price', 'total_amount',
+            'paid_amount', 'currency', 'exchange_rate', 'project_id', 'category',
+            'handler', 'counterparty', 'note', 'payer', 'recipient')
+    fields = {key: movement[key] for key in keys if key in movement}
+    for key in ('quantity', 'unit_price', 'total_amount', 'paid_amount', 'exchange_rate'):
+        if fields.get(key) is not None:
+            fields[key] = format(money(fields[key]).normalize(), 'f')
+    return fields
+
+
 def replay(state):
     """Validate the entire ledger and derive balances, stock and sales costs."""
     result = deepcopy(state)
@@ -511,6 +551,11 @@ def replay(state):
                 for payment in record.get(history, []):
                     payment.setdefault('payer', '')
                     payment.setdefault('recipient', '')
+            if kind == 'movements':
+                record.setdefault('handler', '')
+                record.setdefault('category', '')
+                for payment in record.get('payments', []):
+                    payment.setdefault('handler', '')
     summary = {}
 
     def bucket(currency):
@@ -519,7 +564,8 @@ def replay(state):
                 'transfer_in', 'transfer_out', 'transfer_net', 'lent_outstanding',
                 'borrowed_outstanding', 'inventory_cost', 'purchase_total',
                 'sales_total', 'payable', 'receivable', 'realized_profit',
-                'exchange_in', 'exchange_out', 'exchange_fees', 'exchange_net')})
+                'exchange_in', 'exchange_out', 'exchange_fees', 'exchange_net',
+                'expense_total', 'unallocated_cost')})
         return summary[currency]
 
     with localcontext() as ctx:
@@ -573,9 +619,14 @@ def replay(state):
                 bucket(loan['currency'])[loan['direction'] + '_outstanding'] += loan['outstanding']
 
         products = {p['id']: p for p in result['products']}
+        sales = {product_id: [] for product_id in products}
+        expense_categories = {product_id: {} for product_id in products}
         for product in products.values():
             product.update(quantity=ZERO, average_cost=ZERO, inventory_cost=ZERO,
-                           realized_profit=ZERO)
+                           realized_profit=ZERO, acquired_quantity=ZERO,
+                           sold_quantity=ZERO, purchase_cost=ZERO, expense_cost=ZERO,
+                           total_cost=ZERO, sales_revenue=ZERO, equivalent_cost=ZERO,
+                           unallocated_cost=ZERO, expense_categories=[])
             if not product['voided']:
                 bucket(product['currency'])
         skus = set()
@@ -601,12 +652,18 @@ def replay(state):
             product = products.get(movement['product_id'])
             if product is None or (product['voided'] and not movement['voided']):
                 raise FinanceError('Choose an active product')
-            qty = money(movement['quantity'])
-            price = money(movement['unit_price'])
+            request_fields = movement_request_fields(movement)
+            expense = movement['kind'] == 'expense'
+            if expense and (not movement.get('category') or movement.get('total_amount') is None):
+                raise FinanceError('Enter an expense category and total amount')
+            qty = ZERO if expense else money(movement['quantity'])
+            total = (money(movement['total_amount']) if movement.get('total_amount') is not None
+                     else rounded(qty * money(movement['unit_price'])))
+            price = (ZERO if expense else money(movement['unit_price'])
+                     if movement.get('unit_price') is not None else total / qty)
             initial = money(movement['paid_amount'])
             invoice_currency, rate = resolve_currency_rate(movement, product['currency'])
             extra = _inventory_payments(movement, invoice_currency)
-            total = rounded(qty * price)
             base_total = rounded(total * rate)
             paid = initial + extra
             if paid > total:
@@ -618,36 +675,64 @@ def replay(state):
                             total=total, initial_paid_amount=initial, paid_amount=paid,
                             remaining_payment=ZERO if movement['voided'] or movement['kind'] == 'opening' else total - paid,
                             cost_of_goods=ZERO, realized_profit=ZERO,
+                            price_basis='expense' if expense else 'total' if movement.get('total_amount') is not None else 'unit',
+                            request_fields=request_fields,
                             status='void' if movement['voided'] else 'paid' if paid == total or movement['kind'] == 'opening'
                             else 'partial' if paid else 'unpaid')
             if movement['voided']:
                 continue
             values = bucket(invoice_currency)
-            base_values = bucket(product['currency'])
             if movement['kind'] in ('purchase', 'opening'):
                 product['quantity'] += qty
-                product['inventory_cost'] += base_total
+                product['acquired_quantity'] += qty
+                product['purchase_cost'] += base_total
                 if movement['kind'] == 'purchase':
                     values['purchase_total'] += total
                     values['payable'] += total - paid
+            elif expense:
+                product['expense_cost'] += base_total
+                categories = expense_categories[product['id']]
+                category = movement['category']
+                categories[category] = categories.get(category, ZERO) + base_total
+                values['expense_total'] += total
+                values['payable'] += total - paid
             else:
                 if qty > product['quantity']:
                     raise FinanceError(f'Insufficient inventory for {product["name"]} on {movement["date"]}; check earlier stock records')
-                # Selling the last unit clears the full remaining cost, including rounding.
-                cost = product['inventory_cost'] if qty == product['quantity'] else rounded(
-                    product['inventory_cost'] * qty / product['quantity'])
-                movement['cost_of_goods'] = cost
-                movement['realized_profit'] = base_total - cost
                 product['quantity'] -= qty
-                product['inventory_cost'] -= cost
-                product['realized_profit'] += base_total - cost
+                product['sold_quantity'] += qty
+                product['sales_revenue'] += base_total
+                sales[product['id']].append(movement)
                 values['sales_total'] += total
                 values['receivable'] += total - paid
-                base_values['realized_profit'] += base_total - cost
-            product['average_cost'] = rounded(product['inventory_cost'] / product['quantity']) if product['quantity'] else ZERO
         for product in products.values():
+            product['total_cost'] = product['purchase_cost'] + product['expense_cost']
+            product['expense_categories'] = [dict(category=category, total=total)
+                for category, total in sorted(expense_categories[product['id']].items())]
+            acquired = product['acquired_quantity']
+            if acquired:
+                # Every cost belongs to the product pool, including a fee added
+                # after a sale. Allocate exact micro-units across sales and stock
+                # together so late edits conserve cost without inventory residue.
+                product['average_cost'] = product['equivalent_cost'] = rounded(product['total_cost'] / acquired)
+                product_sales = sales[product['id']]
+                allocated = allocate_residual(product['total_cost'],
+                    [sale['quantity'] for sale in product_sales] + [product['quantity']])
+                product['inventory_cost'] = allocated[-1]
+                for sale, cost in zip(product_sales, allocated):
+                    sale['cost_of_goods'] = cost
+                    sale['realized_profit'] = sale['base_total'] - cost
+                    product['realized_profit'] += sale['realized_profit']
+                for sale in product_sales:
+                    sale['calculation_fields'] = {key: format(sale[key].normalize(), 'f')
+                        for key in ('total', 'base_total', 'cost_of_goods', 'realized_profit')}
+            else:
+                product['unallocated_cost'] = product['total_cost']
             if not product['voided']:
-                bucket(product['currency'])['inventory_cost'] += product['inventory_cost']
+                values = bucket(product['currency'])
+                values['inventory_cost'] += product['inventory_cost']
+                values['realized_profit'] += product['realized_profit']
+                values['unallocated_cost'] += product['unallocated_cost']
     result['summary'] = [summary[c] for c in sorted(summary)]
     for collection in ('transfers', 'loans', 'movements', 'exchanges', 'projects'):
         result[collection].sort(key=lambda r: (r['date'], r['id']), reverse=True)

@@ -7,7 +7,7 @@ const FinanceUI = require('../static/js/finance.js');
 
 const transfer = { id: 1, version: 1, date: '2026-10-01', direction: 'out', amount: 12345.67, currency: 'USD', counterparty: 'Sensitive Person', from_account: 'Private bank', to_account: 'Secret account', reference: 'CONFIDENTIAL-REF', note: 'Private note', voided: false };
 const loan = { id: 2, version: 3, date: '2026-10-01', direction: 'lent', principal: 500, repaid: 100, outstanding: 400, currency: 'USD', counterparty: 'Sensitive Person', due_date: '2026-11-01', status: 'partial', repayments: [{ id: 8, version: 1, date: '2026-10-02', amount: 100, note: 'Private repayment', voided: false }], voided: false };
-const product = { id: 3, version: 1, name: 'Private product', sku: 'SKU-secret', unit: '箱', currency: 'USD', location: 'Private location', note: 'Private product note', quantity: 8, average_cost: 20, inventory_cost: 160, voided: false };
+const product = { id: 3, version: 1, name: 'Private product', sku: 'SKU-secret', unit: '箱', currency: 'USD', location: 'Private location', note: 'Private product note', quantity: 8, acquired_quantity: 10, sold_quantity: 2, purchase_cost: 200, expense_cost: 0, total_cost: 200, average_cost: 20, equivalent_cost: 20, inventory_cost: 160, sales_revenue: 60, realized_profit: 20, expense_categories: [], unallocated_cost: 0, voided: false };
 const movement = { id: 4, version: 2, date: '2026-10-01', product_id: 3, kind: 'purchase', quantity: 10, unit_price: 20, currency: 'USD', total: 200, initial_paid_amount: 30, paid_amount: 80, remaining_payment: 120, status: 'partial', counterparty: 'Private supplier', note: 'Private shipment note', voided: false, payments: [{ id: 9, version: 1, date: '2026-10-02', amount: 50, note: 'Private payment', voided: false }] };
 const exchange = { id: 5, version: 2, date: '2026-10-01', from_currency: 'USD', to_currency: 'CNY', from_amount: 1000, to_amount: 7200, fee_amount: 35, fee_currency: 'CNY', from_account: 'Private dollar account', to_account: 'Private yuan account', counterparty: 'Private exchange partner', method: 'Private exchange method', reference: 'Secret-exchange-reference', note: 'Private exchange note', exchange_rate: 7.2, inverse_rate: 1 / 7.2, debited_amount: 1000, received_amount: 7165, effective_rate: 7.165, voided: false };
 const projectInput = { date: '2026-10-01', name: 'Private venture', currency: 'USD', expected_profit: '500', note: 'Private venture note', participants: [
@@ -444,7 +444,7 @@ test('inventory decimal conversion matches HALF-EVEN rounding and 12-digit rate 
 });
 
 test('movement form keeps invoice and base amounts separate and requires explicit cross-currency rate', async () => {
-    const f = fixture(); await f.ui.load(); f.click({ financeSection: 'movements' }); f.element('financeAdd').listeners.click();
+    const f = fixture(); await f.ui.load(); f.click({ financeSection: 'movements' }); f.click({ financeProductTransaction: '', id: '3' }, true);
     assert.equal(f.fields.get('currency').value, 'USD'); assert.equal(f.fields.get('exchange_rate').value, '1');
     assert.equal(f.fields.get('exchange_rate').disabled, true);
     f.fields.get('quantity').value = '10'; f.fields.get('unit_price').value = '70'; f.fields.get('currency').value = 'CNY';
@@ -463,17 +463,18 @@ test('movement form keeps invoice and base amounts separate and requires explici
     assert.equal(payload.paid_amount, '0'); assert.equal(payload.base_total, undefined);
 });
 
-test('changing movement product resets cross rate and preserves explicit invoice currency', async () => {
+test('a product transaction stays bound to its profile even if a disabled product input is tampered with', async () => {
     const f = fixture();
     f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [product, { ...product, id: 6, currency: 'CNY' }] }) }));
-    await f.ui.load(); f.click({ financeSection: 'movements' }); f.element('financeAdd').listeners.click();
+    await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
+    assert.equal(f.fields.get('product_id').disabled, true);
     f.fields.get('quantity').value = '10'; f.fields.get('unit_price').value = '70'; f.fields.get('currency').value = 'CNY';
     f.element('financeForm').listeners.change({ target: { name: 'currency' } }); f.fields.get('exchange_rate').value = '0.14';
     f.fields.get('product_id').value = '6'; f.element('financeForm').listeners.change({ target: { name: 'product_id' } });
-    assert.equal(f.fields.get('currency').value, 'CNY'); assert.equal(f.fields.get('exchange_rate').value, '1');
-    assert.equal(f.fields.get('exchange_rate').disabled, true);
-    f.fields.get('product_id').value = '3'; f.element('financeForm').listeners.change({ target: { name: 'product_id' } });
-    assert.equal(f.fields.get('exchange_rate').value, ''); assert.equal(f.fields.get('exchange_rate').disabled, false);
+    assert.equal(f.fields.get('exchange_rate').disabled, false); assert.equal(f.fields.get('exchange_rate').value, '0.14');
+    await f.submit();
+    const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.product_id, 3); assert.equal(payload.exchange_rate, '0.14');
 });
 
 test('movement edit locks invoice currency after payment history and never counts actual-currency payments twice', async () => {
@@ -549,18 +550,18 @@ test('legacy product bases cannot silently default a new USD movement to an inve
     const legacy = { ...product, currency: 'HKD', name: 'Historical HKD product' };
     const f = fixture();
     f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [legacy, { ...product, id: 6 }] }) }));
-    await f.ui.load(); f.click({ financeSection: 'movements' }); f.element('financeAdd').listeners.click();
+    await f.ui.load(); f.click({ financeSection: 'movements' }); f.click({ financeProductTransaction: '', id: '6' }, true);
     assert.equal(f.fields.get('product_id').value, '6'); assert.equal(f.fields.get('currency').value, 'USD');
     assert.ok(!f.element('financeFormFields').innerHTML.includes('Historical HKD product'));
     const onlyLegacy = fixture();
     onlyLegacy.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [legacy], movements: [{ ...movement, currency: 'USD' }] }) }));
     await onlyLegacy.ui.load(); onlyLegacy.click({ financeSection: 'movements' }); onlyLegacy.element('financeAdd').listeners.click();
-    assert.equal(onlyLegacy.element('financeEditTitle').textContent, '添加商品');
+    assert.equal(onlyLegacy.element('financeEditTitle').textContent, '创建商品');
     assert.equal(onlyLegacy.fields.has('product_id'), false);
     onlyLegacy.click({ financeEdit: 'movements', id: '4' }, true);
     assert.match(onlyLegacy.element('financeNotice').textContent, /原币种与金额保留/);
     assert.equal(onlyLegacy.element('financeFormFields').innerHTML, '');
-    onlyLegacy.element('financeProducts').listeners.click();
+    onlyLegacy.click({ financeDetail: 'products', id: '3' });
     assert.ok(onlyLegacy.element('financeDetailsBody').innerHTML.includes('Historical HKD product'));
     assert.ok(onlyLegacy.element('financeDetailsBody').innerHTML.includes('不新增进出货'));
 });
@@ -681,10 +682,10 @@ test('project-only overview remains visible without realized summary and disting
 
 test('movement project linking supports create omission, explicit unlink and historical linked option', async () => {
     const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [project] }) }));
-    await f.ui.load(); f.click({ financeSection: 'movements' }); f.element('financeAdd').listeners.click();
+    await f.ui.load(); f.click({ financeSection: 'movements' }); f.click({ financeProductTransaction: '', id: '3' }, true);
     f.fields.get('quantity').value = '1'; f.fields.get('unit_price').value = '10'; await f.submit();
     assert.equal(JSON.parse(f.requests.at(-1).body).project_id, undefined);
-    f.element('financeAdd').listeners.click(); f.fields.get('quantity').value = '1'; f.fields.get('unit_price').value = '10'; f.fields.get('project_id').value = '6'; await f.submit();
+    f.click({ financeProductTransaction: '', id: '3' }, true); f.fields.get('quantity').value = '1'; f.fields.get('unit_price').value = '10'; f.fields.get('project_id').value = '6'; await f.submit();
     assert.equal(JSON.parse(f.requests.at(-1).body).project_id, 6);
     f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [{ ...project, voided: true }], movements: [{ ...movement, project_id: 6, project_name: project.name }] }) }));
     await f.ui.load(true); f.click({ financeEdit: 'movements', id: '4' }, true);
@@ -792,7 +793,7 @@ test('funding summary defaults closed, survives page renders and data reload, th
 
 function openMonetaryEditor(f, type) {
     if (type === 'repayments' || type === 'payments') f.click({ financePayment: type === 'repayments' ? 'loans' : 'movements', id: type === 'repayments' ? '2' : '4' }, true);
-    else { f.click({ financeSection: type }); f.element('financeAdd').listeners.click(); }
+    else { f.click({ financeSection: type }); if (type === 'movements') f.click({ financeProductTransaction: '', id: '3' }, true); else f.element('financeAdd').listeners.click(); }
     if (type === 'transfers') f.fields.get('amount').value = '5';
     if (type === 'loans') { f.fields.get('counterparty').value = 'Different counterparty'; f.fields.get('principal').value = '500'; }
     if (type === 'movements') { f.fields.get('quantity').value = '1'; f.fields.get('unit_price').value = '20'; }
@@ -895,4 +896,134 @@ test('actor retry keeps UUID for the same names and changes UUID when actors cha
     assert.equal(JSON.parse(f.requests.at(-1).body).request_id, first.request_id);
     f.fields.get('recipient').value = 'Different recipient'; await f.submit();
     assert.notEqual(JSON.parse(f.requests.at(-1).body).request_id, first.request_id);
+});
+
+
+test('inventory main creates profiles and profile timeline contains only the selected product transactions', async () => {
+    const f = fixture();
+    const other = { ...movement, id: 11, product_id: 8, note: 'Unrelated transaction' };
+    f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [movement, other] }) }));
+    await f.ui.load(); f.click({ financeSection: 'movements' });
+    assert.match(f.element('financeList').innerHTML, /data-finance-detail="products"/);
+    assert.doesNotMatch(f.element('financeList').innerHTML, /Private supplier/);
+    f.element('financeAdd').listeners.click();
+    assert.equal(f.element('financeEditTitle').textContent, '创建商品');
+    f.element('financeEditModal').listeners['hidden.bs.modal']();
+    f.click({ financeDetail: 'products', id: '3' });
+    const body = f.element('financeDetailsBody').innerHTML;
+    for (const text of ['累计成本', '等效单位成本', '累计销售数量', '累计销售额', '已售利润', 'Private shipment note', 'data-finance-product-transaction']) assert.ok(body.includes(text), text);
+    assert.ok(!body.includes('Unrelated transaction'));
+    f.click({ financeProductTransaction: '', id: '3' }, true);
+    assert.equal(f.fields.get('product_id').value, '3'); assert.equal(f.fields.get('product_id').disabled, true);
+});
+
+test('expense transaction keeps a custom category and exact total without quantity or unit price', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
+    f.fields.get('kind').value = 'expense'; f.element('financeForm').listeners.change({ target: { name: 'kind' } });
+    assert.equal(f.fields.get('quantity').disabled, true); assert.equal(f.fields.get('unit_price').disabled, true);
+    assert.equal(f.fields.get('category').disabled, false); assert.equal(f.fields.get('category').required, true);
+    assert.equal(f.fields.get('total_amount').disabled, false);
+    assert.match(f.element('financeMovementHint').textContent, /费用计入商品累计成本，不改变数量/);
+    f.fields.get('category').value = '  私人运输类别  '; f.fields.get('total_amount').value = '123.456789';
+    f.fields.get('handler').value = '  Shipment handler  '; f.fields.get('payer').value = '  Actual payer  '; f.fields.get('recipient').value = 'Actual recipient';
+    await f.submit(); const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.category, '私人运输类别'); assert.equal(payload.total_amount, '123.456789');
+    assert.equal(payload.quantity, undefined); assert.equal(payload.unit_price, undefined);
+    assert.equal(payload.handler, 'Shipment handler'); assert.equal(payload.payer, 'Actual payer'); assert.equal(payload.recipient, 'Actual recipient');
+    assert.equal(payload.product_id, 3); assert.equal(payload.paid_amount, '0');
+});
+
+test('total price remains authoritative for indivisible averages and zero gifts', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
+    f.fields.get('quantity').value = '3'; f.fields.get('price_mode').value = 'total'; f.element('financeForm').listeners.change({ target: { name: 'price_mode' } });
+    f.fields.get('total_amount').value = '100'; f.element('financeForm').listeners.input({ target: { name: 'total_amount' } });
+    assert.equal(f.fields.get('unit_price').value, '33.333333'); assert.equal(f.fields.get('unit_price').disabled, true);
+    assert.equal(f.element('financeMovementTotal').textContent, 'USD 100.00'); assert.match(f.element('financeMovementHint').textContent, /保存时以所填总价为准/);
+    await f.submit(); let payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.total_amount, '100'); assert.equal(payload.quantity, '3'); assert.equal(payload.unit_price, undefined);
+    f.click({ financeProductTransaction: '', id: '3' }, true); f.fields.get('kind').value = 'sale'; f.fields.get('quantity').value = '2';
+    f.fields.get('price_mode').value = 'total'; f.element('financeForm').listeners.change({ target: { name: 'price_mode' } });
+    f.fields.get('total_amount').value = '0'; f.element('financeForm').listeners.input({ target: { name: 'total_amount' } });
+    assert.match(f.element('financeMovementHint').textContent, /赠送/);
+    await f.submit(); payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.total_amount, '0'); assert.equal(payload.unit_price, undefined); assert.equal(payload.paid_amount, '0');
+});
+
+test('editing total-priced transactions restores exact request fields instead of rounded computed values', async () => {
+    const raw = { date: '2026-10-01', kind: 'purchase', product_id: 3, quantity: '3.000001', total_amount: '999999999999.000001', paid_amount: '999999999999.000001', currency: 'CNY', exchange_rate: '0.142857142857', handler: 'Exact handler' };
+    const saved = { ...movement, ...raw, total: 999999999999, quantity: 3.000001, unit_price: 333333222222.26, initial_paid_amount: 999999999999, payments: [], price_basis: 'total', request_fields: raw };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [saved] }) }));
+    await f.ui.load(); f.click({ financeEdit: 'movements', id: '4' }, true);
+    assert.equal(f.fields.get('price_mode').value, 'total');
+    assert.equal(f.fields.get('total_amount').value, raw.total_amount); assert.equal(f.fields.get('paid_amount').value, raw.paid_amount);
+    await f.submit(); const payload = JSON.parse(f.requests.at(-1).body);
+    for (const key of ['quantity', 'total_amount', 'paid_amount', 'exchange_rate', 'handler']) assert.equal(payload[key], raw[key], key);
+    assert.equal(payload.unit_price, undefined); assert.equal(payload.version, 2);
+});
+
+test('a profile retains fees before any stock and exposes pooled cost and historical profit updates', async () => {
+    const empty = { ...product, quantity: 0, acquired_quantity: 0, total_cost: 25, purchase_cost: 0, expense_cost: 25, inventory_cost: 0, average_cost: 0, unallocated_cost: 25, expense_categories: [{ category: '物流', total: 25 }] };
+    const fee = { ...movement, kind: 'expense', quantity: 0, unit_price: 0, total: 25, category: '物流' };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [empty], movements: [fee] }) }));
+    await f.ui.load(); f.click({ financeSection: 'movements' });
+    assert.match(f.element('financeList').innerHTML, /待进货/); assert.match(f.element('financeList').innerHTML, /USD 25.00/);
+    f.click({ financeDetail: 'products', id: '3' }); const body = f.element('financeDetailsBody').innerHTML;
+    assert.match(body, /尚未进货的费用 USD 25.00 已计入累计成本/);
+    assert.match(body, /新增进货或费用会更新此前销售的利润/); assert.match(body, /按类别查看费用/);
+    assert.match(body, /物流/); assert.doesNotMatch(FinanceUI.renderRows([fee], 'movements', [empty]), /0 箱/); // Expenses have no artificial zero-quantity transaction.
+});
+
+test('product searches include custom categories, transaction handlers, payer and later payment handler', () => {
+    const expense = { ...movement, kind: 'expense', category: 'Special logistics', handler: 'Warehouse handler', payer: 'Expense payer', payments: [{ handler: 'Later handler' }] };
+    for (const search of ['Special logistics', 'Warehouse handler', 'Expense payer', 'Later handler', product.sku]) assert.deepEqual(FinanceUI.filterProducts([product], [expense], { search }).map(record => record.id), [3]);
+    assert.deepEqual(FinanceUI.filterProducts([product], [expense], { status: 'expense' }).map(record => record.id), [3]);
+    assert.equal(FinanceUI.filterProducts([product], [{ ...expense, voided: true }], { status: 'expense' }).length, 0);
+    assert.equal(FinanceUI.filterProducts([product], [{ ...expense, currency: 'CNY' }], { currency: 'CNY' }).length, 1);
+});
+
+test('profile and handler displays escape input and private mode scrubs profile values and transaction names', async () => {
+    const hostileProduct = { ...product, name: '<img src=x>', location: '<script>location</script>' };
+    const hostileMovement = { ...movement, handler: '<script>handler</script>', category: '<img expense>', kind: 'expense', total_amount: 12, total: 12 };
+    const cards = FinanceUI.renderProductCards([hostileProduct]); assert.match(cards, /&lt;img/); assert.doesNotMatch(cards, /<img/);
+    const rows = FinanceUI.renderRows([hostileMovement], 'movements', [product]); assert.match(rows, /&lt;script&gt;handler/); assert.doesNotMatch(rows, /<script>/);
+    const hidden = FinanceUI.renderProductCards([product], true); for (const secret of [product.name, product.sku, product.location, 'USD 200.00', '8 箱', 'USD 20.00']) assert.ok(!hidden.includes(secret), secret);
+    const f = fixture(); await f.ui.load(); f.click({ financeDetail: 'products', id: '3' }); assert.match(f.element('financeDetailsBody').innerHTML, /Private product/);
+    f.ui.setPrivate(true); assert.equal(f.element('financeDetailsBody').innerHTML, ''); assert.equal(f.element('financeDetailsActions').innerHTML, '');
+});
+
+test('handler metadata is independent on transactions and actual payments with explicit edit clearing', async () => {
+    const saved = { ...movement, handler: 'Original handler', payer: 'Initial payer', recipient: 'Initial recipient', payments: [{ ...movement.payments[0], handler: 'Later handler', payer: 'Later payer' }] };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [saved] }) }));
+    await f.ui.load(); f.click({ financeDetail: 'movements', id: '4' }); assert.match(f.element('financeDetailsBody').innerHTML, /Original handler/); assert.match(f.element('financeDetailsBody').innerHTML, /本次经手人 Later handler/);
+    f.click({ financeEdit: 'movements', id: '4' }, true); assert.equal(f.fields.get('handler').value, 'Original handler'); f.fields.get('handler').value = ''; await f.submit();
+    const edited = JSON.parse(f.requests.at(-1).body); assert.equal(edited.handler, ''); assert.equal(edited.payer, 'Initial payer');
+    f.click({ financePayment: 'movements', id: '4' }, true); assert.equal(f.fields.get('handler').value, '');
+    f.fields.get('amount').value = '10'; f.fields.get('handler').value = '  New payment handler  '; await f.submit();
+    const payment = JSON.parse(f.requests.at(-1).body); assert.equal(payment.handler, 'New payment handler'); assert.equal(payment.payer, undefined);
+});
+
+test('save, cancellation and void return to the associated product profile after modal transitions', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
+    f.fields.get('quantity').value = '1'; f.fields.get('unit_price').value = '10'; await f.submit();
+    f.element('financeEditModal').listeners['hidden.bs.modal'](); assert.equal(f.element('financeDetailsTitle').textContent, product.name);
+    f.click({ financeProductTransaction: '', id: '3' }, true); f.element('financeEditModal').listeners['hidden.bs.modal']();
+    assert.equal(f.element('financeDetailsTitle').textContent, product.name); assert.equal(f.element('financeFormFields').innerHTML, '');
+    f.click({ financeVoid: 'movements', id: '4' }, true); await f.element('financeVoidConfirm').listeners.click();
+    f.element('financeVoidModal').listeners['hidden.bs.modal'](); assert.equal(f.element('financeDetailsTitle').textContent, product.name);
+    f.click({ financeProductTransaction: '', id: '3' }, true); f.ui.setPrivate(true); f.element('financeEditModal').listeners['hidden.bs.modal']();
+    assert.equal(f.element('financeDetailsBody').innerHTML, '');
+});
+
+test('expense and total-price validation use exact authoritative amount and length limits', () => {
+    const expense = { date: '2026-10-01', product_id: 3, kind: 'expense', total_amount: '10', category: '物流', paid_amount: '10' };
+    assert.equal(FinanceUI.validatePayload('movements', expense), '');
+    assert.match(FinanceUI.validatePayload('movements', { ...expense, category: '' }), /费用类别/);
+    assert.match(FinanceUI.validatePayload('movements', { ...expense, category: 'x'.repeat(101) }), /100/);
+    assert.match(FinanceUI.validatePayload('movements', { ...expense, total_amount: '0' }), /大于 0/);
+    assert.match(FinanceUI.validatePayload('movements', { ...expense, handler: 'x'.repeat(201) }), /200/);
+    assert.match(FinanceUI.validatePayload('payments', { date: '2026-10-01', handler: 'x'.repeat(201) }), /200/);
+    const sale = { ...expense, kind: 'sale', quantity: '3', total_amount: '100', paid_amount: '100' };
+    assert.equal(FinanceUI.validatePayload('movements', sale), '');
+    assert.match(FinanceUI.validatePayload('movements', { ...sale, paid_amount: '100.000001' }), /总金额/);
+    assert.equal(FinanceUI.inventoryUnitPrice('100', '3'), '33.333333');
 });

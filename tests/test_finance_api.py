@@ -200,6 +200,52 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 422)
             self.assertEqual(write.call_count, 1)
 
+    async def test_product_transactions_support_total_prices_custom_costs_and_handlers(self):
+        purchase = dict(date='2026-01-01', product_id=1, kind='purchase', quantity=3,
+                        total_amount=100, handler='  Kevin  ', request_id=str(uuid4()))
+        expense = dict(date='2026-01-02', product_id=1, kind='expense', total_amount=140,
+                       category='  物流  ', currency='CNY', exchange_rate='.125',
+                       handler=' Freight agent ', request_id=str(uuid4()))
+        sale = dict(date='2026-01-03', product_id=1, kind='sale', quantity=1,
+                    total_amount=0, handler='Gift agent', request_id=str(uuid4()))
+        with patch.object(finance_api.repository, 'create_record', return_value=self.state) as create, \
+             patch.object(finance_api.repository, 'update_record', return_value=self.state) as update, \
+             patch.object(finance_api.repository, 'create_payment', return_value=self.state) as payment:
+            for body in (purchase, expense, sale):
+                response = await self.client.post('/api/finance/movements', json=body, headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                fields = request_data(create.call_args.args[1])
+                self.assertNotIn('unit_price', fields)
+                self.assertEqual(fields['handler'], body['handler'].strip())
+            self.assertEqual(fields['total_amount'], '0')
+            changed = {key: value for key, value in expense.items() if key not in ('request_id', 'category')}
+            response = await self.client.put('/api/finance/movements/7',
+                json={**changed, 'version': 1, 'handler': ''}, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            values = request_data(update.call_args.args[2])
+            self.assertEqual(values['handler'], '')
+            self.assertNotIn('category', values)
+            response = await self.client.post('/api/finance/movements/7/payments',
+                json=dict(date='2026-01-03', amount=5, handler=' Payment agent ',
+                          currency='USD', exchange_rate=8, request_id=str(uuid4())), headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(request_data(payment.call_args.args[2])['handler'], 'Payment agent')
+
+    async def test_invalid_product_expenses_and_price_totals_never_reach_writer(self):
+        expense = dict(date='2026-01-01', product_id=1, kind='expense', total_amount=20,
+                       category='物流', request_id=str(uuid4()))
+        with patch.object(finance_api.repository, 'create_record') as write:
+            for changed in (dict(category=''), dict(total_amount=0), dict(quantity=1), dict(unit_price=0),
+                            dict(total_amount=True), dict(total_amount='NaN'), dict(handler='A' * 201)):
+                response = await self.client.post('/api/finance/movements',
+                    json={**expense, **changed}, headers=self.headers)
+                self.assertEqual(response.status_code, 422)
+            for changed in (dict(quantity=None), dict(unit_price=34), dict(total_amount=None)):
+                response = await self.client.post('/api/finance/movements',
+                    json={**expense, 'kind': 'sale', 'quantity': 3, 'total_amount': 100, **changed}, headers=self.headers)
+                self.assertEqual(response.status_code, 422)
+            write.assert_not_called()
+
     async def test_project_crud_returns_state_and_keeps_forecast_out_of_investments(self):
         plan = dict(date='2026-01-01', name='Tea', expected_profit=0,
                     participants=[dict(name='Kevin', contribution_amount='600.00', dividend_percent=60),

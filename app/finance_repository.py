@@ -114,6 +114,11 @@ def update_record(kind, record_id, request):
             base_changed = new_product['currency'] != old_product['currency']
             if (currency_changed or base_changed) and 'exchange_rate' not in values:
                 record.pop('exchange_rate', None)
+            # The update model describes a complete price input. Remove the old
+            # mode before merging so total-only edits never retain a stale price.
+            for field in ('quantity', 'unit_price', 'total_amount'):
+                if field not in values:
+                    record.pop(field, None)
         record.update(values)
         record['version'] += 1
         result = replay(state)

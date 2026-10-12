@@ -36,20 +36,28 @@ Old records without names remain blank rather than inferring participants.
   destination currency per one source currency, with its reciprocal and the
   effective rate after fees. Currency summaries keep exchange inflows, outflows,
   fees, and net movement separate from transfer totals.
-- **进出货** keeps product/SKU/unit/location details, opening stock, purchases,
-  sales, and payment histories. Each product has a fixed inventory accounting
-  currency; individual purchases and sales may use another currency with an
-  explicit transaction exchange rate. Native invoice totals are rounded before
-  conversion into the accounting currency. Inventory cost uses a chronological
-  moving average; merchandise gross profit is converted sale value less the
-  allocated stock cost, excluding settlement foreign-exchange gains or losses.
-  Purchase payables and sale receivables retain the invoice currency. Payments
-  may use a different currency and an explicit rate into the invoice currency.
-  The original payment amount and its invoice-equivalent amount are both saved.
-  Invoice currency is fixed once any payment history exists.
-  For gifts or zero-price consumption, record a sale with unit price and paid
-  amount both zero. Stock and its moving-average cost still leave inventory,
-  gross profit is negative cost, and no receivable or receipt is created.
+- **进出货** starts with a product profile containing its name, SKU, unit,
+  location, stock, cost, sales, and profit. Add transactions inside that profile:
+  purchases, sales, opening stock, and expenses with a custom category such as
+  logistics or packaging. Purchase and sale entries accept quantity with either
+  unit price or total price. An entered total is saved exactly, even when the
+  implied unit price is a repeating decimal. Each transaction and later payment
+  can record an independent handler, payer, and recipient.
+  Equivalent unit cost is the profile's total purchase/opening cost plus all
+  expenses, divided by all acquired units. This cost pool is allocated to sold
+  units and remaining stock with exact six-decimal reconciliation. Adding or
+  correcting a purchase or expense updates the profile's unit cost and earlier
+  sales' profit. Use separate profiles/SKUs when batches should have separate
+  costs. Before any stock is acquired, expenses remain visible as unallocated
+  cost and unit cost awaits a purchase. Stock availability is still validated
+  chronologically, so backdated changes cannot cause historical overselling.
+  Each profile has a fixed accounting currency; individual transactions can use
+  another currency with an explicit conversion rate. Payables and receivables
+  retain the transaction currency, and later payments can use a different recorded
+  currency/rate. Settlement FX gains or losses are excluded from sales profit.
+  Invoice currency is fixed once any payment history exists. Gifts can have
+  zero unit or total price: quantity leaves stock, the allocated cost becomes
+  negative profit, and no receivable or receipt is created.
 - **合资项目** records each participant's contribution amount and currency,
   an explicit exchange rate into the project's fixed accounting currency, and
   their automatically calculated contribution percentage. Planned dividend
@@ -74,7 +82,7 @@ are never cached by the service worker. The anonymous toggle also masks this tab
 
 The inventory flow and payment-status conventions reference
 [cmpManager](https://github.com/Jackiecoder/cmpManager); this personal ledger adds
-moving-average valuation and sales profit calculations.
+product cost pools and sales profit calculations.
 
 ## Installation
 
