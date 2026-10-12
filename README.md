@@ -37,7 +37,7 @@ Old records without names remain blank rather than inferring participants.
   effective rate after fees. Currency summaries keep exchange inflows, outflows,
   fees, and net movement separate from transfer totals.
 - **进出货** starts with a product profile containing its name, SKU, unit,
-  location, stock, cost, sales, and profit. Add transactions inside that profile:
+  location, stock, and income/expense totals in each original currency. Add transactions inside that profile:
   purchases, sales, opening stock, and expenses with a custom category such as
   logistics or packaging. Purchase and sale entries accept quantity with either
   unit price or total price. An entered total is saved exactly, even when the
@@ -51,10 +51,16 @@ Old records without names remain blank rather than inferring participants.
   costs. Before any stock is acquired, expenses remain visible as unallocated
   cost and unit cost awaits a purchase. Stock availability is still validated
   chronologically, so backdated changes cannot cause historical overselling.
-  Each profile has a fixed accounting currency; individual transactions can use
-  another currency with an explicit conversion rate. Payables and receivables
-  retain the transaction currency, and later payments can use a different recorded
-  currency/rate. Settlement FX gains or losses are excluded from sales profit.
+  Each profile has an optional conversion view using its accounting currency;
+  transactions and later payments can be saved in another currency without
+  entering an exchange rate. Native-currency expense and income totals remain
+  available independently, and payments do not count the same invoice twice.
+  Converted cost/profit stays pending when the required rates are missing;
+  missing rates are never treated as one or zero. Rates can be added later by
+  editing the transaction or its payment. Payables and receivables retain the
+  transaction currency. A cross-currency payment without a rate has pending
+  settlement status rather than implying a settled invoice. Settlement FX gains
+  or losses are excluded from sales profit.
   Invoice currency is fixed once any payment history exists. Gifts can have
   zero unit or total price: quantity leaves stock, the allocated cost becomes
   negative profit, and no receivable or receipt is created.
@@ -77,7 +83,8 @@ places. Records can be corrected or voided while retaining
 history; changes have version checks and transactional audit records. Backdated
 changes cannot create negative historical stock, and repayment/payment totals
 cannot exceed the original principal/invoice. Duplicate create retries use a
-stable request ID. APIs use the existing application-token authentication and
+stable request ID. If a response is lost, the UI checks the recorded result and
+reuses that request ID when retrying the same creation. APIs use the existing application-token authentication and
 are never cached by the service worker. The anonymous toggle also masks this tab.
 
 The inventory flow and payment-status conventions reference

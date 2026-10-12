@@ -7,7 +7,7 @@ import httpx
 
 from app import main
 from app import finance_api
-from app.finance import FinanceError, InventoryPaymentCreate, request_data
+from app.finance import FinanceError, InventoryPaymentCreate, InventoryPaymentUpdate, request_data
 
 
 class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
@@ -37,6 +37,7 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
                 ('POST', '/api/finance/movements'), ('PUT', '/api/finance/movements/1'), ('DELETE', '/api/finance/movements/1'),
                 ('POST', '/api/finance/loans/1/repayments'), ('DELETE', '/api/finance/loans/1/repayments/2'),
                 ('POST', '/api/finance/movements/1/payments'), ('DELETE', '/api/finance/movements/1/payments/2'),
+                ('PUT', '/api/finance/movements/1/payments/2'),
             ]:
                 with self.subTest(method=method, path=path):
                     response = await self.client.request(method, path)
@@ -199,6 +200,33 @@ class FinanceAPITests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post('/api/finance/loans/7/repayments', json=payment, headers=self.headers)
             self.assertEqual(response.status_code, 422)
             self.assertEqual(write.call_count, 1)
+
+    async def test_native_inventory_amounts_without_rates_and_later_payment_rate_edits(self):
+        body = dict(date='2026-01-02', product_id=1, kind='sale', quantity=2,
+                    total_amount=1200, currency='USD', request_id=str(uuid4()))
+        with patch.object(finance_api.repository, 'create_record', return_value=self.state) as create, \
+             patch.object(finance_api.repository, 'update_inventory_payment', return_value=self.state) as update:
+            response = await self.client.post('/api/finance/movements', json=body, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn('exchange_rate', request_data(create.call_args.args[1]))
+            fields = dict(date='2026-01-03', amount=70, currency='CNY', exchange_rate='.1', version=1,
+                          handler=' Cashier ', payer='Kevin', recipient='Carrier')
+            response = await self.client.put('/api/finance/movements/7/payments/8', json=fields, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(update.call_args.args[:2], (7, 8))
+            self.assertIsInstance(update.call_args.args[2], InventoryPaymentUpdate)
+            self.assertEqual(request_data(update.call_args.args[2])['exchange_rate'], '0.1')
+            response = await self.client.put('/api/finance/movements/7/payments/8',
+                json={**fields, 'exchange_rate': None, 'handler': ''}, headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertIsNone(request_data(update.call_args.args[2])['exchange_rate'])
+            response = await self.client.put('/api/finance/loans/7/repayments/8', json=fields, headers=self.headers)
+            self.assertEqual(response.status_code, 405)
+            for changed in (dict(version=True), dict(version=0), dict(exchange_rate=0), dict(amount=0)):
+                response = await self.client.put('/api/finance/movements/7/payments/8',
+                    json={**fields, **changed}, headers=self.headers)
+                self.assertEqual(response.status_code, 422)
+            self.assertEqual(update.call_count, 2)
 
     async def test_product_transactions_support_total_prices_custom_costs_and_handlers(self):
         purchase = dict(date='2026-01-01', product_id=1, kind='purchase', quantity=3,

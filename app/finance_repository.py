@@ -193,3 +193,37 @@ def void_payment(parent_kind, parent_id, payment_id, version):
         _audit(conn, kind, payment_id, 'void', before, payment)
         _audit(conn, parent_kind, parent_id, 'void_payment', before_parent, parent)
     return result
+
+
+def update_inventory_payment(parent_id, payment_id, request):
+    """Edit a payment's recorded amount/rate with the same parent lock/audit."""
+    values = request_data(request)
+    version = values.pop('version')
+    with get_pool().connection() as conn:
+        _lock(conn)
+        state = _read_state(conn)
+        parent = find_record(state, 'movements', parent_id, active=True)
+        payment = next((p for p in parent['payments'] if p['id'] == payment_id), None)
+        if payment is None:
+            raise FinanceError('Payment not found', 404)
+        require_version(payment, version)
+        if payment['voided']:
+            raise FinanceError('This payment has been voided', 409)
+        before_parent, before = deepcopy(parent), deepcopy(payment)
+        product = find_record(state, 'products', parent['product_id'])
+        invoice_currency = parent.get('currency') or product['currency']
+        old_currency = payment.get('currency') or invoice_currency
+        if values.get('currency', old_currency) != old_currency and 'exchange_rate' not in values:
+            payment.pop('exchange_rate', None)
+        payment.update(values)
+        payment['version'] += 1
+        parent['version'] += 1
+        result = replay(state)
+        conn.execute('''UPDATE finance_payments SET payload = %s::jsonb, version = %s,
+                        updated_at = now() WHERE id = %s''',
+                     (json.dumps(_payload(payment)), payment['version'], payment_id))
+        conn.execute('UPDATE finance_movements SET version = %s, updated_at = now() WHERE id = %s',
+                     (parent['version'], parent_id))
+        _audit(conn, 'payments', payment_id, 'update', before, payment)
+        _audit(conn, 'movements', parent_id, 'update_payment', before_parent, parent)
+    return result

@@ -60,7 +60,7 @@ test('zero-price sale is valid but cannot hide existing receipts or create a rec
 test('gift labels use zero unit price rather than a rounded invoice and do not reveal zero price in privacy mode', () => {
     const gift = { ...movement, kind: 'sale', unit_price: 0, total: 0, base_total: 0, paid_amount: 0, remaining_payment: 0, realized_profit: -40, status: 'paid' };
     const shown = FinanceUI.renderRows([gift], 'movements', [product]);
-    assert.match(shown, /赠送 \/ 零价出货/); assert.match(shown, /无需收款/); assert.match(shown, /毛利 USD -40.00/);
+    assert.match(shown, /赠送 \/ 零价出货/); assert.match(shown, /无需收款/); assert.doesNotMatch(shown, /毛利/);
     for (const other of [{ ...gift, unit_price: 0.000001 }, { ...gift, kind: 'purchase' }, { ...gift, unit_price: undefined }]) {
         assert.doesNotMatch(FinanceUI.renderRows([other], 'movements', [product]), /赠送 \/ 零价出货/);
     }
@@ -192,16 +192,16 @@ test('network retries reuse UUID and pending save cannot be double submitted', a
     f.element('financeAdd').listeners.click();
     f.fields.get('amount').value = '5';
     let release;
-    f.setResponse(() => new Promise(resolve => { release = resolve; }));
+    f.setResponse((_url, options) => options.method === 'GET' ? Promise.resolve({ ok: true, json: async () => data }) : new Promise(resolve => { release = resolve; }));
     const first = f.submit(); await f.submit();
     assert.equal(f.requests.length, 2);
     assert.equal(f.element('financeSave').disabled, true);
     release({ ok: false, status: 500, json: async () => ({ detail: 'Temporary failure' }) }); await first;
     assert.equal(f.element('financeSave').disabled, false);
-    const firstId = JSON.parse(f.requests.at(-1).body).request_id;
+    const firstId = JSON.parse(f.requests.findLast(request => request.method === 'POST').body).request_id;
     f.setResponse(async () => ({ ok: true, json: async () => data }));
     await f.submit();
-    assert.equal(JSON.parse(f.requests.at(-1).body).request_id, firstId);
+    assert.equal(JSON.parse(f.requests.findLast(request => request.method === 'POST').body).request_id, firstId);
     assert.equal(f.element('financeFormFields').innerHTML, '');
 });
 
@@ -318,9 +318,9 @@ test('exchange create retry retains UUID and unchanged raw decimal amounts', asy
     const f = fixture(); await f.ui.load(); f.click({ financeSection: 'exchanges' }); f.element('financeAdd').listeners.click();
     f.fields.get('from_amount').value = '9007199254740993.000001'; f.fields.get('to_amount').value = '100.123456';
     f.setResponse(async () => { throw new Error('Connection interrupted'); }); await f.submit();
-    const first = JSON.parse(f.requests.at(-1).body);
+    const first = JSON.parse(f.requests.findLast(request => request.method === 'POST').body);
     f.setResponse(async () => ({ ok: true, json: async () => data })); await f.submit();
-    const retry = JSON.parse(f.requests.at(-1).body);
+    const retry = JSON.parse(f.requests.findLast(request => request.method === 'POST').body);
     assert.equal(first.request_id, retry.request_id); assert.equal(retry.from_amount, '9007199254740993.000001'); assert.equal(retry.to_amount, '100.123456');
 });
 
@@ -443,7 +443,7 @@ test('inventory decimal conversion matches HALF-EVEN rounding and 12-digit rate 
     assert.equal(FinanceUI.inventoryAmount('999999999999.000001', '1'), '999999999999.000001');
 });
 
-test('movement form keeps invoice and base amounts separate and requires explicit cross-currency rate', async () => {
+test('movement form keeps native amount and optional conversion separate', async () => {
     const f = fixture(); await f.ui.load(); f.click({ financeSection: 'movements' }); f.click({ financeProductTransaction: '', id: '3' }, true);
     assert.equal(f.fields.get('currency').value, 'USD'); assert.equal(f.fields.get('exchange_rate').value, '1');
     assert.equal(f.fields.get('exchange_rate').disabled, true);
@@ -451,9 +451,10 @@ test('movement form keeps invoice and base amounts separate and requires explici
     f.element('financeForm').listeners.change({ target: { name: 'currency' } });
     assert.equal(f.fields.get('exchange_rate').value, ''); assert.equal(f.fields.get('exchange_rate').disabled, false);
     assert.equal(f.element('financeMovementTotal').textContent, 'CNY 700.00');
-    assert.equal(f.element('financeMovementBaseTotal').textContent, '待填写汇率');
+    assert.equal(f.element('financeMovementBaseTotal').textContent, '未折算（不影响保存）');
     assert.match(f.element('financeMovementRateLabel').textContent, /1 CNY = 多少 USD/);
-    await f.submit(); assert.equal(f.requests.length, 1);
+    assert.equal(FinanceUI.validatePayload('movements', { date: '2026-10-01', product_id: 3, kind: 'purchase', quantity: '10', unit_price: '70', paid_amount: '0', currency: 'CNY', exchange_rate: null }, product), '');
+    assert.doesNotMatch(f.element('financeFormFields').innerHTML.match(/<input[^>]*name="exchange_rate"[^>]*>/)[0], /required/);
     f.fields.get('exchange_rate').value = '0.142857142857';
     f.element('financeForm').listeners.input({ target: { name: 'exchange_rate' } });
     assert.equal(f.element('financeMovementBaseTotal').textContent, 'USD 100.00');
@@ -532,7 +533,7 @@ test('inventory display separates base profit, native invoice, and original/conv
     assert.equal(FinanceUI.filterRecords([record], { currency: 'USD' }).length, 1);
     assert.equal(FinanceUI.filterRecords([record], { currency: 'CNY' }).length, 1);
     const row = FinanceUI.renderRows([record], 'movements', [product]);
-    assert.ok(row.includes('CNY 400.00')); assert.ok(row.includes('库存核算 USD 50.00')); assert.ok(row.includes('毛利 USD 10.00'));
+    assert.ok(row.includes('CNY 400.00')); assert.ok(!row.includes('库存核算')); assert.ok(!row.includes('毛利'));
     const f = fixture();
     f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [record] }) }));
     await f.ui.load(); f.click({ financeDetail: 'movements', id: '4' });
@@ -622,12 +623,13 @@ test('project editor shows native-to-base rate, independent previews, optional f
     assert.ok(f.element('financeParticipantPreview-0').innerHTML.includes('60%'));
     assert.ok(f.element('financeParticipantPreview-1').innerHTML.includes('USD 150.00'));
     f.setResponse(async () => { throw new Error('Interrupted'); }); await f.submit();
-    const first = JSON.parse(f.requests.at(-1).body);
-    assert.equal(f.requests.at(-1).url, '/api/finance/projects');
+    const firstRequest = f.requests.findLast(request => request.method === 'POST');
+    const first = JSON.parse(firstRequest.body);
+    assert.equal(firstRequest.url, '/api/finance/projects');
     assert.equal(first.expected_profit, '500'); assert.equal(first.participants[1].exchange_rate, '0.142857142857');
     assert.equal(first.participants[0].contribution_amount, '600'); assert.equal(first.participants[0].dividend_percent, '50');
     f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [project] }) })); await f.submit();
-    assert.equal(JSON.parse(f.requests.at(-1).body).request_id, first.request_id);
+    assert.equal(JSON.parse(f.requests.findLast(request => request.method === 'POST').body).request_id, first.request_id);
 });
 
 test('project participant add/remove preserves inputs and proportional fill sums to exactly 100', async () => {
@@ -888,10 +890,10 @@ test('actors enforce 200 characters and are absent from product and project edit
     assert.equal(f.fields.has('payer'), false); assert.equal(f.fields.has('recipient'), false);
 });
 
-test('actor retry keeps UUID for the same names and changes UUID when actors change', async () => {
+test('a rejected actor save keeps UUID for the same names and changes UUID when actors change', async () => {
     const f = fixture(); await f.ui.load(); openMonetaryEditor(f, 'transfers');
     f.fields.get('payer').value = 'Actual payer'; f.fields.get('recipient').value = 'Actual recipient';
-    f.setResponse(async () => { throw new Error('Interrupted'); }); await f.submit();
+    f.setResponse(async () => ({ ok: false, status: 422, json: async () => ({ detail: 'Amount must be positive' }) })); await f.submit();
     const first = JSON.parse(f.requests.at(-1).body); await f.submit();
     assert.equal(JSON.parse(f.requests.at(-1).body).request_id, first.request_id);
     f.fields.get('recipient').value = 'Different recipient'; await f.submit();
@@ -966,10 +968,10 @@ test('a profile retains fees before any stock and exposes pooled cost and histor
     const fee = { ...movement, kind: 'expense', quantity: 0, unit_price: 0, total: 25, category: '物流' };
     const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [empty], movements: [fee] }) }));
     await f.ui.load(); f.click({ financeSection: 'movements' });
-    assert.match(f.element('financeList').innerHTML, /待进货/); assert.match(f.element('financeList').innerHTML, /USD 25.00/);
+    assert.match(f.element('financeList').innerHTML, /0 箱/); assert.match(f.element('financeList').innerHTML, /USD 25.00/);
     f.click({ financeDetail: 'products', id: '3' }); const body = f.element('financeDetailsBody').innerHTML;
-    assert.match(body, /尚未进货的费用 USD 25.00 已计入累计成本/);
-    assert.match(body, /新增进货或费用会更新此前销售的利润/); assert.match(body, /按类别查看费用/);
+    assert.match(body, /尚未进货的费用已计入对应币种支出/);
+    assert.match(body, /新增成本会更新此前销售的利润/); assert.match(body, /按类别查看费用/);
     assert.match(body, /物流/); assert.doesNotMatch(FinanceUI.renderRows([fee], 'movements', [empty]), /0 箱/); // Expenses have no artificial zero-quantity transaction.
 });
 
@@ -1026,4 +1028,71 @@ test('expense and total-price validation use exact authoritative amount and leng
     assert.equal(FinanceUI.validatePayload('movements', sale), '');
     assert.match(FinanceUI.validatePayload('movements', { ...sale, paid_amount: '100.000001' }), /总金额/);
     assert.equal(FinanceUI.inventoryUnitPrice('100', '3'), '33.333333');
+});
+
+test('product summaries keep native expense and sales totals separate and optional null conversion unavailable', async () => {
+    const native = { ...product, total_cost: null, average_cost: null, realized_profit: null, sales_revenue: null, inventory_cost: null, conversion_pending: true,
+        currency_totals: [{ currency: 'CNY', purchase_cost: '700', expense_cost: '35', total_cost: '735', sales_revenue: '0' }, { currency: 'USD', purchase_cost: '0', expense_cost: '0', total_cost: '0', sales_revenue: '1200' }],
+        expense_categories: [{ category: '<Local logistics>', currency: 'CNY', total: '35' }] };
+    const cards = FinanceUI.renderProductCards([native]);
+    assert.match(cards, /累计支出/); assert.match(cards, /累计收入/);
+    for (const text of ['CNY 735.00', 'USD 1,200.00']) assert.ok(cards.includes(text), text);
+    assert.doesNotMatch(cards, /已售利润|等效单位成本|USD 735.00|USD 1,935.00/);
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, products: [native] }) }));
+    await f.ui.load(); f.click({ financeDetail: 'products', id: '3' });
+    const body = f.element('financeDetailsBody').innerHTML;
+    assert.match(body, /各币种不会自动相加或折算/); assert.match(body, /<summary>查看可选折算成本与利润/); assert.match(body, /未折算/);
+    assert.match(body, /&lt;Local logistics&gt;/); assert.match(body, /CNY 35.00/);
+    const hidden = FinanceUI.renderProductCards([native], true);
+    for (const text of ['735', '1,200', product.name, product.sku]) assert.ok(!hidden.includes(text), text);
+});
+
+test('cross-currency sale saves its exact native amount without a required or invented exchange rate', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
+    f.fields.get('kind').value = 'sale'; f.fields.get('quantity').value = '2'; f.fields.get('unit_price').value = '600'; f.fields.get('currency').value = 'CNY';
+    f.element('financeForm').listeners.change({ target: { name: 'currency' } });
+    assert.equal(f.element('financeMovementTotal').textContent, 'CNY 1,200.00');
+    assert.match(f.element('financeFormFields').innerHTML, /id="financeMovementConversion"><summary>汇率与折算（可选/);
+    await f.submit(); const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.exchange_rate, null); assert.equal(payload.currency, 'CNY'); assert.equal(payload.unit_price, '600'); assert.equal(payload.quantity, '2');
+    assert.equal(payload.base_total, undefined);
+});
+
+test('later movement edit can add or clear an optional quote without changing original native amounts', async () => {
+    const record = { ...movement, payments: [], currency: 'CNY', base_currency: 'USD', exchange_rate: null, base_total: null, conversion_pending: true, request_fields: { date: '2026-10-01', product_id: 3, kind: 'purchase', quantity: '10', unit_price: '70', currency: 'CNY', exchange_rate: null, paid_amount: '30' } };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [record] }) }));
+    await f.ui.load(); f.click({ financeEdit: 'movements', id: '4' }, true);
+    assert.equal(f.fields.get('exchange_rate').value, '');
+    f.fields.get('exchange_rate').value = '0.142857142857'; await f.submit();
+    let payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(payload.exchange_rate, '0.142857142857'); assert.equal(payload.version, 2); assert.equal(payload.unit_price, '70');
+    f.click({ financeEdit: 'movements', id: '4' }, true); await f.submit();
+    payload = JSON.parse(f.requests.at(-1).body); assert.equal(payload.exchange_rate, null);
+});
+
+test('pending native payments never masquerade as settled or converted and can receive rates through child editing', async () => {
+    const child = { ...movement.payments[0], amount: '50', currency: 'CNY', exchange_rate: null, invoice_currency: 'USD', invoice_amount: null, conversion_pending: true, payer: 'Actual child payer', recipient: 'Actual child recipient', handler: 'Child handler' };
+    const parent = { ...movement, payments: [child], paid_amount: 30, remaining_payment: null, confirmed_remaining_payment: 170, status: 'pending_conversion' };
+    const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, movements: [parent] }) }));
+    await f.ui.load(); f.click({ financeDetail: 'movements', id: '4' });
+    const detail = f.element('financeDetailsBody').innerHTML;
+    assert.match(detail, /有收付待折抵/); assert.match(detail, /CNY 50.00/); assert.match(detail, /可编辑补填折抵汇率/); assert.doesNotMatch(detail, /折抵 USD 50.00/);
+    assert.match(detail, /data-finance-payment-edit/);
+    const row = FinanceUI.renderRows([parent], 'movements', [product]); assert.match(row, /有收付待折抵/); assert.doesNotMatch(row, /已结清|已付清/);
+    f.click({ financePaymentEdit: '', id: '9', parent: '4' }, true);
+    assert.equal(f.element('financeEditTitle').textContent, '编辑收付款'); assert.equal(f.fields.get('amount').value, '50');
+    assert.equal(f.fields.get('payer').value, 'Actual child payer'); assert.equal(f.fields.get('handler').value, 'Child handler');
+    f.fields.get('exchange_rate').value = '0.14'; await f.submit(); const payload = JSON.parse(f.requests.at(-1).body);
+    assert.equal(f.requests.at(-1).url, '/api/finance/movements/4/payments/9'); assert.equal(f.requests.at(-1).method, 'PUT');
+    assert.equal(payload.version, 1); assert.equal(payload.amount, '50'); assert.equal(payload.currency, 'CNY'); assert.equal(payload.exchange_rate, '0.14');
+    assert.equal(payload.request_id, undefined); assert.equal(payload.payer, 'Actual child payer');
+});
+
+test('new cross-currency payment accepts no quote, while explicit bad quotes retain validation', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financePayment: 'movements', id: '4' }, true);
+    f.fields.get('currency').value = 'CNY'; f.element('financeForm').listeners.change({ target: { name: 'currency' } }); f.fields.get('amount').value = '700';
+    assert.equal(f.element('financePaymentInvoiceAmount').textContent, '未折抵（不影响保存）');
+    await f.submit(); const payload = JSON.parse(f.requests.at(-1).body); assert.equal(payload.exchange_rate, null); assert.equal(payload.amount, '700');
+    assert.equal(FinanceUI.validatePayload('payments', { date: '2026-10-02', currency: 'CNY', amount: '700', exchange_rate: null }, movement), '');
+    assert.match(FinanceUI.validatePayload('payments', { date: '2026-10-02', currency: 'CNY', amount: '700', exchange_rate: '0' }, movement), /大于 0/);
 });

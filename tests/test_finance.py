@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from app.finance import (ExchangeCreate, FinanceError, InventoryPaymentCreate, LoanCreate, LoanUpdate, MovementCreate,
+from app.finance import (ExchangeCreate, FinanceError, InventoryPaymentCreate, InventoryPaymentUpdate, LoanCreate, LoanUpdate, MovementCreate,
                          MovementUpdate,
                          ProductCreate, ProductUpdate, PaymentCreate, TransferCreate,
                          TransferUpdate, ExchangeUpdate,
@@ -241,7 +241,7 @@ class ProductTransactionLedgerTests(unittest.TestCase):
         after = replay(self.state)['products'][0]
         self.assertEqual((after['quantity'], after['inventory_cost'], after['unallocated_cost'], after['equivalent_cost'], after['realized_profit']),
                          (0, 0, 0, 47, 9))
-        self.assertEqual(after['expense_categories'], [dict(category='包装', total=15), dict(category='物流', total=20), dict(category='自填费用', total=6)])
+        self.assertEqual(after['converted_expense_categories'], [dict(category='包装', total=15), dict(category='物流', total=20), dict(category='自填费用', total=6)])
         fee['voided'] = True
         self.assertEqual(replay(self.state)['products'][0]['realized_profit'], 15)
 
@@ -347,12 +347,19 @@ class InventoryCurrencyTests(unittest.TestCase):
         self.assertEqual((values['USD']['purchase_total'], values['USD']['sales_total'], values['USD']['receivable']), (0, 10, 5))
         self.assertEqual(values['CNY']['realized_profit'], 35)
 
-    def test_missing_cross_rates_and_wrong_same_currency_rates_rejected(self):
-        for values in (dict(currency='CNY'), dict(exchange_rate=2)):
+    def test_missing_cross_rates_are_pending_and_wrong_same_currency_rates_rejected(self):
+        self.state['movements'] = [movement(currency='CNY')]
+        saved = replay(self.state)['movements'][0]
+        self.assertEqual((saved['exchange_rate'], saved['base_total'], saved['conversion_pending']), (None, None, True))
+        for values in (dict(exchange_rate=2),):
             self.state['movements'] = [movement(**values)]
             with self.subTest(values=values), self.assertRaises(FinanceError):
                 replay(self.state)
-        for values in (dict(currency='CNY'), dict(currency='USD', exchange_rate=2)):
+        self.state['movements'] = [movement()]
+        self.state['movements'][0]['payments'] = [inventory_payment(currency='CNY')]
+        saved = replay(self.state)['movements'][0]
+        self.assertEqual((saved['payments'][0]['invoice_amount'], saved['status']), (None, 'pending_conversion'))
+        for values in (dict(currency='USD', exchange_rate=2),):
             self.state['movements'] = [movement()]
             self.state['movements'][0]['payments'] = [inventory_payment(**values)]
             with self.subTest(values=values), self.assertRaises(FinanceError):
@@ -384,6 +391,121 @@ class InventoryCurrencyTests(unittest.TestCase):
         self.assertEqual((result['currency'], result['exchange_rate'], result['base_total'], result['paid_amount']), ('USD', 1, 100, 40))
         self.assertNotIn('currency', legacy)
         self.assertNotIn('exchange_rate', legacy['payments'][0])
+
+
+class NativeInventoryCurrencyTests(unittest.TestCase):
+    def setUp(self):
+        self.state = empty_state()
+        self.state['products'] = [product()]
+
+    def test_mixed_native_costs_and_income_do_not_require_a_unified_currency(self):
+        self.state['movements'] = [movement(currency='CNY', quantity=2, unit_price=100),
+            movement(2, kind='expense', quantity=None, unit_price=None, total_amount=10, category='物流', handler='Carrier'),
+            movement(3, date='2026-01-03', kind='sale', quantity=1, unit_price=50, handler='Chloe')]
+        before = deepcopy(self.state)
+        result = replay(self.state)
+        item = result['products'][0]
+        native = {entry['currency']: entry for entry in item['currency_totals']}
+        self.assertEqual((native['CNY']['total_cost'], native['CNY']['sales_revenue'], native['CNY']['equivalent_cost']), (200, 0, 100))
+        self.assertEqual((native['USD']['total_cost'], native['USD']['sales_revenue'], native['USD']['net_income'], native['USD']['equivalent_cost']), (10, 50, 40, 5))
+        self.assertEqual(item['expense_categories'], [dict(category='物流', currency='USD', total=10)])
+        self.assertEqual((item['quantity'], item['acquired_quantity'], item['sold_quantity']), (1, 2, 1))
+        for key in ('purchase_cost', 'total_cost', 'inventory_cost', 'average_cost', 'realized_profit'):
+            self.assertIsNone(item[key], key)
+        sale = result['movements'][0]
+        self.assertEqual((sale['total'], sale['base_total'], sale['handler']), (50, 50, 'Chloe'))
+        self.assertIsNone(sale['cost_of_goods'])
+        self.assertIsNone(sale['realized_profit'])
+        summary = {entry['currency']: entry for entry in result['summary']}
+        self.assertEqual((summary['CNY']['inventory_spend'], summary['USD']['inventory_spend'], summary['USD']['inventory_income']), (200, 10, 50))
+        self.assertIsNone(summary['USD']['realized_profit'])
+        self.assertEqual(self.state, before)
+
+    def test_missing_sale_rate_keeps_known_cost_and_other_sale_profit(self):
+        self.state['movements'] = [movement(quantity=2, unit_price=10),
+            movement(2, date='2026-01-03', kind='sale', quantity=1, unit_price=100, currency='CNY'),
+            movement(3, date='2026-01-04', kind='sale', quantity=1, unit_price=30)]
+        result = replay(self.state)
+        item = result['products'][0]
+        sales = {entry['id']: entry for entry in result['movements']}
+        self.assertEqual((item['total_cost'], item['average_cost'], item['inventory_cost']), (20, 10, 0))
+        self.assertEqual((sales[2]['base_total'], sales[2]['cost_of_goods'], sales[2]['realized_profit']), (None, 10, None))
+        self.assertEqual(sales[3]['realized_profit'], 20)
+        self.assertIsNone(item['sales_revenue'])
+        self.assertIsNone(item['realized_profit'])
+        self.state['movements'][1]['exchange_rate'] = '.1'
+        restored = replay(self.state)['products'][0]
+        self.assertEqual((restored['sales_revenue'], restored['realized_profit'], restored['conversion_pending']), (40, 20, False))
+        self.assertEqual(restored['currency_totals'], item['currency_totals'])
+
+    def test_missing_expense_rate_can_be_added_or_voided_without_changing_native_totals(self):
+        self.state['movements'] = [movement(quantity=2),
+            movement(2, kind='expense', quantity=None, unit_price=None, total_amount=70, category='运费', currency='CNY'),
+            movement(3, date='2026-01-03', kind='sale', quantity=1, unit_price=30)]
+        pending = replay(self.state)['products'][0]
+        self.assertEqual(pending['expense_categories'], [dict(category='运费', currency='CNY', total=70)])
+        self.assertEqual(pending['converted_expense_categories'], [dict(category='运费', total=None)])
+        self.state['movements'][1]['exchange_rate'] = '.1'
+        converted = replay(self.state)['products'][0]
+        self.assertEqual((converted['total_cost'], converted['equivalent_cost'], converted['realized_profit']), (27, 13.5, 16.5))
+        self.assertEqual(converted['currency_totals'], pending['currency_totals'])
+        self.state['movements'][1].pop('exchange_rate')
+        self.state['movements'][1]['voided'] = True
+        final = replay(self.state)['products'][0]
+        self.assertEqual((final['total_cost'], final['realized_profit'], final['conversion_pending']), (20, 20, False))
+
+    def test_unconverted_payment_keeps_native_history_without_claiming_settlement(self):
+        buy = movement(paid_amount=20)
+        buy['payments'] = [inventory_payment(amount=700, currency='CNY', handler='Cashier', payer='Kevin', recipient='Carrier')]
+        self.state['movements'] = [buy]
+        result = replay(self.state)
+        saved = result['movements'][0]
+        child = saved['payments'][0]
+        self.assertEqual((saved['paid_amount'], saved['remaining_payment'], saved['confirmed_remaining_payment'], saved['status']), (20, None, 80, 'pending_conversion'))
+        self.assertEqual((child['amount'], child['currency'], child['invoice_amount'], child['conversion_pending']), (700, 'CNY', None, True))
+        self.assertEqual(child['request_fields']['amount'], '700')
+        self.assertEqual((result['summary'][0]['payable'], result['summary'][0]['pending_payment_conversion_count']), (None, 1))
+        self.assertEqual(result['products'][0]['total_cost'], 100)
+        buy['payments'][0]['exchange_rate'] = '.1'
+        converted = replay(self.state)['movements'][0]
+        self.assertEqual((converted['paid_amount'], converted['remaining_payment'], converted['status']), (90, 10, 'partial'))
+        buy['payments'][0]['exchange_rate'] = '1'
+        with self.assertRaisesRegex(FinanceError, 'Payments cannot exceed'):
+            replay(self.state)
+
+    def test_pending_payment_cannot_be_added_to_an_already_settled_invoice(self):
+        buy = movement(paid_amount=100)
+        buy['payments'] = [inventory_payment(currency='CNY')]
+        self.state['movements'] = [buy]
+        with self.assertRaisesRegex(FinanceError, 'already paid'):
+            replay(self.state)
+
+    def test_zero_price_gift_in_another_currency_has_known_zero_income_without_a_rate(self):
+        self.state['movements'] = [movement(quantity=2, unit_price=10),
+            movement(2, date='2026-01-03', kind='sale', quantity=1, unit_price=0, currency='CNY')]
+        result = replay(self.state)
+        gift = result['movements'][0]
+        self.assertEqual((gift['base_total'], gift['cost_of_goods'], gift['realized_profit'], gift['conversion_pending']), (0, 10, -10, False))
+        self.assertEqual((result['products'][0]['realized_profit'], result['products'][0]['conversion_pending']), (-10, False))
+
+    def test_rate_update_null_is_clear_omission_preserves_and_create_null_is_canonical(self):
+        values = dict(date='2026-01-02', product_id=1, kind='purchase', quantity=2, unit_price=10, version=1)
+        self.assertNotIn('exchange_rate', request_data(MovementUpdate(**values)))
+        self.assertIsNone(request_data(MovementUpdate(**values, exchange_rate=None))['exchange_rate'])
+        values.pop('version')
+        request_id = uuid4()
+        self.assertEqual(request_data(MovementCreate(**values, request_id=request_id)),
+                         request_data(MovementCreate(**values, request_id=request_id, exchange_rate=None)))
+        payment_values = dict(date='2026-01-03', amount='999999999999.000001', version=1)
+        update = request_data(InventoryPaymentUpdate(**payment_values))
+        self.assertEqual(update['amount'], '999999999999.000001')
+        for key in ('exchange_rate', 'currency', 'payer', 'recipient', 'handler'):
+            self.assertNotIn(key, update)
+        explicit = request_data(InventoryPaymentUpdate(**payment_values, exchange_rate=None, handler=' ', payer=' '))
+        self.assertIsNone(explicit['exchange_rate'])
+        self.assertEqual((explicit['handler'], explicit['payer']), ('', ''))
+        with self.assertRaises(ValidationError):
+            InventoryPaymentUpdate(**dict(payment_values, version=True))
 
 
 class ProjectTests(unittest.TestCase):

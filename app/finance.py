@@ -329,6 +329,16 @@ class InventoryPaymentCreate(PaymentCreate):
     handler: str = Field(default='', max_length=200)
 
 
+class InventoryPaymentUpdate(MoneyActors):
+    date: date
+    amount: Decimal
+    currency: Optional[str] = None
+    exchange_rate: Optional[Decimal] = None
+    handler: str = Field(default='', max_length=200)
+    note: str = Field(default='', max_length=2000)
+    version: int = Field(ge=1, strict=True)
+
+
 CREATE_MODELS = {'transfers': TransferCreate, 'loans': LoanCreate,
                  'products': ProductCreate, 'movements': MovementCreate,
                  'exchanges': ExchangeCreate, 'projects': ProjectCreate}
@@ -350,7 +360,9 @@ def request_data(request):
 
     values = canonical(request.model_dump(), request.model_dump(mode='json'))
     for key, value in request.model_dump().items():
-        if value is None and key in ('currency', 'exchange_rate'):
+        clear_rate = (key == 'exchange_rate' and isinstance(request, (MovementUpdate, InventoryPaymentUpdate))
+                      and key in request.model_fields_set)
+        if value is None and key in ('currency', 'exchange_rate') and not clear_rate:
             values.pop(key, None)
     if values.get('project_id') is None:
         if not isinstance(request, MovementUpdate) or 'project_id' not in request.model_fields_set:
@@ -364,7 +376,7 @@ def request_data(request):
             values.pop('unit_price', None)
     for key in ('payer', 'recipient', 'handler', 'category'):
         if key in values:
-            is_update = isinstance(request, (TransferUpdate, LoanUpdate, MovementUpdate, ExchangeUpdate))
+            is_update = isinstance(request, (TransferUpdate, LoanUpdate, MovementUpdate, ExchangeUpdate, InventoryPaymentUpdate))
             if (is_update and key not in request.model_fields_set) or (not is_update and values[key] == ''):
                 values.pop(key)
     return values
@@ -428,11 +440,13 @@ def _active_payments(record, key):
     return sum((money(p['amount']) for p in items if not p['voided']), ZERO)
 
 
-def resolve_currency_rate(record, default_currency):
+def resolve_currency_rate(record, default_currency, *, allow_missing=False):
     """Use recorded rates only; missing legacy fields mean same-currency 1:1."""
     currency = record.get('currency') or default_currency
     raw_rate = record.get('exchange_rate')
     if currency != default_currency and raw_rate is None:
+        if allow_missing:
+            return currency, None
         raise FinanceError('Enter the exchange rate for a different currency')
     rate = D(1) if raw_rate is None else money(raw_rate)
     if not rate.is_finite() or rate <= 0:
@@ -444,19 +458,29 @@ def resolve_currency_rate(record, default_currency):
 
 def _inventory_payments(movement, invoice_currency):
     total = ZERO
+    pending = 0
     for payment in movement.get('payments', []):
+        fields = {key: payment[key] for key in ('date', 'amount', 'currency', 'exchange_rate',
+                  'handler', 'payer', 'recipient', 'note') if key in payment}
+        for key in ('amount', 'exchange_rate'):
+            if fields.get(key) is not None:
+                fields[key] = format(money(fields[key]).normalize(), 'f')
         payment['amount'] = money(payment['amount'])
         if not payment['voided'] and payment['date'] < movement['date']:
             raise FinanceError('Payment date cannot precede the original record date')
-        currency, rate = resolve_currency_rate(payment, invoice_currency)
-        converted = rounded(payment['amount'] * rate)
-        if converted <= 0:
+        currency, rate = resolve_currency_rate(payment, invoice_currency, allow_missing=True)
+        converted = None if rate is None else rounded(payment['amount'] * rate)
+        if converted is not None and converted <= 0:
             raise FinanceError('Converted payment amount must be positive')
         payment.update(currency=currency, exchange_rate=rate,
-                       invoice_currency=invoice_currency, invoice_amount=converted)
+                       invoice_currency=invoice_currency, invoice_amount=converted,
+                       conversion_pending=rate is None, request_fields=fields)
         if not payment['voided']:
-            total += converted
-    return total
+            if converted is None:
+                pending += 1
+            else:
+                total += converted
+    return total, pending
 
 
 def allocate_residual(total, weights):
@@ -565,7 +589,8 @@ def replay(state):
                 'borrowed_outstanding', 'inventory_cost', 'purchase_total',
                 'sales_total', 'payable', 'receivable', 'realized_profit',
                 'exchange_in', 'exchange_out', 'exchange_fees', 'exchange_net',
-                'expense_total', 'unallocated_cost')})
+                'expense_total', 'unallocated_cost', 'inventory_spend',
+                'inventory_income', 'pending_payment_conversion_count')})
         return summary[currency]
 
     with localcontext() as ctx:
@@ -621,12 +646,30 @@ def replay(state):
         products = {p['id']: p for p in result['products']}
         sales = {product_id: [] for product_id in products}
         expense_categories = {product_id: {} for product_id in products}
+        native_totals = {product_id: {} for product_id in products}
+
+        def native_bucket(product_id, currency):
+            currencies = native_totals[product_id]
+            if currency not in currencies:
+                currencies[currency] = dict(currency=currency, expense_categories={}, **{
+                    key: ZERO for key in ('purchase_cost', 'expense_cost', 'sales_revenue',
+                                          'acquired_quantity', 'sold_quantity')})
+            return currencies[currency]
+
+        def add_nullable(target, key, amount):
+            if target[key] is None or amount is None:
+                target[key] = None
+            else:
+                target[key] += amount
+
         for product in products.values():
             product.update(quantity=ZERO, average_cost=ZERO, inventory_cost=ZERO,
                            realized_profit=ZERO, acquired_quantity=ZERO,
                            sold_quantity=ZERO, purchase_cost=ZERO, expense_cost=ZERO,
                            total_cost=ZERO, sales_revenue=ZERO, equivalent_cost=ZERO,
-                           unallocated_cost=ZERO, expense_categories=[])
+                           unallocated_cost=ZERO, expense_categories=[],
+                           currency_totals=[], conversion_pending=False,
+                           pending_payment_conversion_count=0)
             if not product['voided']:
                 bucket(product['currency'])
         skus = set()
@@ -662,55 +705,95 @@ def replay(state):
             price = (ZERO if expense else money(movement['unit_price'])
                      if movement.get('unit_price') is not None else total / qty)
             initial = money(movement['paid_amount'])
-            invoice_currency, rate = resolve_currency_rate(movement, product['currency'])
-            extra = _inventory_payments(movement, invoice_currency)
-            base_total = rounded(total * rate)
+            invoice_currency, rate = resolve_currency_rate(movement, product['currency'], allow_missing=True)
+            extra, pending_payments = _inventory_payments(movement, invoice_currency)
+            # Zero-price gifts/opening stock have zero value in every currency;
+            # no exchange rate is needed to know their converted amount.
+            base_total = ZERO if total == ZERO else None if rate is None else rounded(total * rate)
             paid = initial + extra
             if paid > total:
                 raise FinanceError('Payments cannot exceed the movement total')
+            if pending_payments and paid == total:
+                raise FinanceError('Resolve the pending payment exchange rate before settling an already paid movement')
             if movement['kind'] == 'opening' and (initial or movement.get('payments')):
                 raise FinanceError('Opening inventory cannot have payments')
             movement.update(currency=invoice_currency, base_currency=product['currency'],
                             exchange_rate=rate, base_total=base_total, quantity=qty, unit_price=price,
                             total=total, initial_paid_amount=initial, paid_amount=paid,
-                            remaining_payment=ZERO if movement['voided'] or movement['kind'] == 'opening' else total - paid,
+                            remaining_payment=ZERO if movement['voided'] or movement['kind'] == 'opening'
+                                else None if pending_payments else total - paid,
+                            confirmed_remaining_payment=ZERO if movement['voided'] or movement['kind'] == 'opening' else total - paid,
+                            conversion_pending=base_total is None,
+                            pending_payment_conversion_count=pending_payments,
                             cost_of_goods=ZERO, realized_profit=ZERO,
                             price_basis='expense' if expense else 'total' if movement.get('total_amount') is not None else 'unit',
                             request_fields=request_fields,
-                            status='void' if movement['voided'] else 'paid' if paid == total or movement['kind'] == 'opening'
+                            status='void' if movement['voided'] else 'pending_conversion' if pending_payments
+                            else 'paid' if paid == total or movement['kind'] == 'opening'
                             else 'partial' if paid else 'unpaid')
             if movement['voided']:
                 continue
             values = bucket(invoice_currency)
+            native = native_bucket(product['id'], invoice_currency)
+            product['conversion_pending'] |= base_total is None
+            product['pending_payment_conversion_count'] += pending_payments
+            values['pending_payment_conversion_count'] += pending_payments
             if movement['kind'] in ('purchase', 'opening'):
                 product['quantity'] += qty
                 product['acquired_quantity'] += qty
-                product['purchase_cost'] += base_total
+                add_nullable(product, 'purchase_cost', base_total)
+                native['purchase_cost'] += total
+                native['acquired_quantity'] += qty
+                values['inventory_spend'] += total
                 if movement['kind'] == 'purchase':
                     values['purchase_total'] += total
-                    values['payable'] += total - paid
+                    add_nullable(values, 'payable', None if pending_payments else total - paid)
             elif expense:
-                product['expense_cost'] += base_total
+                add_nullable(product, 'expense_cost', base_total)
+                native['expense_cost'] += total
                 categories = expense_categories[product['id']]
                 category = movement['category']
-                categories[category] = categories.get(category, ZERO) + base_total
+                categories.setdefault(category, ZERO)
+                add_nullable(categories, category, base_total)
+                native_categories = native['expense_categories']
+                native_categories[category] = native_categories.get(category, ZERO) + total
                 values['expense_total'] += total
-                values['payable'] += total - paid
+                values['inventory_spend'] += total
+                add_nullable(values, 'payable', None if pending_payments else total - paid)
             else:
                 if qty > product['quantity']:
                     raise FinanceError(f'Insufficient inventory for {product["name"]} on {movement["date"]}; check earlier stock records')
                 product['quantity'] -= qty
                 product['sold_quantity'] += qty
-                product['sales_revenue'] += base_total
+                add_nullable(product, 'sales_revenue', base_total)
+                native['sales_revenue'] += total
+                native['sold_quantity'] += qty
                 sales[product['id']].append(movement)
                 values['sales_total'] += total
-                values['receivable'] += total - paid
+                values['inventory_income'] += total
+                add_nullable(values, 'receivable', None if pending_payments else total - paid)
         for product in products.values():
-            product['total_cost'] = product['purchase_cost'] + product['expense_cost']
-            product['expense_categories'] = [dict(category=category, total=total)
+            product['total_cost'] = (None if product['purchase_cost'] is None or product['expense_cost'] is None
+                                     else product['purchase_cost'] + product['expense_cost'])
+            product['converted_expense_categories'] = [dict(category=category, total=total)
                 for category, total in sorted(expense_categories[product['id']].items())]
             acquired = product['acquired_quantity']
-            if acquired:
+            for currency, native in sorted(native_totals[product['id']].items()):
+                native['total_cost'] = native['purchase_cost'] + native['expense_cost']
+                native['net_income'] = native['sales_revenue'] - native['total_cost']
+                native['equivalent_cost'] = None if not acquired else rounded(native['total_cost'] / acquired)
+                categories = native['expense_categories']
+                native['expense_categories'] = [dict(category=category, total=total)
+                    for category, total in sorted(categories.items())]
+                product['currency_totals'].append(native)
+                product['expense_categories'].extend(dict(category=category, currency=currency, total=total)
+                    for category, total in sorted(categories.items()))
+            if product['total_cost'] is None:
+                for key in ('average_cost', 'equivalent_cost', 'inventory_cost', 'realized_profit', 'unallocated_cost'):
+                    product[key] = None
+                for sale in sales[product['id']]:
+                    sale['cost_of_goods'] = sale['realized_profit'] = None
+            elif acquired:
                 # Every cost belongs to the product pool, including a fee added
                 # after a sale. Allocate exact micro-units across sales and stock
                 # together so late edits conserve cost without inventory residue.
@@ -721,18 +804,17 @@ def replay(state):
                 product['inventory_cost'] = allocated[-1]
                 for sale, cost in zip(product_sales, allocated):
                     sale['cost_of_goods'] = cost
-                    sale['realized_profit'] = sale['base_total'] - cost
-                    product['realized_profit'] += sale['realized_profit']
-                for sale in product_sales:
-                    sale['calculation_fields'] = {key: format(sale[key].normalize(), 'f')
-                        for key in ('total', 'base_total', 'cost_of_goods', 'realized_profit')}
+                    sale['realized_profit'] = None if sale['base_total'] is None else sale['base_total'] - cost
+                    add_nullable(product, 'realized_profit', sale['realized_profit'])
             else:
                 product['unallocated_cost'] = product['total_cost']
+            for sale in sales[product['id']]:
+                sale['calculation_fields'] = {key: None if sale[key] is None else format(sale[key].normalize(), 'f')
+                    for key in ('total', 'base_total', 'cost_of_goods', 'realized_profit')}
             if not product['voided']:
                 values = bucket(product['currency'])
-                values['inventory_cost'] += product['inventory_cost']
-                values['realized_profit'] += product['realized_profit']
-                values['unallocated_cost'] += product['unallocated_cost']
+                for key in ('inventory_cost', 'realized_profit', 'unallocated_cost'):
+                    add_nullable(values, key, product[key])
     result['summary'] = [summary[c] for c in sorted(summary)]
     for collection in ('transfers', 'loans', 'movements', 'exchanges', 'projects'):
         result[collection].sort(key=lambda r: (r['date'], r['id']), reverse=True)
