@@ -9,7 +9,7 @@ from .finance import (FinanceError, empty_state, find_record, replay, request_da
 # Fixed, separate from the investment ledger's lock. Every writer participates.
 FINANCE_LOCK = 738190241
 TABLES = {kind: 'finance_' + kind for kind in (
-    'transfers', 'loans', 'products', 'movements', 'repayments', 'payments')}
+    'transfers', 'loans', 'products', 'movements', 'repayments', 'payments', 'exchanges')}
 CHILDREN = {'loans': 'repayments', 'movements': 'payments'}
 
 

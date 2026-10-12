@@ -3,7 +3,7 @@
         <header class="finance-heading">
             <div>
                 <h2>财务</h2>
-                <p>记住重要的资金往来，清楚每一笔借贷与进出货。</p>
+                <p>记住重要的资金往来，清楚每一笔借贷、进出货与换汇。</p>
             </div>
             <button type="button" id="financeReload" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>刷新记录</button>
         </header>
@@ -15,6 +15,7 @@
                 <button type="button" data-finance-section="transfers" aria-pressed="true" class="active"><i class="bi bi-arrow-left-right" aria-hidden="true"></i>转账记录</button>
                 <button type="button" data-finance-section="loans" aria-pressed="false"><i class="bi bi-people" aria-hidden="true"></i>借贷往来</button>
                 <button type="button" data-finance-section="movements" aria-pressed="false"><i class="bi bi-box-seam" aria-hidden="true"></i>进出货</button>
+                <button type="button" data-finance-section="exchanges" aria-pressed="false"><i class="bi bi-currency-exchange" aria-hidden="true"></i>换汇</button>
             </div>
             <div class="finance-actions">
                 <button type="button" id="financeProducts" class="btn btn-outline-secondary d-none"><i class="bi bi-boxes me-1" aria-hidden="true"></i>商品库存</button>
@@ -30,8 +31,9 @@
             <label class="finance-void-filter"><input type="checkbox" id="financeShowVoided" class="form-check-input">显示已作废</label>
         </div>
         <div class="finance-list-caption"><span id="financeListCaption">转账记录</span><span id="financeCount" class="text-muted"></span></div>
-        <div id="financeList" class="finance-list" aria-live="polite"><div class="finance-empty"><i class="bi bi-journal-text" aria-hidden="true"></i><h3>打开财务，查看你的记录</h3><p>转账、借贷和进出货会分别保存在这里。</p></div></div>
+        <div id="financeList" class="finance-list" aria-live="polite"><div class="finance-empty"><i class="bi bi-journal-text" aria-hidden="true"></i><h3>打开财务，查看你的记录</h3><p>转账、借贷、进出货与换汇会分别保存在这里。</p></div></div>
         <p id="financeInventoryNote" class="finance-scope d-none">进货计入采购额，出货计入销售额；付款与收款可分次记录。库存与出货毛利按移动平均成本计算。</p>
+        <p id="financeExchangeNote" class="finance-scope d-none">换汇净流动 = 换入金额 − 换出本金 − 手续费，按各币种分别统计。换汇不计入转账汇总；实际到账与实际支出已包含对应币种的手续费。</p>
     </section>
 </div>
 

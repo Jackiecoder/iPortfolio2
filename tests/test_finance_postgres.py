@@ -12,7 +12,7 @@ from psycopg_pool import ConnectionPool
 
 from app import db
 from app import finance_repository as ledger
-from app.finance import (FinanceError, LoanCreate, LoanUpdate, MovementCreate,
+from app.finance import (ExchangeCreate, ExchangeUpdate, FinanceError, LoanCreate, LoanUpdate, MovementCreate,
                          MovementUpdate, PaymentCreate, ProductCreate, ProductUpdate,
                          TransferCreate, TransferUpdate)
 
@@ -54,6 +54,11 @@ class FinancePostgresTests(unittest.TestCase):
 
     def payment(self, **values):
         return PaymentCreate(**dict(dict(request_id=uuid4(), date='2026-01-03', amount=40), **values))
+
+    def exchange(self, **values):
+        return ExchangeCreate(**dict(dict(request_id=uuid4(), date='2026-01-01',
+                                          from_currency='USD', to_currency='CNY',
+                                          from_amount=1000, to_amount=7200, fee_amount=5), **values))
 
     def row_count(self, table):
         with self.pool.connection() as conn:
@@ -179,6 +184,75 @@ class FinancePostgresTests(unittest.TestCase):
         self.assertEqual(self.row_count('finance_transfers'), 1)
         self.assertEqual(self.row_count('finance_requests'), 1)
         self.assertEqual(self.row_count('finance_audit'), 1)
+
+    def test_exchange_edit_void_idempotency_and_audit_preserve_other_finances(self):
+        ledger.create_record('transfers', self.transfer())
+        request = self.exchange()
+        first = ledger.create_record('exchanges', request)
+        self.assertEqual(ledger.create_record('exchanges', request), first)
+        self.assertEqual(self.row_count('finance_exchanges'), 1)
+        self.assertEqual(first['exchanges'][0]['debited_amount'], 1005)
+        with self.assertRaisesRegex(FinanceError, 'different values'):
+            ledger.create_record('exchanges', self.exchange(request_id=request.request_id, fee_amount=6))
+        with self.assertRaisesRegex(FinanceError, 'different values'):
+            ledger.create_record('transfers', self.transfer(request_id=request.request_id))
+        updated = ledger.update_record('exchanges', 1, ExchangeUpdate(date='2026-01-01',
+                                       from_currency='USD', to_currency='CNY', from_amount=1000,
+                                       to_amount=7100, fee_currency='CNY', fee_amount=10, version=1))
+        saved = updated['exchanges'][0]
+        self.assertEqual((saved['version'], saved['debited_amount'], saved['received_amount'], saved['effective_rate']), (2, 1000, 7090, 7.09))
+        values = {r['currency']: r for r in updated['summary']}
+        self.assertEqual((values['USD']['transfer_in'], values['USD']['exchange_fees'], values['USD']['exchange_net']), (100, 0, -1000))
+        self.assertEqual((values['CNY']['exchange_in'], values['CNY']['exchange_fees'], values['CNY']['exchange_net']), (7100, 10, 7090))
+        with self.assertRaisesRegex(FinanceError, 'changed'):
+            ledger.void_record('exchanges', 1, 1)
+        final = ledger.void_record('exchanges', 1, 2)
+        self.assertTrue(final['exchanges'][0]['voided'])
+        self.assertEqual(len(final['summary']), 1)
+        self.assertEqual(final['summary'][0]['currency'], 'USD')
+        self.assertEqual((final['summary'][0]['transfer_net'], final['summary'][0]['exchange_in'], final['summary'][0]['exchange_out'], final['summary'][0]['exchange_fees'], final['summary'][0]['exchange_net']), (100, 0, 0, 0, 0))
+        self.assertEqual(ledger.list_finance(), final)
+        self.assertEqual(ledger.create_record('exchanges', request), final)
+        self.assertEqual(self.row_count('transactions'), 0)
+        with self.pool.connection() as conn:
+            rows = conn.execute('SELECT action, before_data, after_data FROM finance_audit WHERE entity_kind = %s ORDER BY id', ('exchanges',)).fetchall()
+        self.assertEqual([r[0] for r in rows], ['create', 'update', 'void'])
+        self.assertEqual((rows[1][1]['fee_currency'], rows[1][2]['fee_currency']), ('USD', 'CNY'))
+        self.assertTrue(rows[2][2]['voided'])
+
+    def test_populated_old_finance_schema_upgrades_without_losing_request_history(self):
+        request = self.transfer()
+        original = ledger.create_record('transfers', request)
+        with self.pool.connection() as conn:
+            conn.execute('DROP TABLE finance_exchanges')
+            conn.execute('ALTER TABLE finance_requests DROP CONSTRAINT finance_requests_entity_kind_check')
+            conn.execute("ALTER TABLE finance_requests ADD CONSTRAINT finance_requests_entity_kind_check CHECK (entity_kind IN ('transfers','loans','products','movements','repayments','payments'))")
+        db.init_schema()
+        db.init_schema()
+        self.assertEqual(ledger.list_finance(), original)
+        self.assertEqual(ledger.create_record('transfers', request), original)
+        self.assertEqual(self.row_count('finance_requests'), 1)
+        self.assertEqual(self.row_count('finance_audit'), 1)
+        exchanged = ledger.create_record('exchanges', self.exchange())
+        self.assertEqual(len(exchanged['exchanges']), 1)
+        self.assertEqual(len(exchanged['transfers']), 1)
+        self.assertEqual(self.row_count('finance_requests'), 2)
+
+    def test_competing_exchange_retries_commit_both_legs_and_fee_once(self):
+        request = self.exchange(fee_currency='CNY', fee_amount=35)
+        barrier = threading.Barrier(2)
+        def save():
+            barrier.wait()
+            return ledger.create_record('exchanges', request)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: save(), range(2)))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(self.row_count('finance_exchanges'), 1)
+        self.assertEqual(self.row_count('finance_requests'), 1)
+        self.assertEqual(self.row_count('finance_audit'), 1)
+        values = {r['currency']: r for r in ledger.list_finance()['summary']}
+        self.assertEqual((values['USD']['exchange_out'], values['USD']['exchange_net']), (1000, -1000))
+        self.assertEqual((values['CNY']['exchange_in'], values['CNY']['exchange_fees'], values['CNY']['exchange_net']), (7200, 35, 7165))
 
 
 if __name__ == '__main__':

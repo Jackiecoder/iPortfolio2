@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from app.finance import (FinanceError, LoanCreate, LoanUpdate, MovementCreate,
+from app.finance import (ExchangeCreate, FinanceError, LoanCreate, LoanUpdate, MovementCreate,
                          ProductCreate, ProductUpdate, PaymentCreate, TransferCreate,
                          empty_state, replay, request_data, validate_edit, validate_void)
 
@@ -31,6 +31,13 @@ def payment(record_id=1, **values):
     defaults = dict(date='2026-01-03', amount=20)
     defaults.update(values)
     return record(PaymentCreate, record_id, **defaults)
+
+
+def exchange(record_id=1, **values):
+    defaults = dict(date='2026-01-01', from_currency='USD', to_currency='CNY',
+                    from_amount=1000, to_amount=7200)
+    defaults.update(values)
+    return record(ExchangeCreate, record_id, **defaults)
 
 
 class FinanceModelTests(unittest.TestCase):
@@ -59,6 +66,81 @@ class FinanceModelTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 movement(**values)
         self.assertEqual(movement(kind='opening', unit_price=0)['paid_amount'], '0')
+
+    def test_exchange_rejects_same_currency_invalid_fees_and_invalid_amounts(self):
+        for values in (dict(to_currency='usd'), dict(from_currency='ABC'),
+                       dict(fee_currency='EUR'), dict(fee_amount=-1),
+                       dict(fee_amount='NaN'), dict(fee_amount=True),
+                       dict(fee_amount='0.0000001'), dict(from_amount=0),
+                       dict(to_amount=0), dict(to_amount='Infinity'),
+                       dict(from_amount='1000000000001'),
+                       dict(fee_currency='CNY', fee_amount=7200),
+                       dict(fee_currency='CNY', fee_amount=7201)):
+            with self.subTest(values=values), self.assertRaises(ValidationError):
+                exchange(**values)
+
+    def test_exchange_default_fee_currency_and_decimal_spelling_are_canonical(self):
+        request_id = uuid4()
+        defaults = dict(date='2026-01-01', from_currency='USD', to_currency='CNY',
+                        from_amount=1000, to_amount=7200, request_id=request_id)
+        implicit = ExchangeCreate(**defaults)
+        explicit = ExchangeCreate(**dict(defaults, fee_currency='usd', from_amount='1000.000000'))
+        null = ExchangeCreate(**dict(defaults, fee_currency=None))
+        self.assertEqual(request_data(implicit), request_data(explicit))
+        self.assertEqual(request_data(implicit), request_data(null))
+
+
+class ExchangeReplayTests(unittest.TestCase):
+    def test_source_fee_adds_debit_once_and_leaves_transfer_totals_unchanged(self):
+        state = empty_state()
+        state['exchanges'] = [exchange(fee_amount=5)]
+        state['transfers'] = [record(TransferCreate, date='2026-01-01', direction='in', amount=25)]
+        result = replay(state)
+        saved = result['exchanges'][0]
+        self.assertEqual((saved['debited_amount'], saved['received_amount'], saved['exchange_rate']), (1005, 7200, 7.2))
+        self.assertAlmostEqual(saved['inverse_rate'], 1 / 7.2)
+        self.assertAlmostEqual(saved['effective_rate'], 7200 / 1005)
+        values = {r['currency']: r for r in result['summary']}
+        self.assertEqual((values['USD']['exchange_out'], values['USD']['exchange_fees'], values['USD']['exchange_net']), (1000, 5, -1005))
+        self.assertEqual((values['CNY']['exchange_in'], values['CNY']['exchange_fees'], values['CNY']['exchange_net']), (7200, 0, 7200))
+        self.assertEqual((values['USD']['transfer_in'], values['USD']['transfer_out'], values['USD']['transfer_net']), (25, 0, 25))
+        self.assertEqual(state['exchanges'][0]['from_amount'], '1000')
+
+    def test_target_fee_subtracts_receipt_once_without_source_debit_fee(self):
+        state = empty_state()
+        state['exchanges'] = [exchange(fee_currency='CNY', fee_amount=35)]
+        result = replay(state)
+        saved = result['exchanges'][0]
+        self.assertEqual((saved['debited_amount'], saved['received_amount'], saved['exchange_rate']), (1000, 7165, 7.2))
+        self.assertEqual(saved['effective_rate'], 7.165)
+        values = {r['currency']: r for r in result['summary']}
+        self.assertEqual((values['USD']['exchange_out'], values['USD']['exchange_fees'], values['USD']['exchange_net']), (1000, 0, -1000))
+        self.assertEqual((values['CNY']['exchange_in'], values['CNY']['exchange_fees'], values['CNY']['exchange_net']), (7200, 35, 7165))
+
+    def test_void_removes_both_legs_and_fee_but_keeps_exchange_history(self):
+        state = empty_state()
+        first = exchange(fee_amount=5)
+        first['voided'] = True
+        state['exchanges'] = [first]
+        result = replay(state)
+        self.assertEqual(result['summary'], [])
+        self.assertTrue(result['exchanges'][0]['voided'])
+        self.assertEqual(result['exchanges'][0]['debited_amount'], 1005)
+
+    def test_tiny_nonzero_exchange_rate_does_not_round_to_zero(self):
+        state = empty_state()
+        state['exchanges'] = [exchange(from_amount='1000000000000', to_amount='0.000001')]
+        saved = replay(state)['exchanges'][0]
+        self.assertEqual(saved['exchange_rate'], 1e-18)
+        self.assertEqual(saved['inverse_rate'], 1e18)
+        self.assertGreater(saved['effective_rate'], 0)
+
+    def test_exchange_summary_aggregates_currency_legs_without_converting(self):
+        state = empty_state()
+        state['exchanges'] = [exchange(fee_amount=5), exchange(2, from_currency='CNY', to_currency='USD', from_amount=3600, to_amount=500, fee_currency='USD', fee_amount=2)]
+        values = {r['currency']: r for r in replay(state)['summary']}
+        self.assertEqual((values['USD']['exchange_in'], values['USD']['exchange_out'], values['USD']['exchange_fees'], values['USD']['exchange_net']), (500, 1000, 7, -507))
+        self.assertEqual((values['CNY']['exchange_in'], values['CNY']['exchange_out'], values['CNY']['exchange_fees'], values['CNY']['exchange_net']), (7200, 3600, 0, 3600))
 
 
 class FinanceReplayTests(unittest.TestCase):

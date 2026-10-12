@@ -22,6 +22,13 @@ holdings, cash snapshots, or portfolio returns. The public demo does not load it
   from transfer inflow/outflow totals.
 - **借贷往来** distinguishes lending from borrowing, tracks optional due dates,
   and keeps each partial repayment and the remaining principal.
+- **换汇** records both currency legs, accounts, exchange provider, reference,
+  and fees together. The exchanged principal excludes fees; the gross received
+  amount is before fees. A source-currency fee adds to the actual debit, while
+  a destination-currency fee reduces the actual receipt. The displayed rate is
+  destination currency per one source currency, with its reciprocal and the
+  effective rate after fees. Currency summaries keep exchange inflows, outflows,
+  fees, and net movement separate from transfer totals.
 - **进出货** keeps product/SKU/unit/currency/location details, opening stock,
   purchases, sales, and payment histories. Inventory cost uses a chronological
   moving average; sales profit is sale value less the allocated stock cost.

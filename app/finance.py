@@ -56,15 +56,18 @@ class FinanceModel(BaseModel):
             raise ValueError('Record date cannot be in the future')
         return value
 
-    @field_validator('currency', check_fields=False)
+    @field_validator('currency', 'from_currency', 'to_currency', 'fee_currency', check_fields=False)
     @classmethod
     def supported_currency(cls, value):
+        if value is None:
+            return None
         value = value.upper()
         if value not in CURRENCIES:
             raise ValueError('Unsupported currency')
         return value
 
     @field_validator('amount', 'principal', 'quantity', 'unit_price', 'paid_amount',
+                     'from_amount', 'to_amount', 'fee_amount',
                      mode='before', check_fields=False)
     @classmethod
     def exact_number(cls, value, info):
@@ -80,7 +83,7 @@ class FinanceModel(BaseModel):
             raise ValueError('Amount is too large')
         if result != result.quantize(PRECISION):
             raise ValueError('Use at most 6 decimal places')
-        if result < 0 or (result == 0 and info.field_name not in ('unit_price', 'paid_amount')):
+        if result < 0 or (result == 0 and info.field_name not in ('unit_price', 'paid_amount', 'fee_amount')):
             raise ValueError('Amount must be positive')
         return result
 
@@ -103,6 +106,47 @@ class TransferCreate(TransferFields):
 
 
 class TransferUpdate(TransferFields):
+    version: int = Field(ge=1, strict=True)
+
+
+class ExchangeFields(FinanceModel):
+    """One recorded exchange, whose fee is charged in exactly one currency.
+
+    from_amount excludes the fee; to_amount is the gross receipt before any
+    target-currency fee. Derived actual debit/receipt must not deduct fees twice.
+    """
+    date: date
+    from_currency: str
+    to_currency: str
+    from_amount: Decimal
+    to_amount: Decimal
+    fee_amount: Decimal = D(0)
+    fee_currency: Optional[str] = None
+    from_account: str = Field(default='', max_length=200)
+    to_account: str = Field(default='', max_length=200)
+    counterparty: str = Field(default='', max_length=200)
+    method: str = Field(default='', max_length=100)
+    reference: str = Field(default='', max_length=200)
+    note: str = Field(default='', max_length=2000)
+
+    @model_validator(mode='after')
+    def valid_exchange(self):
+        if self.from_currency == self.to_currency:
+            raise ValueError('Exchange currencies must be different')
+        if self.fee_currency is None:
+            self.fee_currency = self.from_currency
+        if self.fee_currency not in (self.from_currency, self.to_currency):
+            raise ValueError('Fee currency must match the source or target currency')
+        if self.fee_currency == self.to_currency and self.fee_amount >= self.to_amount:
+            raise ValueError('Target-currency fee must be less than the gross received amount')
+        return self
+
+
+class ExchangeCreate(ExchangeFields):
+    request_id: UUID
+
+
+class ExchangeUpdate(ExchangeFields):
     version: int = Field(ge=1, strict=True)
 
 
@@ -182,9 +226,11 @@ class PaymentCreate(FinanceModel):
 
 
 CREATE_MODELS = {'transfers': TransferCreate, 'loans': LoanCreate,
-                 'products': ProductCreate, 'movements': MovementCreate}
+                 'products': ProductCreate, 'movements': MovementCreate,
+                 'exchanges': ExchangeCreate}
 UPDATE_MODELS = {'transfers': TransferUpdate, 'loans': LoanUpdate,
-                 'products': ProductUpdate, 'movements': MovementUpdate}
+                 'products': ProductUpdate, 'movements': MovementUpdate,
+                 'exchanges': ExchangeUpdate}
 
 
 def request_data(request):
@@ -249,6 +295,7 @@ def _active_payments(record, key):
 def replay(state):
     """Validate the entire ledger and derive balances, stock and sales costs."""
     result = deepcopy(state)
+    result.setdefault('exchanges', [])
     summary = {}
 
     def bucket(currency):
@@ -256,11 +303,33 @@ def replay(state):
             summary[currency] = dict(currency=currency, **{f: ZERO for f in (
                 'transfer_in', 'transfer_out', 'transfer_net', 'lent_outstanding',
                 'borrowed_outstanding', 'inventory_cost', 'purchase_total',
-                'sales_total', 'payable', 'receivable', 'realized_profit')})
+                'sales_total', 'payable', 'receivable', 'realized_profit',
+                'exchange_in', 'exchange_out', 'exchange_fees', 'exchange_net')})
         return summary[currency]
 
     with localcontext() as ctx:
         ctx.prec = 48
+        for exchange in result['exchanges']:
+            principal = money(exchange['from_amount'])
+            gross = money(exchange['to_amount'])
+            fee = money(exchange['fee_amount'])
+            source_fee = fee if exchange['fee_currency'] == exchange['from_currency'] else ZERO
+            target_fee = fee if exchange['fee_currency'] == exchange['to_currency'] else ZERO
+            debit, receipt = principal + source_fee, gross - target_fee
+            exchange.update(from_amount=principal, to_amount=gross, fee_amount=fee,
+                            exchange_rate=gross / principal, inverse_rate=principal / gross,
+                            debited_amount=debit, received_amount=receipt,
+                            effective_rate=receipt / debit)
+            if exchange['voided']:
+                continue
+            source, target = bucket(exchange['from_currency']), bucket(exchange['to_currency'])
+            source['exchange_out'] += principal
+            target['exchange_in'] += gross
+            source['exchange_net'] -= principal
+            target['exchange_net'] += gross
+            fee_summary = bucket(exchange['fee_currency'])
+            fee_summary['exchange_fees'] += fee
+            fee_summary['exchange_net'] -= fee
         for transfer in result['transfers']:
             transfer['amount'] = money(transfer['amount'])
             if transfer['voided']:
@@ -349,7 +418,7 @@ def replay(state):
             if not product['voided']:
                 bucket(product['currency'])['inventory_cost'] += product['inventory_cost']
     result['summary'] = [summary[c] for c in sorted(summary)]
-    for collection in ('transfers', 'loans', 'movements'):
+    for collection in ('transfers', 'loans', 'movements', 'exchanges'):
         result[collection].sort(key=lambda r: (r['date'], r['id']), reverse=True)
     result['products'].sort(key=lambda r: (r['voided'], r['name'].casefold(), r['id']))
     return json_numbers(result)

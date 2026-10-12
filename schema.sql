@@ -165,6 +165,14 @@ CREATE TABLE IF NOT EXISTS finance_transfers (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS finance_exchanges (
+    id BIGSERIAL PRIMARY KEY,
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    voided BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS finance_loans (
     id BIGSERIAL PRIMARY KEY,
     payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
@@ -212,12 +220,17 @@ CREATE TABLE IF NOT EXISTS finance_payments (
 CREATE INDEX IF NOT EXISTS idx_finance_payments_parent ON finance_payments(parent_id);
 CREATE TABLE IF NOT EXISTS finance_requests (
     request_id UUID PRIMARY KEY,
-    entity_kind TEXT NOT NULL CHECK (entity_kind IN ('transfers','loans','products','movements','repayments','payments')),
+    entity_kind TEXT NOT NULL CONSTRAINT finance_requests_entity_kind_check CHECK (entity_kind IN ('transfers','loans','products','movements','repayments','payments','exchanges')),
     parent_id BIGINT,
     entity_id BIGINT NOT NULL,
     request_payload JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Upgrade existing populated ledgers in place. Both statements execute in the
+-- schema bootstrap transaction; existing request IDs and payloads are retained.
+ALTER TABLE finance_requests DROP CONSTRAINT IF EXISTS finance_requests_entity_kind_check;
+ALTER TABLE finance_requests ADD CONSTRAINT finance_requests_entity_kind_check
+    CHECK (entity_kind IN ('transfers','loans','products','movements','repayments','payments','exchanges'));
 CREATE TABLE IF NOT EXISTS finance_audit (
     id BIGSERIAL PRIMARY KEY,
     entity_kind TEXT NOT NULL,

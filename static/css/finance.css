@@ -15,7 +15,7 @@
 .finance-overview-empty { color: #607389; padding: 20px 24px; }
 .finance-scope { color: #6d7d8f; font-size: .75rem; line-height: 1.65; margin: 10px 0 26px; }
 .finance-section-bar { align-items: center; display: flex; gap: 16px; justify-content: space-between; margin: 0 0 18px; }
-.finance-sections { display: flex; gap: 4px; }
+.finance-sections { display: flex; flex-wrap: wrap; gap: 4px; }
 .finance-sections button { background: transparent; border: 0; border-bottom: 3px solid transparent; color: #657990; font-size: .92rem; font-weight: 600; padding: 12px 16px; white-space: nowrap; }
 .finance-sections button .bi { margin-right: 7px; }
 .finance-sections button.active { border-bottom-color: #087f65; color: #087f65; }
@@ -83,6 +83,12 @@
 .finance-product-values { display: flex; flex-wrap: wrap; font-size: .82rem; gap: 10px 22px; }
 .finance-product-values span { color: #526980; }
 .finance-private-note { color: #657990; font-size: .8rem; }
+.finance-exchange-preview { background: #f1f7f5; border: 1px solid #d7e8e1; border-radius: 9px; display: grid; gap: 16px; grid-template-columns: 1fr 1fr; margin-top: 4px; padding: 16px; }
+.finance-exchange-preview span { color: #657990; display: block; font-size: .76rem; margin-bottom: 5px; }
+.finance-exchange-preview strong { color: #19365a; display: block; font-size: 1.05rem; overflow-wrap: anywhere; }
+.finance-exchange-preview p { color: #657990; font-size: .76rem; grid-column: 1 / -1; line-height: 1.7; margin: 0; overflow-wrap: anywhere; }
+.finance-exchange-rate-label { color: #526980; display: block; font-size: .81rem; font-weight: 600; margin-bottom: .5rem; }
+.finance-exchange-rate-help { color: #76879a; font-size: .73rem; line-height: 1.7; margin-top: .4rem; }
 @media (max-width: 1100px) {
     .finance-currency-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .finance-section-bar { align-items: stretch; flex-direction: column; gap: 12px; }
@@ -98,7 +104,8 @@
     .finance-currency-values { gap: 15px; }
     .finance-currency-values strong { font-size: 1.05rem; }
     .finance-sections { justify-content: space-between; }
-    .finance-sections button { flex: 1; font-size: .81rem; padding: 11px 7px; }
+    .finance-sections { gap: 2px; }
+    .finance-sections button { flex: 1 1 auto; font-size: .77rem; padding: 11px 5px; }
     .finance-sections button .bi { display: none; }
     .finance-actions .btn { flex: 1; }
     .finance-search { flex-basis: 100%; }

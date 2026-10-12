@@ -9,7 +9,8 @@ const transfer = { id: 1, version: 1, date: '2026-10-01', direction: 'out', amou
 const loan = { id: 2, version: 3, date: '2026-10-01', direction: 'lent', principal: 500, repaid: 100, outstanding: 400, currency: 'USD', counterparty: 'Sensitive Person', due_date: '2026-11-01', status: 'partial', repayments: [{ id: 8, version: 1, date: '2026-10-02', amount: 100, note: 'Private repayment', voided: false }], voided: false };
 const product = { id: 3, version: 1, name: 'Private product', sku: 'SKU-secret', unit: '箱', currency: 'USD', location: 'Private location', note: 'Private product note', quantity: 8, average_cost: 20, inventory_cost: 160, voided: false };
 const movement = { id: 4, version: 2, date: '2026-10-01', product_id: 3, kind: 'purchase', quantity: 10, unit_price: 20, currency: 'USD', total: 200, initial_paid_amount: 30, paid_amount: 80, remaining_payment: 120, status: 'partial', counterparty: 'Private supplier', note: 'Private shipment note', voided: false, payments: [{ id: 9, version: 1, date: '2026-10-02', amount: 50, note: 'Private payment', voided: false }] };
-const data = { transfers: [transfer], loans: [loan], products: [product], movements: [movement], summary: [{ currency: 'USD', transfer_in: 0, transfer_out: 12345.67, transfer_net: -12345.67, lent_outstanding: 400, borrowed_outstanding: 0, inventory_cost: 160, payable: 120, receivable: 0, realized_profit: 0 }] };
+const exchange = { id: 5, version: 2, date: '2026-10-01', from_currency: 'USD', to_currency: 'CNY', from_amount: 1000, to_amount: 7200, fee_amount: 35, fee_currency: 'CNY', from_account: 'Private dollar account', to_account: 'Private yuan account', counterparty: 'Private exchange partner', method: 'Private exchange method', reference: 'Secret-exchange-reference', note: 'Private exchange note', exchange_rate: 7.2, inverse_rate: 1 / 7.2, debited_amount: 1000, received_amount: 7165, effective_rate: 7.165, voided: false };
+const data = { transfers: [transfer], loans: [loan], products: [product], movements: [movement], exchanges: [exchange], summary: [{ currency: 'USD', transfer_in: 0, transfer_out: 12345.67, transfer_net: -12345.67, lent_outstanding: 400, borrowed_outstanding: 0, inventory_cost: 160, payable: 120, receivable: 0, realized_profit: 0, exchange_out: 1000, exchange_in: 0, exchange_fees: 0, exchange_net: -1000 }, { currency: 'CNY', exchange_out: 0, exchange_in: 7200, exchange_fees: 35, exchange_net: 7165 }, { currency: 'HKD', transfer_in: 1, exchange_out: 0, exchange_in: 0, exchange_fees: 0, exchange_net: 0 }] };
 
 test('finance filters retain void history only on request and keep currencies separate', () => {
     const records = [transfer, { ...transfer, id: 5, currency: 'CNY', date: '2026-10-04' }, { ...transfer, id: 6, voided: true, date: '2026-10-03' }];
@@ -88,7 +89,7 @@ function fixture(options = {}) {
         elements.set(id, el); return el;
     }
     element('financeForm').elements = { namedItem: name => fields.get(name) };
-    const sectionButtons = ['transfers', 'loans', 'movements'].map(s => { const el = element(`section-${s}`); el.dataset.financeSection = s; return el; });
+    const sectionButtons = ['transfers', 'loans', 'movements', 'exchanges'].map(s => { const el = element(`section-${s}`); el.dataset.financeSection = s; return el; });
     const context = vm.createContext({
         console, Intl, Date, Number, String, Boolean, Map, Set, JSON, Object, Array,
         document: { getElementById: element, querySelector: () => element('finance-workspace'), querySelectorAll: () => sectionButtons },
@@ -155,6 +156,138 @@ test('network retries reuse UUID and pending save cannot be double submitted', a
     await f.submit();
     assert.equal(JSON.parse(f.requests.at(-1).body).request_id, firstId);
     assert.equal(f.element('financeFormFields').innerHTML, '');
+});
+
+test('exchange currency filter matches either leg and search finds counterparties and references', () => {
+    for (const currency of ['USD', 'CNY']) assert.equal(FinanceUI.filterRecords([exchange], { currency }).length, 1);
+    assert.equal(FinanceUI.filterRecords([exchange], { currency: 'HKD' }).length, 0);
+    assert.equal(FinanceUI.filterRecords([exchange], { search: 'secret-exchange-reference' }).length, 1);
+    assert.equal(FinanceUI.filterRecords([{ ...exchange, voided: true }]).length, 0);
+    assert.equal(FinanceUI.filterRecords([{ ...exchange, voided: true }], { showVoided: true }).length, 1);
+});
+
+test('decimal rate autofill handles both directions, half-up rounding and large exact inputs', () => {
+    assert.equal(FinanceUI.amountFromRate('1000', '7.2'), '7200');
+    assert.equal(FinanceUI.amountFromRate('7200', '0.138888888888888889'), '1000');
+    assert.equal(FinanceUI.amountFromRate('1.234567', '1.5'), '1.851851');
+    assert.equal(FinanceUI.amountFromRate('9007199254740993.000001', '1'), '9007199254740993.000001');
+    assert.equal(FinanceUI.amountFromRate('1e3', '7.2'), '7200');
+    assert.equal(FinanceUI.amountFromRate('', '7.2'), null);
+    assert.equal(FinanceUI.amountFromRate('100', '-7.2'), null);
+    assert.equal(FinanceUI.formatRate(1e-18), '0.000000000000000001');
+});
+
+test('exchange fee affects the selected currency once and effective rate uses actual cash', () => {
+    const targetFee = FinanceUI.exchangeAmounts(exchange);
+    assert.equal(targetFee.debited_amount, 1000); assert.equal(targetFee.received_amount, 7165);
+    assert.equal(targetFee.exchange_rate, 7.2); assert.equal(targetFee.effective_rate, 7.165);
+    const sourceFee = FinanceUI.exchangeAmounts({ ...exchange, fee_currency: 'USD', fee_amount: 5 });
+    assert.equal(sourceFee.debited_amount, 1005); assert.equal(sourceFee.received_amount, 7200);
+    assert.equal(sourceFee.effective_rate, 7200 / 1005);
+    const payload = { ...exchange, date: '2026-10-01' };
+    assert.equal(FinanceUI.validatePayload('exchanges', payload), '');
+    assert.match(FinanceUI.validatePayload('exchanges', { ...payload, to_currency: 'USD' }), /不同币种/);
+    assert.match(FinanceUI.validatePayload('exchanges', { ...payload, fee_currency: 'HKD' }), /手续费币种/);
+    assert.match(FinanceUI.validatePayload('exchanges', { ...payload, fee_amount: '7200' }), /必须小于/);
+    assert.match(FinanceUI.validatePayload('exchanges', { ...payload, fee_amount: '-1' }), /不能为负数/);
+});
+
+test('exchange editor shows directional and reciprocal rates and autofills from source plus rate', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeSection: 'exchanges' });
+    f.element('financeAdd').listeners.click();
+    assert.equal(f.fields.get('from_currency').value, 'USD'); assert.equal(f.fields.get('to_currency').value, 'CNY');
+    f.fields.get('from_amount').value = '1000'; f.fields.get('exchange_rate').value = '7.2';
+    f.element('financeForm').listeners.input({ target: { name: 'exchange_rate' } });
+    assert.equal(f.fields.get('to_amount').value, '7200');
+    assert.match(f.element('financeExchangeRateLabel').textContent, /1 USD = 多少 CNY/);
+    assert.match(f.element('financeExchangeRateHelp').textContent, /1 CNY =/);
+    f.fields.get('from_amount').value = '2000';
+    f.element('financeForm').listeners.input({ target: { name: 'from_amount' } });
+    assert.equal(f.fields.get('to_amount').value, '14400');
+    f.fields.get('to_amount').value = '14000';
+    f.element('financeForm').listeners.input({ target: { name: 'to_amount' } });
+    assert.equal(f.fields.get('exchange_rate').value, '7');
+    assert.equal(f.element('financeExchangeReceipt').textContent, 'CNY 14,000.00');
+    await f.submit();
+    const request = f.requests.at(-1), payload = JSON.parse(request.body);
+    assert.equal(request.url, '/api/finance/exchanges');
+    assert.equal(payload.from_amount, '2000'); assert.equal(payload.to_amount, '14000');
+    assert.equal(payload.fee_amount, '0'); assert.equal(payload.fee_currency, 'USD');
+    assert.equal(payload.exchange_rate, undefined);
+});
+
+test('exchange edit preserves gross input and original fee and restricts fee currency options', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeEdit: 'exchanges', id: '5' }, true);
+    assert.equal(f.fields.get('to_amount').value, '7200');
+    assert.equal(f.fields.get('fee_amount').value, '35'); assert.equal(f.fields.get('fee_currency').value, 'CNY');
+    assert.ok(!f.fields.get('fee_currency').innerHTML.includes('HKD'));
+    assert.equal(f.element('financeExchangeReceipt').textContent, 'CNY 7,165.00');
+    await f.submit();
+    const request = f.requests.at(-1), payload = JSON.parse(request.body);
+    assert.equal(request.method, 'PUT'); assert.equal(request.url, '/api/finance/exchanges/5');
+    assert.equal(payload.version, 2); assert.equal(payload.to_amount, '7200'); assert.equal(payload.fee_amount, '35');
+});
+
+test('invalidated entered exchange rate cannot save a previously autofilled target', async () => {
+    for (const invalidRate of ['0', '', '-1']) {
+        const f = fixture(); await f.ui.load(); f.click({ financeSection: 'exchanges' }); f.element('financeAdd').listeners.click();
+        f.fields.get('from_amount').value = '1000'; f.fields.get('exchange_rate').value = '7.2';
+        f.element('financeForm').listeners.input({ target: { name: 'exchange_rate' } });
+        assert.equal(f.fields.get('to_amount').value, '7200');
+        f.fields.get('exchange_rate').value = invalidRate;
+        f.element('financeForm').listeners.input({ target: { name: 'exchange_rate' } }); await f.submit();
+        assert.equal(f.requests.length, 1); assert.match(f.element('financeFormError').textContent, /汇率必须大于 0/);
+        f.fields.get('to_amount').value = '7100'; f.element('financeForm').listeners.input({ target: { name: 'to_amount' } }); await f.submit();
+        assert.equal(f.requests.length, 2); assert.equal(JSON.parse(f.requests.at(-1).body).to_amount, '7100');
+    }
+});
+
+test('exchange summary shows only exchange currencies and soft void retains version guard', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeSection: 'exchanges' });
+    const summary = f.element('financeOverview').innerHTML;
+    assert.ok(summary.includes('USD')); assert.ok(summary.includes('CNY')); assert.ok(!summary.includes('HKD'));
+    assert.ok(summary.includes('换出本金（不含费）'));
+    assert.ok(summary.includes('换汇净流动（含费）')); assert.ok(!summary.includes('记录的转出'));
+    f.click({ financeVoid: 'exchanges', id: '5' }, true);
+    assert.match(f.element('financeVoidMessage').textContent, /成交汇率.*历史/);
+    await f.element('financeVoidConfirm').listeners.click();
+    assert.equal(f.requests.at(-1).url, '/api/finance/exchanges/5?version=2');
+    assert.equal(f.requests.at(-1).method, 'DELETE');
+});
+
+test('exchange details escape input and private refresh clears amounts, fees, rates and accounts', async () => {
+    const hostile = { ...exchange, counterparty: '<script>unsafe()</script>', note: '<img src=x onerror=alert(1)>' };
+    const html = FinanceUI.renderRows([hostile], 'exchanges'); assert.ok(!html.includes('<script>')); assert.ok(!html.includes('<img'));
+    const privateHtml = FinanceUI.renderRows([exchange], 'exchanges', [], true);
+    for (const value of ['Private dollar account', 'Private yuan account', 'Private exchange partner', 'Secret-exchange-reference', 'Private exchange note', '7,165', '1,000']) assert.ok(!privateHtml.includes(value));
+    const f = fixture(); await f.ui.load(); f.click({ financeSection: 'exchanges' }); f.click({ financeDetail: 'exchanges', id: '5' });
+    assert.ok(f.element('financeDetailsBody').innerHTML.includes('实际到账')); assert.ok(f.element('financeDetailsBody').innerHTML.includes('7.165'));
+    f.click({ financeEdit: 'exchanges', id: '5' }, true); f.ui.setPrivate(true);
+    assert.equal(f.element('financeDetailsBody').innerHTML, ''); assert.equal(f.element('financeFormFields').innerHTML, '');
+    assert.ok(!f.element('financeOverview').innerHTML.includes('7,200')); assert.ok(!f.element('financeList').innerHTML.includes('Private'));
+});
+
+test('exchange create retry retains UUID and unchanged raw decimal amounts', async () => {
+    const f = fixture(); await f.ui.load(); f.click({ financeSection: 'exchanges' }); f.element('financeAdd').listeners.click();
+    f.fields.get('from_amount').value = '9007199254740993.000001'; f.fields.get('to_amount').value = '100.123456';
+    f.setResponse(async () => { throw new Error('Connection interrupted'); }); await f.submit();
+    const first = JSON.parse(f.requests.at(-1).body);
+    f.setResponse(async () => ({ ok: true, json: async () => data })); await f.submit();
+    const retry = JSON.parse(f.requests.at(-1).body);
+    assert.equal(first.request_id, retry.request_id); assert.equal(retry.from_amount, '9007199254740993.000001'); assert.equal(retry.to_amount, '100.123456');
+});
+
+test('a pending refresh cannot overwrite the state of an acknowledged finance write', async () => {
+    const f = fixture(); await f.ui.load();
+    let release;
+    const updated = { ...data, transfers: [{ ...transfer, amount: 999, version: 2 }] };
+    f.setResponse((_url, options) => options.method === 'GET' ? new Promise(resolve => { release = resolve; }) : Promise.resolve({ ok: true, json: async () => updated }));
+    const refreshing = f.ui.load(true);
+    f.element('financeAdd').listeners.click(); f.fields.get('amount').value = '999'; await f.submit();
+    assert.ok(f.element('financeList').innerHTML.includes('999.00'));
+    release({ ok: true, json: async () => data }); await refreshing;
+    assert.ok(f.element('financeList').innerHTML.includes('999.00'));
+    assert.ok(!f.element('financeList').innerHTML.includes('12,345.67'));
 });
 
 test('privacy refresh removes existing detail and editor values from DOM', async () => {
