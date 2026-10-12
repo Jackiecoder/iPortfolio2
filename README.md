@@ -24,6 +24,12 @@ the counterparty. These names describe the people who handled that money,
 remain searchable in history, and never change the recorded financial amounts.
 Old records without names remain blank rather than inferring participants.
 
+On phones, Finance forms and details fit the visible area above the keyboard,
+including viewport panning and the device's safe areas. Headers and action
+buttons stay visible while the body scrolls. Focusing a field scrolls only that
+body. Switching between product details, editing, and void confirmation waits
+for the previous dialog to close before opening the next one.
+
 - **转账记录** saves the date, direction, original currency, counterparty,
   accounts, payment method, reference, and notes. Internal transfers are excluded
   from transfer inflow/outflow totals.

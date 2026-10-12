@@ -423,12 +423,73 @@
         const $ = id => document.getElementById(id);
         if (!$('financeForm')) return null;
         let state = { transfers: [], loans: [], products: [], movements: [], exchanges: [], projects: [], summary: [] };
-        let section = 'transfers', loaded = false, loading = null, busy = false, editor = null, voidTarget = null, stateRevision = 0, returnProductId = null;
+        let section = 'transfers', loaded = false, loading = null, busy = false, editor = null, voidTarget = null, stateRevision = 0;
         let pendingSave = null;
+        const modalIds = ['financeEditModal', 'financeDetailsModal', 'financeVoidModal'];
+        const openingModals = new Set(), closingModals = new Set(), resetModalScroll = new Set(), returnProducts = new Map();
+        let nextModalId = null, viewportFrame = null;
         let privateOverride;
         const privateMode = () => privateOverride === undefined ? Boolean(typeof config.private === 'function' ? config.private() : config.private) : privateOverride;
         const today = () => typeof config.today === 'function' ? config.today() : config.today || new Date().toLocaleDateString('sv-SE', { timeZone: 'America/New_York' });
         const getModal = id => root.bootstrap.Modal.getOrCreateInstance($(id));
+        function blurModalInput(modal) {
+            const active = document.activeElement;
+            if (active && modal?.contains?.(active) && active.matches?.('input, select, textarea')) active.blur();
+        }
+        function keepFocusedFieldVisible(modal) {
+            const active = document.activeElement;
+            const body = modal?.querySelector?.('.modal-body');
+            if (!body?.contains?.(active) || !active?.matches?.('input, select, textarea')) return;
+            const field = active.getBoundingClientRect(), bounds = body.getBoundingClientRect();
+            const inset = Math.min(12, Math.max(0, (bounds.height - field.height) / 2));
+            const top = bounds.top + inset, bottom = bounds.bottom - inset;
+            if (field.height > bottom - top || field.top < top) body.scrollTop += field.top - top;
+            else if (field.bottom > bottom) body.scrollTop += field.bottom - bottom;
+        }
+        function syncModalViewport(modal) {
+            const viewport = root.visualViewport;
+            const height = viewport?.height || root.innerHeight;
+            if (Number.isFinite(height) && height > 0) modal.style?.setProperty('--finance-viewport-height', `${height}px`);
+            modal.style?.setProperty('--finance-viewport-top', `${Math.max(0, viewport?.offsetTop || 0)}px`);
+            modal.classList?.toggle('finance-modal-compact', height < 360);
+        }
+        function syncVisibleModals() {
+            for (const id of modalIds) {
+                const modal = $(id);
+                if (!modal?.classList?.contains?.('show')) continue;
+                syncModalViewport(modal);
+                keepFocusedFieldVisible(modal);
+            }
+        }
+        function scheduleModalViewport() {
+            syncVisibleModals();
+            if (typeof root.requestAnimationFrame !== 'function' || viewportFrame !== null) return;
+            viewportFrame = root.requestAnimationFrame(() => { viewportFrame = null; syncVisibleModals(); });
+        }
+        function showFinanceModal(id, resetScroll = true) {
+            if (privateMode()) return;
+            nextModalId = id;
+            if (resetScroll) resetModalScroll.add(id);
+            const others = modalIds.filter(other => other !== id && (openingModals.has(other) || closingModals.has(other) || $(other)?.classList?.contains?.('show')));
+            if (others.length) {
+                for (const other of others) if (!closingModals.has(other)) getModal(other).hide();
+                return;
+            }
+            const modal = $(id);
+            syncModalViewport(modal);
+            if (resetModalScroll.has(id)) {
+                modal.scrollTop = 0;
+                const body = modal.querySelector?.('.modal-body');
+                if (body) body.scrollTop = 0;
+            }
+            getModal(id).show();
+            scheduleModalViewport();
+        }
+        function hideFinanceModal(id) {
+            if (nextModalId === id) nextModalId = null;
+            blurModalInput($(id));
+            getModal(id).hide();
+        }
         const toast = message => config.toast?.(message, 'success');
         const notice = (message, isLoading = false) => {
             $('financeNotice').textContent = message;
@@ -495,7 +556,7 @@
             }
             $('financeEditTitle').textContent = pendingSave.title; $('financeFormIntro').textContent = pendingSave.intro;
             lockPendingForm(); showError('financeFormError', uncertainMessage);
-            getModal('financeDetailsModal').hide(); getModal('financeEditModal').show();
+            showFinanceModal('financeEditModal');
         }
         function equalSavedValue(expected, actual, key) {
             if (expected === null) return actual === null || actual === undefined;
@@ -715,18 +776,17 @@
             if (pendingSave) { restorePendingForm(); return; }
             const recordCurrencies = record ? type === 'exchanges' ? [record.from_currency, record.to_currency, record.fee_currency] : [record.currency, record.base_currency, type === 'movements' ? state.products.find(p => p.id === record.product_id)?.currency : null, ...(type === 'projects' ? (record.participants || []).map(p => p.currency) : [])] : [];
             if (recordCurrencies.some(currency => currency && !currencies.includes(currency))) {
-                getModal('financeDetailsModal').hide();
-                getModal('financeEditModal').hide();
+                hideFinanceModal('financeDetailsModal');
+                hideFinanceModal('financeEditModal');
                 editor = null;
                 $('financeFormFields').innerHTML = '';
                 $('financeFormIntro').textContent = '';
                 notice('这笔历史记录含其他币种，暂不支持编辑。原币种与金额保留，可继续查看或作废。');
                 return;
             }
-            getModal('financeDetailsModal').hide();
             const r = ['projects', 'movements', 'payments'].includes(type) && record?.request_fields ? { ...record, ...record.request_fields } : record || {};
             editor = { type, record, parent, productId: type === 'movements' ? Number(record?.product_id || parent?.id) : type === 'products' ? record?.id : type === 'payments' ? parent?.product_id : null, requestId: createRequestTracker(() => root.crypto.randomUUID()) };
-            returnProductId = editor.productId || null;
+            returnProducts.set('financeEditModal', editor.productId || null);
             let fields = '', title, intro;
             if (type === 'transfers') {
                 title = record ? '编辑转账' : '记录转账'; intro = '记录重要的资金往来。自己的账户间转账不计入净转入金额。';
@@ -806,7 +866,7 @@
             if (type === 'exchanges') updateExchangePreview();
             if (type === 'payments') updatePaymentPreview();
             if (type === 'projects') renderParticipants(r.participants?.length ? r.participants : [{ currency: r.currency || 'USD' }, { currency: r.currency || 'USD' }]);
-            getModal('financeEditModal').show();
+            showFinanceModal('financeEditModal');
         }
         function updateMovementTotal(event) {
             if (editor?.type !== 'movements') return;
@@ -951,9 +1011,9 @@
                 // never encourage resubmitting an already-saved transaction.
                 let updated = true;
                 try { applyState(data); } catch (_) { updated = false; }
-                if (current.type === 'products' && !current.record) returnProductId = data.products.find(product => !existingProductIds.has(product.id))?.id || null;
+                if (current.type === 'products' && !current.record) returnProducts.set('financeEditModal', data.products.find(product => !existingProductIds.has(product.id))?.id || null);
                 editor = null; $('financeFormFields').innerHTML = ''; $('financeFormIntro').textContent = '';
-                getModal('financeEditModal').hide();
+                hideFinanceModal('financeEditModal');
                 notice(updated ? '' : '记录已保存，页面暂未更新，请刷新查看。'); toast(current.record ? '修改已保存' : '记录已保存');
             } catch (error) {
                 if (acknowledged) { editor = null; pendingSave = null; notice('记录已保存，页面暂未更新，请刷新查看。'); }
@@ -992,7 +1052,7 @@
                 detailField('已售利润（折算）', cash('realized_profit')), detailField('剩余库存成本（折算）', cash('inventory_cost'))
             ].join('')}</dl><p class="finance-profile-method mb-0">等效单位成本 =（进货及期初成本 + 所有费用）÷ 累计进货数量。新增成本会更新此前销售的利润；先记录的销售会在购买记录补齐后自动重算，购买日期可以晚于销售。不同批次需要分别核算时，可以分别创建商品。</p></div></details>${product.note ? `<p class="finance-profile-note mt-3">${escape(product.note)}</p>` : ''}<div class="finance-profile-transactions-heading"><h6>商品交易</h6>${allowNew ? `<button type="button" class="btn btn-primary btn-sm" data-finance-product-transaction data-id="${product.id}"><i class="bi bi-plus-lg" aria-hidden="true"></i> 添加交易</button>` : ''}</div><div class="finance-profile-transactions">${records.length ? renderRows(records, 'movements', state.products, false, state.projects) : '<div class="finance-empty"><h3>添加第一笔商品交易</h3><p>进货记录数量与价格；物流和其他费用按自定义类别记录；销售记录数量、均价或总价，可以先保存销售再补购买记录。汇率可以不填。</p></div>'}</div>${!currencies.includes(product.currency) ? '<p class="finance-private-note mt-3">历史商品保留供查账，不新增进出货。</p>' : ''}`;
             $('financeDetailsActions').innerHTML = `${!product.voided ? `<button type="button" class="btn btn-outline-secondary" data-finance-edit="products" data-id="${product.id}">编辑商品</button>${!hasHistory ? `<button type="button" class="btn btn-outline-danger" data-finance-void="products" data-id="${product.id}">作废商品</button>` : ''}` : ''}<button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>`;
-            getModal('financeDetailsModal').show();
+            showFinanceModal('financeDetailsModal');
         }
         function showDetails(type, id) {
             if (type === 'products') { showProductProfile(id); return; }
@@ -1073,11 +1133,11 @@
             const profileBack = type === 'movements' ? `<button type="button" class="btn btn-outline-secondary" data-finance-profile data-id="${Number(r.product_id)}">返回商品</button>` : '';
             $('financeDetailsActions').innerHTML = r.voided ? '<button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>' : `<button type="button" class="btn btn-outline-danger me-auto" data-finance-void="${type}" data-id="${r.id}">作废记录</button><button type="button" class="btn btn-outline-secondary" data-finance-edit="${type}" data-id="${r.id}">编辑</button>${(remaining > 0 || type === 'movements' && r.price_pending) && (type === 'loans' || (type === 'movements' && r.kind !== 'opening')) ? `<button type="button" class="btn btn-primary" data-finance-payment="${type}" data-id="${r.id}">${receiptLabel}</button>` : ''}`;
             $('financeDetailsActions').innerHTML += profileBack;
-            getModal('financeDetailsModal').show();
+            showFinanceModal('financeDetailsModal');
         }
         function showProducts() {
             if (privateMode() || busy) return;
-            getModal('financeDetailsModal').hide();
+            hideFinanceModal('financeDetailsModal');
             changeSection('movements');
         }
         function findVoid(type, id, parentId) {
@@ -1094,8 +1154,7 @@
             const target = findVoid(type, id, parentId);
             if (!target.record || target.record.voided) return;
             voidTarget = { ...target, type, id };
-            returnProductId = type === 'movements' ? target.record.product_id : type === 'payments' ? target.parent?.product_id : type === 'products' ? target.record.id : null;
-            getModal('financeDetailsModal').hide();
+            returnProducts.set('financeVoidModal', type === 'movements' ? target.record.product_id : type === 'payments' ? target.parent?.product_id : type === 'products' ? target.record.id : null);
             const explanations = {
                 transfers: '作废后，这笔转账不再计入转入、转出与净额。原记录仍保存在历史中。',
                 exchanges: '作废后，这笔换汇不再计入各币种的换入、换出、手续费与净流动。原记录与成交汇率仍保存在历史中。',
@@ -1108,7 +1167,7 @@
             };
             $('financeVoidMessage').textContent = explanations[type];
             showError('financeVoidError', ''); $('financeVoidConfirm').disabled = false;
-            getModal('financeVoidModal').show();
+            showFinanceModal('financeVoidModal');
         }
         async function confirmVoid() {
             if (busy || !voidTarget || privateMode()) return;
@@ -1137,7 +1196,7 @@
                 acknowledged = true; busy = false;
                 let updated = true;
                 try { applyState(data); } catch (_) { updated = false; }
-                getModal('financeVoidModal').hide(); voidTarget = null;
+                hideFinanceModal('financeVoidModal'); voidTarget = null;
                 notice(updated ? '' : '记录已作废，页面暂未更新，请刷新查看。');
                 toast('记录已作废，历史已保留');
             } catch (error) {
@@ -1175,11 +1234,12 @@
                 if ($('financeSummary')) $('financeSummary').open = false;
                 updateSummaryHint();
                 $('financeSearch').value = '';
-                for (const id of ['financeEditModal', 'financeDetailsModal', 'financeVoidModal']) getModal(id).hide();
+                nextModalId = null; resetModalScroll.clear();
+                for (const id of modalIds) hideFinanceModal(id);
                 $('financeFormFields').innerHTML = ''; $('financeFormIntro').textContent = ''; $('financeDetailsBody').innerHTML = ''; $('financeDetailsActions').innerHTML = '';
                 showError('financeFormError', ''); showError('financeVoidError', '');
                 $('financeVoidMessage').textContent = '';
-                editor = null; voidTarget = null; returnProductId = null;
+                editor = null; voidTarget = null; returnProducts.clear();
                 notice('');
             }
             render();
@@ -1196,28 +1256,45 @@
         $('financeForm').addEventListener('click', handleProjectAction);
         $('financeVoidConfirm').addEventListener('click', confirmVoid);
         if ($('financeSummary')) { $('financeSummary').open = false; $('financeSummary').addEventListener('toggle', updateSummaryHint); updateSummaryHint(); }
-        ['financeEditModal', 'financeVoidModal'].forEach(id => {
-            $(id).addEventListener('hide.bs.modal', event => { if (busy && !privateMode()) event.preventDefault(); });
-            $(id).addEventListener('hidden.bs.modal', () => {
-                const productId = returnProductId; returnProductId = null;
-                if (id === 'financeEditModal') { $(id).style?.removeProperty('--finance-viewport-height'); $(id).style?.removeProperty('--finance-viewport-top'); }
-                if (id === 'financeEditModal' && !pendingSave) { editor = null; $('financeFormFields').innerHTML = ''; $('financeFormIntro').textContent = ''; }
-                if (productId && !privateMode()) showProductProfile(productId);
+        modalIds.forEach(id => {
+            const modal = $(id);
+            modal.addEventListener('show.bs.modal', () => { openingModals.add(id); syncModalViewport(modal); });
+            modal.addEventListener('hide.bs.modal', event => {
+                if (id !== 'financeDetailsModal' && busy && !privateMode()) { event.preventDefault(); return; }
+                closingModals.add(id);
+                if (nextModalId === id) nextModalId = null;
+                blurModalInput(modal);
             });
+            modal.addEventListener('shown.bs.modal', () => {
+                openingModals.delete(id);
+                if (privateMode()) { hideFinanceModal(id); return; }
+                if (nextModalId && nextModalId !== id) { showFinanceModal(nextModalId, false); return; }
+                if (resetModalScroll.delete(id)) {
+                    modal.scrollTop = 0;
+                    const body = modal.querySelector?.('.modal-body');
+                    if (body) body.scrollTop = 0;
+                }
+                scheduleModalViewport();
+            });
+            modal.addEventListener('hidden.bs.modal', () => {
+                openingModals.delete(id);
+                closingModals.delete(id);
+                modal.style?.removeProperty('--finance-viewport-height');
+                modal.style?.removeProperty('--finance-viewport-top');
+                const requestedModal = nextModalId;
+                if (id !== 'financeDetailsModal' && requestedModal !== id) {
+                    const productId = returnProducts.get(id); returnProducts.delete(id);
+                    if (id === 'financeEditModal' && !pendingSave) { editor = null; $('financeFormFields').innerHTML = ''; $('financeFormIntro').textContent = ''; }
+                    if (!requestedModal && productId && !privateMode()) { showProductProfile(productId); return; }
+                }
+                if (requestedModal && !privateMode()) showFinanceModal(requestedModal, false);
+            });
+            modal.addEventListener('focusin', scheduleModalViewport);
         });
         $('financeForm').addEventListener('invalid', event => { const details = event.target.closest?.('details'); if (details) details.open = true; }, true);
-        function syncEditorViewport() {
-            const modal = $('financeEditModal');
-            if (!modal?.classList?.contains?.('show')) return;
-            const viewport = root.visualViewport;
-            if (viewport) {
-                modal.style?.setProperty('--finance-viewport-height', `${Math.round(viewport.height)}px`);
-                modal.style?.setProperty('--finance-viewport-top', `${Math.round(viewport.offsetTop)}px`);
-            }
-        }
-        $('financeEditModal').addEventListener('shown.bs.modal', syncEditorViewport);
-        root.visualViewport?.addEventListener('resize', syncEditorViewport);
-        root.visualViewport?.addEventListener('scroll', syncEditorViewport);
+        root.visualViewport?.addEventListener('resize', scheduleModalViewport);
+        root.visualViewport?.addEventListener('scroll', scheduleModalViewport);
+        root.addEventListener?.('resize', scheduleModalViewport);
         changeSection('transfers');
         return { load, refreshPrivacy, setPrivate(value) { privateOverride = Boolean(value); refreshPrivacy(); } };
     }

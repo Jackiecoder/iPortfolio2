@@ -92,7 +92,7 @@ function fixture(options = {}) {
     function element(id) {
         if (elements.has(id)) return elements.get(id);
         const el = { id, value: '', checked: false, disabled: false, textContent: '', dataset: {}, listeners: {}, inner: '', classes: new Set(),
-            classList: { toggle(name, on) { if (on) el.classes.add(name); else el.classes.delete(name); } },
+            classList: { toggle(name, on) { if (on) el.classes.add(name); else el.classes.delete(name); }, contains(name) { return el.classes.has(name); } },
             setAttribute() {}, querySelector() { return element(id + '-child'); },
             addEventListener(event, fn) { this.listeners[event] = fn; },
             get innerHTML() { return this.inner; },
@@ -122,7 +122,20 @@ function fixture(options = {}) {
         console, Intl, Date, Number, String, Boolean, Map, Set, JSON, Object, Array,
         document: { getElementById: element, querySelector: () => element('finance-workspace'), querySelectorAll: () => sectionButtons },
         crypto: { randomUUID: () => `10000000-0000-4000-8000-${String(++uuid).padStart(12, '0')}` },
-        bootstrap: { Modal: { getOrCreateInstance: el => ({ show: () => modals.push(['show', el.id]), hide: () => modals.push(['hide', el.id]) }) } },
+        bootstrap: { Modal: { getOrCreateInstance: el => ({
+            show() {
+                modals.push(['show', el.id]);
+                if (!options.modalLifecycle || ['opening', 'open', 'closing'].includes(el.phase)) return;
+                el.listeners['show.bs.modal']?.(); el.classes.add('show'); el.phase = 'opening';
+            },
+            hide() {
+                modals.push(['hide', el.id]);
+                if (!options.modalLifecycle || el.phase !== 'open') return;
+                let prevented = false;
+                el.listeners['hide.bs.modal']?.({ preventDefault() { prevented = true; } });
+                if (!prevented) { el.classes.delete('show'); el.phase = 'closing'; }
+            },
+        }) } },
         fetch: async (url, opts) => { requests.push({ url, ...opts }); return response(url, opts); },
         FormData: class { get(name) { const f = fields.get(name); return !f?.disabled ? f?.value : null; } },
     });
@@ -134,7 +147,9 @@ function fixture(options = {}) {
     };
     const submit = () => element('financeForm').listeners.submit({ preventDefault() {} });
     const formClick = dataset => element('financeForm').listeners.click({ target: { dataset, disabled: false, closest() { return this; } } });
-    return { ui, requests, fields, elements, element, click, submit, formClick, modals, setResponse(fn) { response = fn; } };
+    const completeShow = id => { const el = element(id); el.phase = 'open'; el.listeners['shown.bs.modal']?.(); };
+    const completeHide = id => { const el = element(id); el.phase = 'hidden'; el.classes.delete('show'); el.listeners['hidden.bs.modal']?.(); };
+    return { ui, requests, fields, elements, element, click, submit, formClick, modals, completeShow, completeHide, setResponse(fn) { response = fn; } };
 }
 
 test('demo initialization never accesses finance data', async () => {
@@ -1008,12 +1023,62 @@ test('save, cancellation and void return to the associated product profile after
     const f = fixture(); await f.ui.load(); f.click({ financeProductTransaction: '', id: '3' }, true);
     f.fields.get('quantity').value = '1'; f.fields.get('unit_price').value = '10'; await f.submit();
     f.element('financeEditModal').listeners['hidden.bs.modal'](); assert.equal(f.element('financeDetailsTitle').textContent, product.name);
-    f.click({ financeProductTransaction: '', id: '3' }, true); f.element('financeEditModal').listeners['hidden.bs.modal']();
+    f.click({ financeProductTransaction: '', id: '3' }, true); f.element('financeEditModal').listeners['hide.bs.modal']({ preventDefault() {} }); f.element('financeEditModal').listeners['hidden.bs.modal']();
     assert.equal(f.element('financeDetailsTitle').textContent, product.name); assert.equal(f.element('financeFormFields').innerHTML, '');
     f.click({ financeVoid: 'movements', id: '4' }, true); await f.element('financeVoidConfirm').listeners.click();
     f.element('financeVoidModal').listeners['hidden.bs.modal'](); assert.equal(f.element('financeDetailsTitle').textContent, product.name);
     f.click({ financeProductTransaction: '', id: '3' }, true); f.ui.setPrivate(true); f.element('financeEditModal').listeners['hidden.bs.modal']();
     assert.equal(f.element('financeDetailsBody').innerHTML, '');
+});
+
+test('product to editor handoff waits for the previous modal and resets the form scroll', async () => {
+    const f = fixture({ modalLifecycle: true }); await f.ui.load();
+    f.click({ financeDetail: 'products', id: '3' }); f.completeShow('financeDetailsModal');
+    f.element('financeEditModal-child').scrollTop = 420;
+    f.click({ financeProductTransaction: '', id: '3' }, true);
+    assert.equal(f.element('financeDetailsModal').phase, 'closing');
+    assert.ok(!f.modals.some(([action, id]) => action === 'show' && id === 'financeEditModal'));
+    f.completeHide('financeDetailsModal');
+    assert.equal(f.element('financeEditModal').phase, 'opening');
+    f.completeShow('financeEditModal');
+    assert.equal(f.element('financeEditModal-child').scrollTop, 0);
+    assert.equal(f.fields.get('product_id').value, '3');
+});
+
+test('a handoff requested during the opening fade starts after that fade completes', async () => {
+    const f = fixture({ modalLifecycle: true }); await f.ui.load();
+    f.click({ financeDetail: 'products', id: '3' });
+    f.click({ financeProductTransaction: '', id: '3' }, true);
+    assert.equal(f.element('financeDetailsModal').phase, 'opening');
+    assert.ok(!f.modals.some(([action, id]) => action === 'show' && id === 'financeEditModal'));
+    f.completeShow('financeDetailsModal');
+    assert.equal(f.element('financeDetailsModal').phase, 'closing');
+    f.completeHide('financeDetailsModal'); f.completeShow('financeEditModal');
+    assert.equal(f.element('financeEditModal').phase, 'open');
+    assert.equal(f.element('financeDetailsModal').phase, 'hidden');
+});
+
+test('privacy cancels a queued modal without reopening its sensitive form', async () => {
+    const f = fixture({ modalLifecycle: true }); await f.ui.load();
+    f.click({ financeDetail: 'products', id: '3' }); f.completeShow('financeDetailsModal');
+    f.click({ financeProductTransaction: '', id: '3' }, true); f.ui.setPrivate(true);
+    f.completeHide('financeDetailsModal');
+    assert.ok(!f.modals.some(([action, id]) => action === 'show' && id === 'financeEditModal'));
+    assert.equal(f.element('financeFormFields').innerHTML, '');
+    assert.equal(f.element('financeDetailsBody').innerHTML, '');
+});
+
+test('cancelled editors return to the product after closing and fresh details start at the top', async () => {
+    const f = fixture({ modalLifecycle: true }); await f.ui.load();
+    f.click({ financeProductTransaction: '', id: '3' }); f.completeShow('financeEditModal');
+    const modal = f.element('financeEditModal');
+    modal.listeners['hide.bs.modal']({ preventDefault() {} }); modal.classes.delete('show'); modal.phase = 'closing';
+    f.completeHide('financeEditModal'); f.completeShow('financeDetailsModal');
+    assert.equal(f.element('financeDetailsTitle').textContent, product.name);
+    assert.equal(f.element('financeFormFields').innerHTML, '');
+    f.element('financeDetailsModal-child').scrollTop = 350;
+    f.click({ financeDetail: 'movements', id: '4' }, true);
+    assert.equal(f.element('financeDetailsModal-child').scrollTop, 0);
 });
 
 test('expense and total-price validation use exact authoritative amount and length limits', () => {

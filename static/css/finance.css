@@ -71,6 +71,8 @@
 .finance-modal .modal-title { display: -webkit-box; min-width: 0; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .finance-modal .modal-header, .finance-modal .modal-footer { padding: 18px 24px; }
 .finance-modal .modal-body { padding: 22px 24px; }
+.finance-modal .modal-header, .finance-modal .modal-footer { flex-shrink: 0; }
+.finance-modal .modal-body { min-height: 0; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 .finance-modal .form-label { color: #526980; font-size: .81rem; font-weight: 600; }
 .finance-modal .form-control, .finance-modal .form-select { font-size: .9rem; }
 #financeForm { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden; }
@@ -215,10 +217,6 @@
     .finance-modal .modal-header, .finance-modal .modal-footer, .finance-modal .modal-body { padding: 17px; }
     .finance-modal .form-control, .finance-modal .form-select,
     .finance-search input, .finance-filter-bar .finance-filter { font-size: 16px; }
-    #financeEditModal { height: var(--finance-viewport-height, 100dvh); top: var(--finance-viewport-top, 0); }
-    #financeEditModal .modal-dialog { height: calc(var(--finance-viewport-height, 100dvh) - 1rem); min-height: 0; }
-    #financeEditModal .modal-content { max-height: 100%; }
-    #financeForm .modal-footer { padding-bottom: max(17px, env(safe-area-inset-bottom)); }
     .finance-detail-grid { gap: 17px; }
     .finance-product-list { grid-template-columns: 1fr; }
     .finance-product-card { padding: 18px; }
@@ -234,4 +232,33 @@
     .finance-participant { padding: 14px; }
     .finance-project-preview { gap: 16px; padding: 14px; }
     .finance-linked-movement { flex-wrap: wrap; }
+}
+/* Use the area above the keyboard, including iPhone viewport panning. The
+   header and actions stay inside that area; only the form/details body scrolls. */
+@media (max-width: 767.98px), (max-height: 575px) and (pointer: coarse) {
+    .finance-modal {
+        top: var(--finance-viewport-top, 0);
+        height: var(--finance-viewport-height, 100dvh);
+        padding: max(12px, var(--finance-safe-top, env(safe-area-inset-top, 0px))) max(8px, env(safe-area-inset-right, 0px)) max(8px, var(--finance-safe-bottom, env(safe-area-inset-bottom, 0px))) max(8px, env(safe-area-inset-left, 0px)) !important;
+        overflow: hidden;
+    }
+    .finance-modal .modal-dialog {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        max-height: 100%;
+        margin: 0;
+        align-items: flex-start;
+    }
+    .finance-modal .modal-content { height: 100%; max-height: 100%; }
+    .finance-modal .modal-body { overflow-y: auto; scroll-padding: 12px 0; }
+    .finance-modal .modal-header, .finance-modal .modal-footer { padding: 12px 16px; }
+    .finance-modal .modal-title { font-size: 20px; -webkit-line-clamp: 2; }
+    .finance-modal.finance-modal-compact .modal-header,
+    .finance-modal.finance-modal-compact .modal-footer { padding-top: 8px; padding-bottom: 8px; }
+    .finance-modal.finance-modal-compact .modal-title { -webkit-line-clamp: 1; }
+    .finance-modal .form-control, .finance-modal .form-select,
+    .finance-search input, .finance-filter-bar .finance-filter { font-size: 16px; }
+    #financeForm .modal-footer { padding-bottom: 12px; }
+    .finance-modal-compact #financeForm .modal-footer { padding-bottom: 8px; }
 }
