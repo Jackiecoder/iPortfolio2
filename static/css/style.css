@@ -3011,20 +3011,34 @@ body[data-secondary-tools="hidden"] { padding-left: 0; }
     .holdings-update-details summary { min-height: 28px; padding-block: 6px; }
 }
 
-/* Sale lot selection stays usable on a narrow phone screen. */
-.sale-lots-panel { margin-top: 1.25rem; padding: 1rem; border: 1px solid var(--bs-border-color); border-radius: .75rem; }
+/* Keep transaction actions visible while the form body scrolls. */
+#addTxnModal .modal-dialog { margin: 1rem auto; height: calc(100% - 2rem); max-height: calc(100dvh - 2rem); }
+#addTxnForm { min-height: 0; }
+#addTxnModal .modal-body { min-height: 0; }
+
+/* Sale lot details expand only when needed. */
+.sale-lots-panel { margin-top: .75rem; padding: .65rem .75rem; border: 1px solid var(--bs-border-color); border-radius: .65rem; }
+.sale-lots-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: .75rem; }
+.sale-lots-controls .form-label { margin: 0; font-size: .8rem; }
+.sale-lots-controls .form-select { min-width: 0; }
+#saleLotsStatus { margin-top: .35rem; }
+.sale-lots-details { margin-top: .35rem; }
+.sale-lots-details > summary { width: fit-content; color: var(--bs-primary); cursor: pointer; font-size: .8rem; font-weight: 600; }
+.sale-lots-details[open] > summary { margin-bottom: .5rem; }
 .sale-lots-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
-.sale-lots-list { max-height: 340px; overflow-y: auto; }
+.sale-lots-list { max-height: 240px; overflow-y: auto; }
 .sale-lot-row { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .8rem 0; border-bottom: 1px solid var(--bs-border-color); }
 .sale-lot-detail .badge { font-size: .65rem; margin-left: .3rem; }
 .sale-lot-quantity { flex: 0 0 105px; text-align: right; }
 .sale-lot-quantity strong { display: block; }
 .sale-lot-quantity input { text-align: right; }
-.sale-lots-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--bs-border-color); }
+.sale-lots-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin-top: .5rem; padding-top: .5rem; border-top: 1px solid var(--bs-border-color); }
 .sale-lots-summary span { display: block; color: var(--bs-secondary-color); font-size: .75rem; }
 .sale-lots-summary strong { display: block; font-variant-numeric: tabular-nums; }
 @media (max-width: 575.98px) {
-    .sale-lots-panel { padding: .75rem; }
+    #addTxnModal .modal-dialog { margin: .5rem; height: calc(100% - 1rem); max-height: calc(100dvh - 1rem); }
+    .sale-lots-controls { grid-template-columns: minmax(0, 1fr); gap: .25rem; }
+    .sale-lots-heading { flex-wrap: wrap; }
     .sale-lots-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .sale-lot-detail { font-size: .85rem; }
     .sale-lot-detail .badge { display: inline-block; margin-left: 0; }

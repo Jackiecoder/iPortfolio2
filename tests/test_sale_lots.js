@@ -19,7 +19,7 @@ const waitForDebounce = () => new Promise(resolve => setTimeout(resolve, 270));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t) {
     const elements = Object.fromEntries(['saleLotsPanel', 'sellCostBasisMethod', 'saleLotsList',
-        'saleLotsStatus', 'saleLotsSummary', 'saleLotsCustomize', 'saleLotsMethodHelp', 'saleLotsAccount']
+        'saleLotsStatus', 'saleLotsSummary', 'saleLotsCustomize', 'saleLotsMethodHelp', 'saleLotsAccount', 'saleLotsDetails']
         .map(id => [id, new Element()]));
     elements.sellCostBasisMethod.value = 'HIGH_COST';
     const form = new Element();
@@ -48,8 +48,22 @@ test('exact fractional quantities survive automatic preview to save and manual c
     f.requests[0].resolve(result('0.123456789123456789')); await tick();
     assert.equal(f.component.selection().lot_allocations[0].quantity, '0.123456789123456789');
     f.elements.saleLotsCustomize.fire('click'); await waitForDebounce();
+    assert.equal(f.elements.saleLotsDetails.open, true);
     assert.equal(f.requests[1].body.cost_basis_method, 'SPECIFIC');
     assert.deepEqual(f.requests[1].body.lot_allocations, [{ lot_id: 7, quantity: '0.123456789123456789' }]);
+});
+
+test('manual lot selection opens details and form reset restores the compact FIFO view', t => {
+    const f = fixture(t);
+    f.elements.sellCostBasisMethod.value = 'SPECIFIC';
+    f.elements.sellCostBasisMethod.fire('change');
+    assert.equal(f.elements.saleLotsDetails.open, true);
+    f.elements.saleLotsDetails.open = false;
+    f.form.fire('invalid', { dataset: { lotId: '7' } });
+    assert.equal(f.elements.saleLotsDetails.open, true);
+    f.form.fire('reset');
+    assert.equal(f.elements.sellCostBasisMethod.value, 'FIFO');
+    assert.equal(f.elements.saleLotsDetails.open, false);
 });
 
 test('editing invalidates immediately and a late old request cannot enable saving', async t => {

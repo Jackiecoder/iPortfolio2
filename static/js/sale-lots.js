@@ -38,6 +38,7 @@
         const status = doc.getElementById('saleLotsStatus');
         const summary = doc.getElementById('saleLotsSummary');
         const customize = doc.getElementById('saleLotsCustomize');
+        const details = doc.getElementById('saleLotsDetails');
         let manual = {}, inventoryKey = '', renderedKey = '', response = null, responseKey = '';
         let requestId = 0, timer = null, controller = null;
 
@@ -153,6 +154,7 @@
         }
 
         method.addEventListener('change', () => {
+            if (method.value === 'SPECIFIC') details.open = true;
             if (method.value === 'SPECIFIC' && response?.valid) {
                 manual = Object.fromEntries(response.allocations.map(a => [a.lot_id, a.quantity]));
             }
@@ -161,7 +163,7 @@
         customize.addEventListener('click', () => {
             if (!response?.valid) return;
             manual = Object.fromEntries(response.allocations.map(a => [a.lot_id, a.quantity]));
-            method.value = 'SPECIFIC'; refresh();
+            method.value = 'SPECIFIC'; details.open = true; refresh();
         });
         form.addEventListener('input', event => {
             if (event.target.dataset.lotId) {
@@ -179,8 +181,13 @@
         form.addEventListener('change', event => {
             if (['asset', 'broker', 'action', 'date', 'transaction_time'].includes(event.target.name)) refresh();
         });
+        // Reveal invalid manual quantities before native validation focuses them.
+        form.addEventListener('invalid', event => {
+            if (event.target.dataset.lotId) details.open = true;
+        }, true);
         form.addEventListener('reset', () => {
             manual = {}; inventoryKey = ''; renderedKey = ''; response = null; method.value = 'FIFO';
+            details.open = false;
             clearTimeout(timer); controller?.abort(); ++requestId;
         });
         modal.addEventListener('hidden.bs.modal', () => { clearTimeout(timer); controller?.abort(); ++requestId; response = null; });
