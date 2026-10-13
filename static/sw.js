@@ -2,7 +2,7 @@
 // Goal: make the app installable + launchable offline, WITHOUT ever caching
 // API responses (live prices / authenticated data must always hit the network).
 
-const CACHE = 'portfolio-shell-v55';
+const CACHE = 'portfolio-shell-v56';
 
 // App shell: enough to render the page chrome offline. The page then fetches
 // live data over the network (and shows its own loading/empty state offline).
@@ -10,12 +10,12 @@ const SHELL = [
   '/',
   '/demo',
   '/static/css/style.css',
-  '/static/icons/icon-192.png?v=3',
-  '/static/icons/icon-512.png?v=3',
-  '/static/icons/apple-touch-icon.png?v=3',
-  '/static/favicon.svg?v=3',
-  '/static/manifest.webmanifest?v=3',
-  '/static/manifest-demo.webmanifest?v=2',
+  '/static/icons/icon-192.png?v=4',
+  '/static/icons/icon-512.png?v=4',
+  '/static/icons/apple-touch-icon.png?v=4',
+  '/static/favicon.svg?v=4',
+  '/static/manifest.webmanifest?v=4',
+  '/static/manifest-demo.webmanifest?v=3',
 ];
 
 self.addEventListener('install', (event) => {
