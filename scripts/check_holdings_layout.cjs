@@ -44,6 +44,7 @@ const pause = page => page.waitForTimeout(250); // Bootstrap tab transition + pa
           return {height: bounds.height, bottom: bounds.bottom, viewport: innerHeight};
         });
         assert.ok(openingChart.height >= 160, `opening Today chart too short: ${JSON.stringify(openingChart)}`);
+        assert.ok(openingChart.height <= (mobile ? 300 : 360) + 1, `opening Today chart too tall: ${JSON.stringify(openingChart)}`);
         assert.ok(openingChart.bottom <= openingChart.viewport + 1, `opening Today chart must fit on screen: ${JSON.stringify(openingChart)}`);
         await page.screenshot({path: `${output}/${engine}-${width}-today.png`});
         await page.locator('#holdings-tab').click();

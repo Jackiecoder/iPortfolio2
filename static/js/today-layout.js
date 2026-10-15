@@ -1,4 +1,4 @@
-// Give the intraday line all remaining space on the opening screen, including
+// Keep the full intraday line at a comfortable height, fitting smaller screens
 // when timestamps, summary details or mobile controls change height.
 document.addEventListener('DOMContentLoaded', () => {
     const pane = document.getElementById('trackerToday');
@@ -17,7 +17,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const footer = card.getBoundingClientRect().bottom - bounds.bottom;
         const bottomGap = parseFloat(getComputedStyle(document.querySelector('.app-shell')).paddingBottom) || 16;
         const minimum = viewport < 640 ? 160 : 220;
-        const height = Math.max(minimum, Math.floor(viewport - top - footer - bottomGap));
+        const maximum = parseFloat(getComputedStyle(plot).getPropertyValue('--today-chart-max-height')) || 360;
+        const height = Math.max(minimum, Math.min(maximum, Math.floor(viewport - top - footer - bottomGap)));
         const value = `${height}px`;
         if (plot.style.getPropertyValue('--today-chart-height') !== value) {
             plot.style.setProperty('--today-chart-height', value);

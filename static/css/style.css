@@ -2129,7 +2129,11 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 #intradayLatestReturn.text-success { background: var(--mint-soft); }
 #intradayLatestReturn.text-danger { background: #fbeef2; }
 .intraday-chart-hint { color: var(--slate-500); font-size: 10px; margin-left: auto; }
-.intraday-focus-card .pnl-chart-container { height: var(--today-chart-height, max(220px, calc(100dvh - 340px))); }
+.intraday-focus-card .pnl-chart-container {
+    --today-chart-max-height: 360px;
+    height: var(--today-chart-height, var(--today-chart-max-height));
+    max-height: var(--today-chart-max-height);
+}
 .intraday-date-controls { gap: 8px !important; }
 .intraday-date-nav { background: #f5f7fb; border: 1px solid var(--slate-200); border-radius: 9px; padding: 2px; }
 .intraday-date-nav .btn, .intraday-date-nav .form-control { background: transparent; border: 0; min-height: 32px; }
@@ -2827,6 +2831,7 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     .card-body { padding: 16px; }
     .intraday-focus-card .card-header { align-items: flex-start !important; flex-direction: column; gap: 6px !important; padding: 10px 12px; }
     .intraday-focus-card .card-body { padding-inline: 12px; }
+    .intraday-focus-card .pnl-chart-container { --today-chart-max-height: 300px; }
     .intraday-title-controls { display: none !important; }
     .intraday-refresh-btn { min-height: 32px; padding: 5px 8px; font-size: 11px; }
     .intraday-date-controls { display: grid !important; grid-template-columns: auto 1fr; width: 100%; }
