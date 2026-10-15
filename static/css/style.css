@@ -2829,15 +2829,17 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     .card-header, .card-header.bg-white { min-height: 55px; padding: 16px; }
     .card-header h5 { font-size: 15px; }
     .card-body { padding: 16px; }
-    .intraday-focus-card .card-header { align-items: flex-start !important; flex-direction: column; gap: 6px !important; padding: 10px 12px; }
+    .intraday-focus-card .card-header { display: grid !important; grid-template-columns: minmax(0, 1fr) auto; align-items: start !important; gap: 6px 8px !important; padding: 10px 12px; }
     .intraday-focus-card .card-body { padding-inline: 12px; }
     .intraday-focus-card .pnl-chart-container { --today-chart-max-height: 300px; }
-    .intraday-title-controls { display: none !important; }
+    .intraday-title-controls { display: contents !important; }
+    .intraday-title-controls h5 { display: none; }
+    #intradayRefreshBtn { grid-column: 2; grid-row: 1; align-self: start; }
     .intraday-refresh-btn { min-height: 32px; padding: 5px 8px; font-size: 11px; }
-    .intraday-date-controls { display: grid !important; grid-template-columns: auto 1fr; width: 100%; }
-    #intradayDatePicker { flex-basis: 118px; width: 118px; }
-    #intradayFreshnessBadge { justify-self: end; padding: 5px 7px; font-size: 10px; }
-    #intradayUpdatedAt { grid-column: 1 / -1; text-align: left; }
+    .intraday-date-controls { display: flex !important; flex-wrap: wrap; grid-column: 1; grid-row: 1; gap: 6px !important; min-width: 0; width: auto; }
+    #intradayDatePicker { flex-basis: 102px; width: 102px !important; }
+    #intradayFreshnessBadge { padding: 5px 7px; font-size: 10px; }
+    #intradayUpdatedAt { text-align: left; }
     .intraday-spotlight { gap: 12px; margin-bottom: 10px; padding-top: 0; }
     #intradayLatestPnl { font-size: 30px; }
     .intraday-return { padding-left: 16px; }

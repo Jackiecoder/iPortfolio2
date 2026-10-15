@@ -38,6 +38,7 @@ const pause = page => page.waitForTimeout(250); // Bootstrap tab transition + pa
         assert.equal(await page.locator('#summaryCardsCollapse').isVisible(), false, 'summary must start collapsed despite saved expanded state');
         assert.equal(await page.locator('#summaryToggleBtn').getAttribute('aria-expanded'), 'false');
         await page.waitForFunction(() => window.Chart?.getChart('intradayChart')?.data.labels.length > 0);
+        assert.equal(await page.locator('#intradayRefreshBtn').isVisible(), true, 'chart Refresh must remain visible on every screen size');
         await pause(page);
         const openingChart = await page.locator('#intradayChart').evaluate(canvas => {
           const bounds = canvas.getBoundingClientRect();
