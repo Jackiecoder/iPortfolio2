@@ -26,12 +26,27 @@ const pause = page => page.waitForTimeout(250); // Bootstrap tab transition + pa
           const response = await fixture.fetch(route.request().url(), {method: route.request().method()});
           await route.fulfill({status: response.status, contentType: 'application/json', body: JSON.stringify(await response.json())});
         });
-        await page.addInitScript(() => {
-          localStorage.setItem('trackerActiveTab', '#trackerHoldings');
+        const savedTab = {320: '#trackerHoldings', 390: '#trackerPerformance', 430: '#trackerFinance', 1440: '#trackerTransactions'}[width];
+        await page.addInitScript(previousTab => {
+          localStorage.setItem('trackerActiveTab', previousTab);
           localStorage.setItem('summaryCardsExpanded', '1');
           localStorage.setItem('holdingsHiddenCols', JSON.stringify([3,8,9,11,12,13,14,15,16,17,18]));
-        });
+        }, savedTab);
         await page.goto(baseURL + '/');
+        await page.waitForSelector('#trackerToday.active');
+        assert.equal(await page.locator('#today-tab').getAttribute('aria-selected'), 'true', `${engine} ${width}: Today must open despite saved ${savedTab}`);
+        assert.equal(await page.locator('#summaryCardsCollapse').isVisible(), false, 'summary must start collapsed despite saved expanded state');
+        assert.equal(await page.locator('#summaryToggleBtn').getAttribute('aria-expanded'), 'false');
+        await page.waitForFunction(() => window.Chart?.getChart('intradayChart')?.data.labels.length > 0);
+        await pause(page);
+        const openingChart = await page.locator('#intradayChart').evaluate(canvas => {
+          const bounds = canvas.getBoundingClientRect();
+          return {height: bounds.height, bottom: bounds.bottom, viewport: innerHeight};
+        });
+        assert.ok(openingChart.height >= 160, `opening Today chart too short: ${JSON.stringify(openingChart)}`);
+        assert.ok(openingChart.bottom <= openingChart.viewport + 1, `opening Today chart must fit on screen: ${JSON.stringify(openingChart)}`);
+        await page.screenshot({path: `${output}/${engine}-${width}-today.png`});
+        await page.locator('#holdings-tab').click();
         await page.waitForSelector('#holdingsBody .holding-row');
         await pause(page);
         const initial = await page.evaluate(() => {
@@ -99,22 +114,38 @@ const pause = page => page.waitForTimeout(250); // Bootstrap tab transition + pa
           await page.locator('#today-tab').click();
           await pause(page);
           assert.equal(await page.locator('#portfolioOverview').isVisible(), true);
-          assert.equal(await page.evaluate(() => localStorage.getItem('summaryCardsExpanded')), '1');
+          assert.equal(await page.locator('#summaryCardsCollapse').isVisible(), false, 'summary must remain collapsed after switching tabs');
+          assert.equal(await page.locator('#summaryToggleBtn').getAttribute('aria-expanded'), 'false');
           await page.locator('#holdings-tab').click();
           await pause(page);
           assert.equal(await page.locator('#portfolioOverview').isVisible(), false);
           assert.ok(await page.evaluate(() => document.querySelector('#holdingsTable').getBoundingClientRect().top > 40), 'tab switch must return to start of holdings');
-          // Crossing the breakpoint restores desktop scrolling and clears the offset.
+          // Crossing the breakpoint keeps the same page scroll surface.
           await page.setViewportSize({width: 1024, height: 768});
           await pause(page);
           assert.equal(await page.locator('#portfolioOverview').isVisible(), true);
-          assert.equal(await page.locator('.holdings-table-scroll').evaluate(el => el.style.getPropertyValue('--holdings-header-offset')), '');
+          assert.equal(await page.locator('.holdings-table-scroll').evaluate(el => el.scrollTop), 0);
+          assert.ok(await page.locator('.holdings-table-scroll').evaluate(el => el.scrollHeight - el.clientHeight <= 1), 'breakpoint must not introduce nested vertical scrolling');
         } else {
           assert.notEqual(initial.overview, 'none');
-          assert.ok(initial.scrollHeight > initial.height, 'desktop retains bounded table scroll');
-          await page.locator('.holdings-table-scroll').evaluate(el => el.scrollTop = 200);
-          const diff = await page.evaluate(() => document.querySelector('#holdingsTable th').getBoundingClientRect().top - document.querySelector('.holdings-table-scroll').getBoundingClientRect().top);
-          assert.ok(Math.abs(diff) < 2, 'desktop header remains sticky');
+          assert.ok(initial.scrollHeight - initial.height <= 1, 'desktop must not use nested vertical scrolling');
+          await page.mouse.move(width / 2, Math.min(620, initial.tableTop + 80));
+          await page.mouse.wheel(0, Math.ceil(initial.tableTop) + 120);
+          await pause(page);
+          const position = await page.evaluate(() => {
+            const scroller = document.querySelector('.holdings-table-scroll');
+            const navbar = document.querySelector('.app-navbar');
+            const nav = navbar.getBoundingClientRect();
+            const table = scroller.getBoundingClientRect();
+            const stickyToolbar = ['sticky', 'fixed'].includes(getComputedStyle(navbar).position)
+              && nav.right > table.left && nav.left < table.right;
+            return {page: scrollY, inner: scroller.scrollTop,
+              head: document.querySelector('#holdingsTable th').getBoundingClientRect().top,
+              toolbar: stickyToolbar ? Math.max(0, nav.bottom) : 0};
+          });
+          assert.ok(position.page > 0, 'desktop scroll over the table must move the page');
+          assert.equal(position.inner, 0);
+          assert.ok(Math.abs(position.head - position.toolbar) < 2, `desktop headings must pin below the toolbar: ${JSON.stringify(position)}`);
           await page.screenshot({path: `${output}/${engine}-${width}.png`});
         }
         assert.deepEqual(errors, []);

@@ -5,7 +5,6 @@ const isDemoPortfolio = window.location.pathname.replace(/\/$/, '') === '/demo'
     || document.body.dataset.portfolioMode === 'demo';
 const portfolioStorage = isDemoPortfolio ? (() => {
     const values = new Map([
-        ['trackerActiveTab', '#trackerHoldings'], ['summaryCardsExpanded', '1'],
         ['holdingsHiddenCols', JSON.stringify([3, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18])],
     ]);
     return {
@@ -3298,8 +3297,8 @@ function updateIntradayTimestamp() {
     badge.textContent = age;
     badge.setAttribute('data-freshness', minutes < 15 ? 'fresh' : minutes < 60 ? 'recent' : 'stale');
     badge.title = `Last updated ${date} ${time} ET`;
-    badge.setAttribute('aria-label', `Last updated: ${age}`);
-    updated.textContent = `Chart updated ${date} ${time} ET${renderedIntraday.stale_symbols?.length ? ' · Some prices are cached' : ''}`;
+    badge.setAttribute('aria-label', `Last updated: ${age}, ${date} ${time} ET`);
+    updated.textContent = renderedIntraday.stale_symbols?.length ? 'Some prices are cached' : '';
 }
 
 function updateIntradayChart(intraday, interval = '5m') {
@@ -5407,26 +5406,16 @@ document.addEventListener('DOMContentLoaded', () => {
         demo: isDemoPortfolio, private: () => anonymousMode,
         today: marketTodayStr, toast: showToast,
     });
-    const storedTrackerTab = portfolioStorage.getItem('trackerActiveTab');
-    const savedTrackerTab = storedTrackerTab === '#trackerIncome'
-        ? '#trackerPerformance'
-        : storedTrackerTab === '#trackerCoveredCalls'
-            ? '#trackerToday'
-            : storedTrackerTab;
-    if (savedTrackerTab !== storedTrackerTab) {
-        portfolioStorage.setItem('trackerActiveTab', savedTrackerTab);
-    }
-    if (savedTrackerTab) {
-        const tabButton = document.querySelector(`[data-bs-target="${savedTrackerTab}"]`);
-        if (tabButton && window.bootstrap) {
-            bootstrap.Tab.getOrCreateInstance(tabButton).show();
-        }
+    // Every fresh visit starts with the full Today chart, regardless of the
+    // page used during the previous session.
+    const todayTabButton = document.querySelector('[data-bs-target="#trackerToday"]');
+    if (todayTabButton && window.bootstrap) {
+        bootstrap.Tab.getOrCreateInstance(todayTabButton).show();
     }
 
     document.querySelectorAll('#trackerTabs [data-bs-toggle="pill"]').forEach(btn => {
         btn.addEventListener('shown.bs.tab', (event) => {
             const target = event.target.dataset.bsTarget;
-            portfolioStorage.setItem('trackerActiveTab', target);
             requestAnimationFrame(resizeTrackerCharts);
             // Lazy-load the transactions list the first time its tab is opened.
             if (target === '#trackerTransactions') loadTransactions();
@@ -5459,17 +5448,6 @@ document.addEventListener('DOMContentLoaded', () => {
             loadTickerHistory(true);
         });
     });
-    if (portfolioStorage.getItem('trackerActiveTab') === '#trackerPerformance') {
-        loadTickerHistory();
-    }
-    // If the transactions tab was the last-active tab (restored above), load it now.
-    if (portfolioStorage.getItem('trackerActiveTab') === '#trackerTransactions') {
-        loadTransactions();
-    }
-    if (portfolioStorage.getItem('trackerActiveTab') === '#trackerFinance') {
-        window.financeUI?.load();
-    }
-
     // Period button event handlers
     document.querySelectorAll('.period-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -5851,16 +5829,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     })();
 
-    // Summary cards collapse: persist + restore state
+    // Keep the opening view compact; details remain available for this visit.
     (function initSummaryCollapse() {
         const btn = document.getElementById('summaryToggleBtn');
         const panel = document.getElementById('summaryCardsCollapse');
         const icon = document.getElementById('summaryToggleIcon');
         const label = document.getElementById('summaryToggleLabel');
         if (!btn || !panel) return;
-        const STORAGE_KEY = 'summaryCardsExpanded';
-        const expanded = portfolioStorage.getItem(STORAGE_KEY) === '1';
-
         function applyState(isOpen) {
             panel.classList.toggle('show', isOpen);
             btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
@@ -5868,14 +5843,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 icon.classList.toggle('bi-chevron-down', !isOpen);
                 icon.classList.toggle('bi-chevron-up', isOpen);
             }
-            if (label) label.textContent = isOpen ? 'Hide summary' : 'Show summary';
+            if (label) label.textContent = isOpen ? 'Hide summary' : 'Summary';
         }
-        applyState(expanded);
+        applyState(false);
 
         btn.addEventListener('click', () => {
             const nowOpen = !panel.classList.contains('show');
             applyState(nowOpen);
-            portfolioStorage.setItem(STORAGE_KEY, nowOpen ? '1' : '0');
         });
     })();
 

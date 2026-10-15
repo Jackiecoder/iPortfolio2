@@ -102,7 +102,6 @@
                 ['Net option cash flow', money(summary.net_cash_flow || 0)],
                 ['Realized option P&L', money(summary.realized_option_pnl || 0)],
             ].map(([label, val]) => `<div><span>${label}</span><strong>${val}</strong></div>`).join('');
-            $('ccScopeNote').classList.toggle('d-none', !data.calls.length);
             const filter = value('ccFilter');
             const rows = data.calls.filter(c => filter === 'all' || (filter === 'open' ? c.remaining_contracts > 0 : c.remaining_contracts === 0));
             $('ccList').innerHTML = rows.length ? rows.map(c => {

@@ -24,7 +24,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=69">
+    <link rel="stylesheet" href="/static/css/style.css?v=70">
     {% if not demo_mode %}<link rel="stylesheet" href="/static/css/finance.css?v=9">{% endif %}
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -265,34 +265,24 @@
     <!-- ============================================================ TRACKER PAGE -->
     <div id="trackerPage">
         <div id="portfolioOverview">
-        <header id="portfolioRefreshCard" class="portfolio-brief mb-3" role="button" tabindex="0" aria-label="Refresh intraday chart" title="Click to update the intraday chart">
-            <div class="portfolio-brief-copy">
-                <h1>{{ 'Demo portfolio' if demo_mode else 'Portfolio overview' }}</h1>
-                <p>{{ 'Six holdings. A complete view of how iPortfolio works.' if demo_mode else 'Your positions, performance and activity, in one place.' }}</p>
-            </div>
-            <div class="brief-refresh-cue" aria-hidden="true">
-                <i class="bi bi-arrow-clockwise"></i>
-                <span>Refresh prices</span>
-            </div>
-        </header>
         <!-- Portfolio Summary toggle + condensed strip -->
         <div class="d-flex align-items-center gap-2 mb-2 summary-command-bar">
             <button class="btn btn-sm btn-outline-secondary" type="button" id="summaryToggleBtn" aria-expanded="false" aria-controls="summaryCardsCollapse">
-                <i class="bi bi-chevron-down me-1" id="summaryToggleIcon"></i><span id="summaryToggleLabel">Show summary</span>
+                <i class="bi bi-chevron-down me-1" id="summaryToggleIcon"></i><span id="summaryToggleLabel">Summary</span>
             </button>
             <div class="summary-strip text-muted small flex-grow-1" id="summaryStrip">
-                <span class="summary-strip-item"><span class="text-muted">Unrealized P&amp;L</span> <span id="stripUnrealizedPnl">--</span></span>
+                <span class="summary-strip-item"><span class="text-muted">Unrealized</span> <span id="stripUnrealizedPnl">--</span></span>
                 <span class="summary-strip-sep">·</span>
                 <span class="summary-strip-item"><span class="text-muted">Total P&amp;L</span> <span id="stripTotalPnl">--</span></span>
                 <span class="summary-strip-sep">·</span>
-                <span class="summary-strip-item"><span class="text-muted">Year to date</span> <span id="stripYtdPnl">--</span></span>
+                <span class="summary-strip-item"><span class="text-muted">YTD</span> <span id="stripYtdPnl">--</span></span>
             </div>
+            <button id="portfolioRefreshCard" class="btn btn-sm summary-refresh-btn" type="button" aria-label="Refresh intraday chart" title="Click to update the intraday chart"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i></button>
         </div>
-
-        <div id="summaryDataStatus" class="dashboard-data-status" role="status"></div>
 
         <!-- Portfolio Summary Cards (collapsible) -->
         <div class="collapse" id="summaryCardsCollapse">
+            <div id="summaryDataStatus" class="dashboard-data-status" role="status"></div>
             <div class="row g-3 mb-4">
                 <div class="col-6 col-md-4 col-lg">
                     <div class="card h-100 border-0 shadow-sm">
@@ -351,7 +341,6 @@
             </div>
         </div>
 
-        <p id="ccScopeNote" class="small text-muted d-none">Stock, crypto and cash totals exclude option valuations. See Option for option cash flows and realized P&amp;L.</p>
         </div>
         <div id="transactionUpdateNotice" class="transaction-update-notice d-none" role="status" aria-live="polite">
             <span class="value-spinner" aria-hidden="true"></span>
@@ -399,7 +388,7 @@
         <!-- Intraday P&L Chart -->
         <div class="card border-0 shadow-sm mb-4 intraday-focus-card">
             <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <div class="d-flex align-items-center flex-wrap gap-2">
+                <div class="d-flex align-items-center flex-wrap gap-2 intraday-title-controls">
                     <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Intraday P&L</h5>
                     <button id="intradayRefreshBtn" class="btn btn-sm btn-primary intraday-refresh-btn" type="button" aria-label="Refresh intraday chart" title="Fetch minute prices and update the intraday chart">
                         <i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="refresh-label">Refresh</span>
@@ -429,7 +418,6 @@
                         <span class="spotlight-label">Daily return</span>
                         <span id="intradayLatestReturn">--</span>
                     </div>
-                    <span class="intraday-chart-hint"><i class="bi bi-cursor me-1"></i>Explore the chart to see each moment</span>
                 </div>
                 <div class="chart-container pnl-chart-container">
                     <canvas id="intradayChart"></canvas>
@@ -1284,10 +1272,11 @@
     <script src="/static/js/ticker-technicals.js?v=2"></script>
     {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=4"></script>{% endif %}
     <script src="/static/js/holdings-layout.js?v=2"></script>
+    <script src="/static/js/today-layout.js?v=1"></script>
     <script src="/static/js/option-quotes.js?v=1"></script>
-    <script src="/static/js/covered-calls.js?v=3"></script>
+    <script src="/static/js/covered-calls.js?v=4"></script>
     {% if not demo_mode %}<script src="/static/js/finance.js?v=11"></script>{% endif %}
-    <script src="/static/js/app.js?v=163"></script>
+    <script src="/static/js/app.js?v=164"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {
