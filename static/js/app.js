@@ -4387,7 +4387,9 @@ async function deleteTransaction(txnId, btn) {
         applySavedTransaction();
         refreshAfterTransaction();
     } catch (e) {
-        alert(`Failed to delete: ${e.message}`);
+        alert(hideAmounts()
+            ? 'Failed to delete this transaction. Retry with amounts visible for details.'
+            : `Failed to delete: ${e.message}`);
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-trash"></i>'; }
     }
 }

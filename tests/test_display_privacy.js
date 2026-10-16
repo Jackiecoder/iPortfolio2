@@ -80,3 +80,24 @@ test('invalid or unchanged mode does not mutate saved preferences or repaint', (
     assert.equal(values.size, 0);
     assert.equal(calls.length, 0);
 });
+
+test('transaction delete errors cannot expose account names or share counts in percentage only mode', async () => {
+    const detail = 'Insufficient unreserved MU shares in Private account: 25 owned, 100 required by covered calls';
+    for (const mode of ['percentage', 'absolute', 'all']) {
+        const {context: c} = setup({displayMode: mode});
+        const alerts = [], confirmations = [];
+        c.allTransactions = [{id: 1, date: '2026-10-16', action: 'BUY', asset: 'MU', quantity: 25}];
+        c.confirm = message => {confirmations.push(message); return true;};
+        c.alert = message => alerts.push(message);
+        c.fetch = async () => ({ok: false, json: async () => ({detail})});
+        vm.runInContext(source.slice(source.indexOf('async function deleteTransaction('), source.indexOf('function initTransactionsTab(')), c);
+        await c.deleteTransaction(1);
+        assert.equal(alerts.length, 1);
+        if (mode === 'percentage') {
+            assert.doesNotMatch(alerts[0], /Private account|25 owned|100 required/);
+            assert.match(confirmations[0], /qty \*\*\*/);
+        } else {
+            assert.match(alerts[0], /Private account: 25 owned, 100 required/);
+        }
+    }
+});
