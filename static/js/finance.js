@@ -135,6 +135,7 @@
         return `${negative ? '-' : ''}${whole}${fraction ? '.' + fraction : ''}`;
     }
     const projectMoney = (value, currency, privateMode = false) => privateMode ? '***' : `${escape(currency)} ${projectNumber(value, 2)}`;
+    const projectPercent = (value, hidden = false) => value === null || value === undefined ? '—' : hidden ? '***' : `${projectNumber(value)}%`;
     function projectSnapshot(record) {
         const inputs = record.request_fields || record;
         const fallback = projectPreview(inputs), calculated = record.calculation_fields || {};
@@ -217,7 +218,7 @@
     function isZeroPriceSale(record) {
         return record.kind === 'sale' && decimalParts(record.unit_price)?.coefficient === 0n;
     }
-    function renderRows(records, section, products = [], privateMode = false, projects = []) {
+    function renderRows(records, section, products = [], privateMode = false, projects = [], hidePercentages = false) {
         const names = new Map(products.map(p => [Number(p.id), p]));
         const projectNames = new Map(projects.map(p => [Number(p.id), p.name]));
         return records.map(record => {
@@ -244,7 +245,7 @@
                 const project = projectSnapshot(record);
                 status = record.voided ? 'void' : 'planned';
                 title = sensitive(project.name, privateMode);
-                subtitle = `${(project.participants || []).map(p => sensitive(p.name, privateMode)).join(' · ')}<span class="finance-row-base">计划分红 ${projectNumber(project.dividend_percent_total, 0, privateMode)}%；待分配 ${projectNumber(project.unallocated_percent, 0, privateMode)}%</span>`;
+                subtitle = `${(project.participants || []).map(p => sensitive(p.name, privateMode)).join(' · ')}<span class="finance-row-base">计划分红 ${projectPercent(project.dividend_percent_total, hidePercentages)}；待分配 ${projectPercent(project.unallocated_percent, hidePercentages)}</span>`;
                 amount = `总出资 ${projectMoney(project.total_contribution, project.currency, privateMode)}`;
                 secondary = project.expected_profit === null || project.expected_profit === undefined ? '预计利润未填写' : `预计利润 ${projectMoney(project.expected_profit, project.currency, privateMode)}`;
             } else {
@@ -430,6 +431,7 @@
         let nextModalId = null, viewportFrame = null;
         let privateOverride;
         const privateMode = () => privateOverride === undefined ? Boolean(typeof config.private === 'function' ? config.private() : config.private) : privateOverride;
+        const percentagesHidden = () => Boolean(config.hidePercentages?.());
         const today = () => typeof config.today === 'function' ? config.today() : config.today || new Date().toLocaleDateString('sv-SE', { timeZone: 'America/New_York' });
         const getModal = id => root.bootstrap.Modal.getOrCreateInstance($(id));
         function blurModalInput(modal) {
@@ -548,6 +550,7 @@
         }
         function restorePendingForm() {
             if (!pendingSave || privateMode()) return;
+            if (percentagesHidden() && pendingSave.current.type === 'projects') return;
             editor = pendingSave.current;
             $('financeFormFields').innerHTML = pendingSave.html;
             for (const saved of pendingSave.controls) {
@@ -662,7 +665,7 @@
             renderOverview();
             $('financeSearch').placeholder = type.placeholder;
             $('financeSearch').disabled = p;
-            $('financeAdd').disabled = p || !loaded || busy;
+            $('financeAdd').disabled = p || !loaded || busy || section === 'projects' && percentagesHidden();
             $('financeProducts').disabled = p || !loaded || busy;
             $('financeAdd').querySelector('span').textContent = type.add;
             $('financeProducts').classList.toggle('d-none', true);
@@ -678,12 +681,12 @@
             const filter = { search: p ? '' : $('financeSearch').value, currency: $('financeCurrency').value, status: $('financeStatus').value, showVoided: $('financeShowVoided').checked };
             const records = section === 'movements' ? filterProducts(state.products, state.movements, filter, state.projects) : filterRecords(state[section], filter, state.products, state.projects);
             $('financeCount').textContent = `${records.length} ${['projects', 'movements'].includes(section) ? '个' : '笔'}`;
-            if (records.length) $('financeList').innerHTML = section === 'movements' ? renderProductCards(records, p) : renderRows(records, section, state.products, p, state.projects);
+            if (records.length) $('financeList').innerHTML = section === 'movements' ? renderProductCards(records, p) : renderRows(records, section, state.products, p, state.projects, percentagesHidden());
             else {
                 const filtered = Boolean(filter.search || filter.currency || filter.status);
                 const title = filtered ? '没有符合筛选条件的记录' : type.empty;
                 const description = filtered ? '试试其他关键词，或清除筛选条件。' : type.description;
-                $('financeList').innerHTML = `<div class="finance-empty"><i class="bi bi-${type.icon}" aria-hidden="true"></i><h3>${title}</h3><p>${description}</p>${filtered ? '<button type="button" data-finance-clear class="btn btn-outline-secondary">清除筛选</button>' : `<button type="button" data-finance-new class="btn btn-primary"${p || !loaded ? ' disabled' : ''}>${type.add}</button>`}</div>`;
+                $('financeList').innerHTML = `<div class="finance-empty"><i class="bi bi-${type.icon}" aria-hidden="true"></i><h3>${title}</h3><p>${description}</p>${filtered ? '<button type="button" data-finance-clear class="btn btn-outline-secondary">清除筛选</button>' : `<button type="button" data-finance-new class="btn btn-primary"${p || !loaded || section === 'projects' && percentagesHidden() ? ' disabled' : ''}>${type.add}</button>`}</div>`;
             }
             if (p) $('financeCount').textContent = '隐私模式';
         }
@@ -745,13 +748,13 @@
             const values = projectFormValues(), preview = projectPreview(values);
             const available = value => value !== null ? projectMoney(value, currency) : '待填写金额与汇率';
             $('financeProjectTotal').textContent = available(preview.total_contribution);
-            $('financeProjectDividendTotal').textContent = preview.dividend_percent_total !== null ? `${projectNumber(preview.dividend_percent_total)}%` : '待填写';
-            $('financeProjectUnallocated').textContent = preview.unallocated_percent !== null ? `${projectNumber(preview.unallocated_percent)}%` : '待填写';
+            $('financeProjectDividendTotal').textContent = preview.dividend_percent_total !== null ? projectPercent(preview.dividend_percent_total, percentagesHidden()) : '待填写';
+            $('financeProjectUnallocated').textContent = preview.unallocated_percent !== null ? projectPercent(preview.unallocated_percent, percentagesHidden()) : '待填写';
             $('financeProjectProfit').textContent = values.expected_profit === null ? '未填写' : validProjectDecimal(values.expected_profit) ? projectMoney(values.expected_profit, currency) : '待填写有效金额';
             $('financeProjectUnallocatedProfit').textContent = values.expected_profit === null ? '未填写' : preview.unallocated_profit !== null ? projectMoney(preview.unallocated_profit, currency) : '待填写有效分红比例';
             $('financeProjectPreviewHint').textContent = preview.unallocated_percent !== null && decimalGreater(preview.dividend_percent_total, '100') ? '计划分红比例合计超过 100%，请调整后保存。' : preview.allocation_complete ? '分红计划已分配 100%。预计分红仅分配利润，不含返还本金。' : '允许保留待分配份额。出资比例自动计算，分红比例按你们的约定填写。';
             preview.participants.forEach((participant, index) => {
-                $('financeParticipantPreview-' + index).innerHTML = `<span>折算出资 <strong>${available(participant.base_amount)}</strong></span><span>出资比例 <strong>${participant.contribution_percent !== null ? projectNumber(participant.contribution_percent) + '%' : '待计算'}</strong></span><span>预计分红 <strong>${values.expected_profit === null ? '未填写' : participant.expected_dividend !== null ? projectMoney(participant.expected_dividend, currency) : '待计算'}</strong></span>`;
+                $('financeParticipantPreview-' + index).innerHTML = `<span>折算出资 <strong>${available(participant.base_amount)}</strong></span><span>出资比例 <strong>${participant.contribution_percent !== null ? projectPercent(participant.contribution_percent, percentagesHidden()) : '待计算'}</strong></span><span>预计分红 <strong>${values.expected_profit === null ? '未填写' : participant.expected_dividend !== null ? projectMoney(participant.expected_dividend, currency) : '待计算'}</strong></span>`;
             });
         }
         function handleProjectAction(event) {
@@ -773,6 +776,7 @@
         }
         function openEditor(type, record = null, parent = null) {
             if (privateMode() || busy) return;
+            if (type === 'projects' && percentagesHidden()) return;
             if (pendingSave) { restorePendingForm(); return; }
             const recordCurrencies = record ? type === 'exchanges' ? [record.from_currency, record.to_currency, record.fee_currency] : [record.currency, record.base_currency, type === 'movements' ? state.products.find(p => p.id === record.product_id)?.currency : null, ...(type === 'projects' ? (record.participants || []).map(p => p.currency) : [])] : [];
             if (recordCurrencies.some(currency => currency && !currencies.includes(currency))) {
@@ -989,6 +993,7 @@
         async function save(event) {
             event.preventDefault();
             if (busy || (!editor && !pendingSave) || privateMode()) return;
+            if (percentagesHidden() && (pendingSave?.current || editor)?.type === 'projects') return;
             let payload;
             try { payload = pendingSave ? pendingSave.payload : payloadForEditor(); } catch (error) { showError('financeFormError', error.message); return; }
             const current = pendingSave?.current || editor, existingProductIds = new Set(state.products.map(product => product.id));
@@ -1082,7 +1087,7 @@
                 fields[1] = detailField('状态', badge(r.voided ? 'void' : 'planned'));
                 const knownProfit = r.expected_profit !== null && r.expected_profit !== undefined;
                 fields.push(detailField('项目名称', text(r.name)), detailField('项目核算币种', escape(r.currency)), detailField('折算总出资', cash(r.total_contribution)),
-                    detailField('预计可分配利润（不含本金）', knownProfit ? cash(r.expected_profit) : '未填写'), detailField('计划分红比例合计', `${projectNumber(r.dividend_percent_total, 0, p)}%`), detailField('待分配比例', `${projectNumber(r.unallocated_percent, 0, p)}%`), detailField('预计待分配利润', knownProfit ? cash(r.unallocated_profit) : '未填写'));
+                    detailField('预计可分配利润（不含本金）', knownProfit ? cash(r.expected_profit) : '未填写'), detailField('计划分红比例合计', projectPercent(r.dividend_percent_total, percentagesHidden())), detailField('待分配比例', projectPercent(r.unallocated_percent, percentagesHidden())), detailField('预计待分配利润', knownProfit ? cash(r.unallocated_profit) : '未填写'));
             } else {
                 const product = state.products.find(p => p.id === r.product_id);
                 const baseCurrency = r.base_currency || product?.currency || r.currency;
@@ -1111,8 +1116,8 @@
                     const native = participant.currency || r.currency;
                     return `<section class="finance-participant-detail"><h6>${text(participant.name)}</h6><dl class="finance-detail-grid">${[
                         detailField('原币种出资', projectMoney(participant.contribution_amount, native, p)), detailField('出资折算汇率', `1 ${escape(native)} = ${formatRate(participant.exchange_rate ?? 1, p)} ${escape(r.currency)}`),
-                        detailField('折算出资', cash(participant.base_amount)), detailField('出资比例（自动计算）', `${projectNumber(participant.contribution_percent, 0, p)}%`),
-                        detailField('计划分红比例（约定）', `${projectNumber(participant.dividend_percent, 0, p)}%`), detailField('预计分红（不含本金）', knownProfit ? cash(participant.expected_dividend) : '未填写'), detailField('参与人备注', text(participant.note), true)
+                        detailField('折算出资', cash(participant.base_amount)), detailField('出资比例（自动计算）', projectPercent(participant.contribution_percent, percentagesHidden())),
+                        detailField('计划分红比例（约定）', projectPercent(participant.dividend_percent, percentagesHidden())), detailField('预计分红（不含本金）', knownProfit ? cash(participant.expected_dividend) : '未填写'), detailField('参与人备注', text(participant.note), true)
                     ].join('')}</dl></section>`;
                 }).join('')}<p class="finance-private-note mt-3">出资比例与约定分红比例分别记录。预计分红仅分配利润，不含返还本金；进出货关联不会自动改变分红计划。</p></div><div class="finance-history"><h6>关联进出货与历史</h6>${movements.length ? movements.map(movement => `<button type="button" class="finance-linked-movement btn" data-finance-detail="movements" data-id="${Number(movement.id)}"><span>${text(movement.date)} · ${escape(labels[movement.kind])} · ${text(state.products.find(product => product.id === movement.product_id)?.name)} ${movement.voided ? badge('void') : ''}</span><strong>${nativeMoney(movement.total, movement.currency, p)}</strong><i class="bi bi-chevron-right" aria-hidden="true"></i></button>`).join('') : '<p class="small text-muted mb-0">尚未关联进出货。记录进出货时可以选择这个项目。</p>'}</div>`;
             }
@@ -1133,6 +1138,7 @@
             const profileBack = type === 'movements' ? `<button type="button" class="btn btn-outline-secondary" data-finance-profile data-id="${Number(r.product_id)}">返回商品</button>` : '';
             $('financeDetailsActions').innerHTML = r.voided ? '<button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>' : `<button type="button" class="btn btn-outline-danger me-auto" data-finance-void="${type}" data-id="${r.id}">作废记录</button><button type="button" class="btn btn-outline-secondary" data-finance-edit="${type}" data-id="${r.id}">编辑</button>${(remaining > 0 || type === 'movements' && r.price_pending) && (type === 'loans' || (type === 'movements' && r.kind !== 'opening')) ? `<button type="button" class="btn btn-primary" data-finance-payment="${type}" data-id="${r.id}">${receiptLabel}</button>` : ''}`;
             $('financeDetailsActions').innerHTML += profileBack;
+            if (type === 'projects' && percentagesHidden()) $('financeDetailsActions').querySelector('[data-finance-edit]')?.setAttribute('disabled', '');
             showFinanceModal('financeDetailsModal');
         }
         function showProducts() {
@@ -1230,7 +1236,7 @@
             else if ('financeClear' in d) { $('financeSearch').value = ''; $('financeCurrency').value = ''; $('financeStatus').value = ''; render(); }
         }
         function refreshPrivacy() {
-            if (privateMode()) {
+            if (privateMode() || percentagesHidden()) {
                 if ($('financeSummary')) $('financeSummary').open = false;
                 updateSummaryHint();
                 $('financeSearch').value = '';
@@ -1260,7 +1266,7 @@
             const modal = $(id);
             modal.addEventListener('show.bs.modal', () => { openingModals.add(id); syncModalViewport(modal); });
             modal.addEventListener('hide.bs.modal', event => {
-                if (id !== 'financeDetailsModal' && busy && !privateMode()) { event.preventDefault(); return; }
+                if (id !== 'financeDetailsModal' && busy && !privateMode() && !percentagesHidden()) { event.preventDefault(); return; }
                 closingModals.add(id);
                 if (nextModalId === id) nextModalId = null;
                 blurModalInput(modal);

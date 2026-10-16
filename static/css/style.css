@@ -1997,6 +1997,16 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
 .nav-actions #demoPortfolioBtn[aria-pressed="true"]:hover { background: #c8f48c; border-color: #c8f48c; }
 .nav-actions #demoPortfolioBtn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
 .nav-actions #anonymousBtn { grid-column: 1; }
+.privacy-control { grid-column: 1; min-width: 0; }
+.privacy-control #anonymousBtn { height: 100%; width: 100%; }
+.privacy-menu { background: #fff; border: 1px solid #dce5f2; border-radius: 14px; box-shadow: 0 12px 32px #19365a26; min-width: 304px; padding: 16px; }
+.privacy-menu-label { color: #19365a; font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+.privacy-segments { background: #edf2f9; border: 1px solid #dce5f2; border-radius: 10px; display: flex; padding: 3px; }
+.privacy-segments button { align-items: center; background: transparent; border: 0; border-radius: 7px; color: #526780; display: flex; flex: 1; flex-direction: column; font: inherit; font-size: 11px; gap: 4px; min-height: 54px; padding: 7px 8px; white-space: nowrap; }
+.privacy-segments button i { font-size: 17px; }
+.privacy-segments button[aria-checked="true"] { background: #19365a; box-shadow: 0 2px 5px #19365a26; color: #fff; }
+.privacy-segments button:focus-visible { outline: 2px solid #4a65df; outline-offset: 2px; }
+#privacyModeHint { color: #6c7e95; font-size: 11px; line-height: 1.5; margin: 10px 0 0; max-width: 270px; }
 .nav-actions #installAppBtn { grid-column: 1 / -1; }
 .nav-refresh-controls { display: flex; gap: 8px; grid-column: 1 / -1; min-width: 0; }
 .nav-live-control { align-items: center; color: #e5edfa; cursor: pointer; display: inline-flex; flex-shrink: 0; font-size: 11px; font-weight: 600; gap: 6px; margin: 0; min-height: 36px; }
@@ -2783,6 +2793,7 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     .app-navbar .container-fluid > .d-flex.gap-2.align-items-center.nav-actions { display: flex !important; flex-wrap: nowrap; width: auto; }
     .nav-actions .btn { min-height: 36px; }
     .nav-actions #anonymousBtn, .nav-actions #addTxnBtn, .nav-actions #demoPortfolioBtn { height: 36px; justify-content: center; padding: 0; width: 36px; }
+    .privacy-control { flex: 0 0 36px; width: 36px; }
     .portfolio-mode-control { flex: 0 0 36px; width: 36px; }
     .nav-actions #demoPortfolioBtn i { display: none; }
     .nav-actions .nav-label, .nav-actions #installAppBtn { display: none !important; }
@@ -2806,7 +2817,8 @@ h1, h2, h3, h4, h5, h6, .navbar-brand, .modal-title {
     .app-navbar .container-fluid > .d-flex.gap-2.align-items-center.nav-actions { display: flex !important; flex-wrap: nowrap; width: auto !important; }
     .app-navbar .nav-actions { gap: 6px !important; }
     .nav-actions #anonymousBtn, .nav-actions #addTxnBtn, .nav-actions #refreshBtn, .nav-actions #demoPortfolioBtn { flex: 0 0 40px; height: 40px; min-height: 40px; min-width: 40px; padding: 0; width: 40px; }
-    .portfolio-mode-control { flex-basis: 40px; width: 40px; }
+    .portfolio-mode-control, .privacy-control { flex-basis: 40px; width: 40px; }
+    .privacy-control .privacy-menu { left: auto !important; max-width: calc(100vw - 24px); min-width: 0; position: fixed !important; right: 12px !important; top: calc(64px + env(safe-area-inset-top, 0px)) !important; transform: none !important; width: 304px; }
     .nav-actions .refresh-label { display: none; }
     main.app-shell { padding: 12px 16px !important; }
     main.app-shell { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)) !important; }

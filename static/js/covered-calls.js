@@ -95,6 +95,7 @@
             }
         }
         function render() {
+            $('ccOpenBtn').disabled = config.demo || config.private();
             renderHoldings();
             const summary = data.summary;
             $('ccMetrics').innerHTML = [
@@ -113,7 +114,7 @@
                     ${c.comment && !config.private() ? `<p class="small">${escape(c.comment)}</p>` : ''}
                     ${c.remaining_contracts > 0 ? `<div class="cc-quote" data-cc-quote="${c.id}"></div>` : ''}
                     ${events ? `<details><summary>Recorded events (${c.events.length})</summary><ul class="cc-events">${events}</ul></details>` : ''}
-                    ${!config.demo ? `<div class="cc-actions">${c.remaining_contracts > 0 ? `<button type="button" class="btn btn-sm btn-outline-primary" data-cc-manage="${c.id}">Record outcome / roll</button>` : ''}${!c.events.length ? `<button type="button" class="btn btn-sm btn-link text-muted" data-cc-delete="${c.id}">Remove record</button>` : ''}</div>` : ''}</article>`;
+                    ${!config.demo && !config.private() ? `<div class="cc-actions">${c.remaining_contracts > 0 ? `<button type="button" class="btn btn-sm btn-outline-primary" data-cc-manage="${c.id}">Record outcome / roll</button>` : ''}${!c.events.length ? `<button type="button" class="btn btn-sm btn-link text-muted" data-cc-delete="${c.id}">Remove record</button>` : ''}</div>` : ''}</article>`;
             }).join('') : '<div class="cc-empty">No covered calls recorded.<br><span>Record an actual sell-to-open fill to start tracking collateral and option income.</span></div>';
             quotes?.render();
         }
@@ -203,6 +204,7 @@
             } catch (err) { if (version === previewVersion) $('ccSalePreview').textContent = err.message; }
         }
         function open(call = null) {
+            if (config.private()) return;
             selectedCall = call;
             requestId = crypto.randomUUID(); replacementId = crypto.randomUUID();
             previewVersion++; allocations = []; lotContext = ''; form.reset(); error('');
@@ -215,7 +217,7 @@
             $('ccContracts').max = call ? call.remaining_contracts : 100000;
             updateFields(); bootstrap.Modal.getOrCreateInstance(modal).show();
         }
-        $('ccOpenBtn').disabled = config.demo;
+        $('ccOpenBtn').disabled = config.demo || config.private();
         $('ccOpenBtn').addEventListener('click', async () => {
             try { await load(); open(); }
             catch (err) { $('ccStatus').textContent = `Could not open the form: ${err.message}`; }
@@ -266,10 +268,10 @@
             if (event.target.id === 'ccEventAction' || event.target.id === 'ccLotMethod') previewLots();
         });
         modal.addEventListener('hidden.bs.modal', () => { previewVersion++; clearTimeout(timer); });
-        modal.addEventListener('hide.bs.modal', event => { if (busy) event.preventDefault(); });
+        modal.addEventListener('hide.bs.modal', event => { if (busy && !config.private()) event.preventDefault(); });
         form.addEventListener('submit', async event => {
             event.preventDefault();
-            if (busy || config.demo || !form.reportValidity()) return;
+            if (busy || config.demo || config.private() || !form.reportValidity()) return;
             error('');
             let payload, path;
             try {
@@ -294,8 +296,21 @@
             // Committed data must never be re-submitted because a refresh failed.
             refreshAfterSave();
         });
+        function refreshPrivacy() {
+            if (config.private()) {
+                previewVersion++; clearTimeout(timer); allocations = []; lotContext = '';
+                form.reset();
+                $('ccHolding').innerHTML = '';
+                $('ccLotRows').innerHTML = ''; $('ccSalePreview').textContent = '';
+                $('ccModalTitle').textContent = 'Record sell to open';
+                $('ccEstimate').textContent = ''; $('ccCoverage').textContent = '';
+                error('');
+                bootstrap.Modal.getInstance(modal)?.hide();
+            }
+            render();
+        }
         load().catch(() => {});
-        return { load, render, renderHoldings };
+        return { load, render, renderHoldings, refreshPrivacy };
     }
     const api = { init, cashFlow, escape, holdingCoverage, coverageBadgeHtml, coverageDetailsHtml };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;

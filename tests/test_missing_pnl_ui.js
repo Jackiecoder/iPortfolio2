@@ -29,7 +29,9 @@ function frontend() {
             getElementById(id) { return elements.get(id) || null; },
             addEventListener() {},
         },
-        TodayPnl, anonymousMode: false, intradayChart: null, renderedIntraday: null,
+        TodayPnl, anonymousMode: false, privacySnapshots: new Map(),
+        hideAmounts: () => vm.runInContext('anonymousMode', context), hidePercentages: () => false,
+        intradayChart: null, renderedIntraday: null,
         holdingsData: [], baseHoldingsData: [], latestTodaySnapshot: null,
         targetAllocations: {}, targetGroups: {}, symbolToGroup: {},
         marketTodayStr: () => '2026-10-02', updateHoldingsTable() {},
@@ -42,7 +44,7 @@ function frontend() {
     });
     for (const [start, end] of [
         ['function getAssetIconHtml(', '// Utility functions'],
-        ['function formatCurrency(', 'function toggleAnonymousMode('],
+        ['function formatCurrency(', 'function setDisplayMode('],
         ['function buildTradeActivityHtml(', 'function buildHoldingRowHtml('],
         ['function buildHoldingRowHtml(', 'function renderHoldingsTable('],
         ['function coveredCallPnlValue(', 'function buildTotalRowHtml('],

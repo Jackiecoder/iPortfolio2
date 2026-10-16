@@ -17,12 +17,13 @@ function setup() {
         return elements.get(id);
     };
     const ctx = {canvas: get('intradayChart'), clearRect() {}, fillText() {}};
-    const context = {document: {getElementById: get}, anonymousMode: false,
+    const context = {document: {getElementById: get}, anonymousMode: false, privacySnapshots: new Map(),
+        hideAmounts: () => context.anonymousMode, hidePercentages: () => false,
         intradayChart: null, renderedIntraday: null, holdingsData: [], baseHoldingsData: [],
         TodayPnl, marketTodayStr: () => '2026-09-24',
         updateHoldingsTable() {}, marketHoursPlugin: {}, hoverLinePlugin: {},
         formatCurrency: n => context.anonymousMode ? '***' : '$' + n.toFixed(2),
-        formatCurrencyAlways: n => '$' + n.toFixed(2),
+        formatCurrencyAlways: n => context.anonymousMode ? '***' : '$' + n.toFixed(2),
         formatPercent: n => n == null ? '--' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`,
         displaySymbol: s => s, escapeHtml: s => String(s),
         buildTradeActivityHtml: () => '', buildPositionPriceHtml: () => '',

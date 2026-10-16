@@ -140,7 +140,7 @@ function fixture(options = {}) {
         FormData: class { get(name) { const f = fields.get(name); return !f?.disabled ? f?.value : null; } },
     });
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/js/finance.js'), 'utf8'), context);
-    const ui = context.FinanceUI.init({ demo: options.demo, private: () => false, today: '2026-10-12', toast() {} });
+    const ui = context.FinanceUI.init({ demo: options.demo, private: () => false, hidePercentages: options.hidePercentages, today: '2026-10-12', toast() {} });
     const click = (dataset, inDetails = false) => {
         const button = { dataset, disabled: false, closest() { return this; } };
         element(inDetails ? 'financeDetailsModal' : 'finance-workspace').listeners.click({ target: button });
@@ -737,16 +737,56 @@ test('projects search participant names, escape hostile names and mask funding, 
     const hostile = { ...project, name: '<img src=x onerror=alert(1)>', participants: [{ ...project.participants[0], name: '<script>unsafe()</script>' }] };
     const html = FinanceUI.renderRows([hostile], 'projects'); assert.ok(!html.includes('<img')); assert.ok(!html.includes('<script>'));
     const hidden = FinanceUI.renderRows([project], 'projects', [], true);
-    for (const secret of ['Private venture', 'Private partner', 'Kevin', '1,000.00', '80%', '20%', '500.00']) assert.ok(!hidden.includes(secret), secret);
+    for (const secret of ['Private venture', 'Private partner', 'Kevin', '1,000.00', '500.00']) assert.ok(!hidden.includes(secret), secret);
+    assert.match(hidden, /计划分红 80%；待分配 20%/);
     const hiddenMovement = FinanceUI.renderRows([{ ...movement, project_id: 6 }], 'movements', [product], true, [project]);
     assert.ok(!hiddenMovement.includes('Private venture'));
     const f = fixture(); f.setResponse(async () => ({ ok: true, json: async () => ({ ...data, projects: [project] }) }));
     await f.ui.load(); f.click({ financeSection: 'projects' }); f.click({ financeDetail: 'projects', id: '6' }); f.click({ financeEdit: 'projects', id: '6' }, true);
     assert.ok(f.fields.has('participant-0-name')); f.ui.setPrivate(true);
     assert.equal(f.element('financeFormFields').innerHTML, ''); assert.equal(f.element('financeDetailsBody').innerHTML, ''); assert.equal(f.fields.size, 0);
-    for (const secret of ['Private venture', 'Private partner', 'Kevin', '1,000.00', '500.00', '80%', '20%']) {
+    for (const secret of ['Private venture', 'Private partner', 'Kevin', '1,000.00', '500.00']) {
         assert.ok(!f.element('financeList').innerHTML.includes(secret)); assert.ok(!f.element('financeOverview').innerHTML.includes(secret));
     }
+    assert.match(f.element('financeList').innerHTML, /计划分红 80%；待分配 20%/);
+});
+
+test('project rows show ratios in percentage-only mode and amounts in absolute-only mode', () => {
+    const percentageOnly = FinanceUI.renderRows([project], 'projects', [], true, [], false);
+    assert.match(percentageOnly, /计划分红 80%；待分配 20%/);
+    assert.doesNotMatch(percentageOnly, /Private venture|Private partner|Kevin|USD 1,000.00|USD 500.00/);
+    const absoluteOnly = FinanceUI.renderRows([project], 'projects', [], false, [], true);
+    assert.match(absoluteOnly, /USD 1,000.00/);
+    assert.match(absoluteOnly, /USD 500.00/);
+    assert.doesNotMatch(absoluteOnly, /80%|20%/);
+    assert.match(absoluteOnly, /计划分红 \*\*\*；待分配 \*\*\*/);
+    const unavailable = FinanceUI.renderRows([{...project, calculation_fields: {dividend_percent_total: null, unallocated_percent: null}}], 'projects', [], true);
+    assert.match(unavailable, /计划分红 —；待分配 —/);
+});
+
+test('absolute display retains Finance amounts and masks project ratios including cached details and editors', async () => {
+    let hidden = false;
+    const f = fixture({hidePercentages: () => hidden});
+    f.setResponse(async () => ({ok: true, json: async () => ({...data, projects: [project]})}));
+    await f.ui.load(); f.click({financeSection: 'projects'});
+    assert.match(f.element('financeList').innerHTML, /80%/);
+    f.click({financeDetail: 'projects', id: '6'});
+    f.click({financeEdit: 'projects', id: '6'}, true);
+    assert.ok(f.fields.has('participant-0-dividend_percent'));
+    hidden = true; f.ui.refreshPrivacy();
+    assert.equal(f.element('financeDetailsBody').innerHTML, '');
+    assert.equal(f.element('financeFormFields').innerHTML, '');
+    assert.equal(f.element('financeAdd').disabled, true);
+    assert.match(f.element('financeList').innerHTML, /USD 1,000.00/);
+    assert.doesNotMatch(f.element('financeList').innerHTML, /80%|20%/);
+    f.click({financeDetail: 'projects', id: '6'});
+    assert.match(f.element('financeDetailsBody').innerHTML, /USD 250.00/);
+    assert.doesNotMatch(f.element('financeDetailsBody').innerHTML, /\b(?:50|30|60|40|80|20)%/);
+    f.click({financeEdit: 'projects', id: '6'}, true);
+    assert.equal(f.fields.size, 0);
+    hidden = false; f.ui.refreshPrivacy();
+    assert.match(f.element('financeList').innerHTML, /80%/);
+    assert.equal(f.element('financeAdd').disabled, false);
 });
 
 test('saved and preview project money preserves high-value micro-units through exact calculation mapping and legacy fallback', async () => {

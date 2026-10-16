@@ -6,17 +6,19 @@ window.TickerTechnicalsUI = (() => {
     let selectedSymbol = null;
     let closing = false;
     let queuedSymbol = null;
+    let renderedData = null;
     const el = id => document.getElementById(id);
 
     function comparisonText(average, symbol) {
         if (average.value == null) return `Only ${average.observations} of ${average.window} daily closes available`;
         if (average.difference == null) return 'Latest quote unavailable';
-        if (average.position === 'at') return 'At the moving average · 0.00%';
+        if (average.position === 'at') return `At the moving average · ${formatPercent(0).replace(/^\+/, '')}`;
         const direction = average.position === 'above' ? 'Above' : 'Below';
-        return `${direction} by ${formatPrice(symbol, Math.abs(average.difference))} (${Math.abs(average.difference_percent).toFixed(2)}%)`;
+        return `${direction} by ${formatPrice(symbol, Math.abs(average.difference))} (${formatPercent(Math.abs(average.difference_percent)).replace(/^\+/, '')})`;
     }
 
     function render(data) {
+        renderedData = data;
         el('tickerTechnicalsPrice').textContent = data.current_price == null ? 'Unavailable' : formatPrice(data.symbol, data.current_price);
         el('tickerTechnicalsQuoteTime').textContent = data.quote_time
             ? `As of ${new Date(data.quote_time).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })} ET · may be delayed; includes extended hours`
@@ -40,8 +42,8 @@ window.TickerTechnicalsUI = (() => {
         el('tickerTechnicalsContent').classList.remove('d-none');
         if (chart) chart.destroy();
         chart = null;
-        el('tickerTechnicalsChartWrap').classList.toggle('d-none', !data.series.length || anonymousMode);
-        if (!data.series.length || anonymousMode) return;
+        el('tickerTechnicalsChartWrap').classList.toggle('d-none', !data.series.length || hideAmounts());
+        if (!data.series.length || hideAmounts()) return;
         chart = new Chart(el('tickerTechnicalsChart').getContext('2d'), {
             type: 'line',
             data: {
@@ -70,6 +72,7 @@ window.TickerTechnicalsUI = (() => {
         // Bootstrap ignores show() while its previous close is animating.
         if (closing) { queuedSymbol = symbol; return; }
         selectedSymbol = symbol;
+        renderedData = null;
         const thisRequest = ++requestId;
         if (controller) controller.abort();
         controller = new AbortController();
@@ -117,6 +120,7 @@ window.TickerTechnicalsUI = (() => {
             controller?.abort();
             if (chart) chart.destroy();
             chart = null;
+            renderedData = null;
         });
         el('tickerTechnicalsModal').addEventListener('hidden.bs.modal', () => {
             closing = false;
@@ -130,5 +134,8 @@ window.TickerTechnicalsUI = (() => {
             row?.focus({preventScroll: true});
         });
     }
-    return {init, open, comparisonText};
+    function refreshPrivacy() {
+        if (renderedData) render(renderedData);
+    }
+    return {init, open, comparisonText, refreshPrivacy};
 })();

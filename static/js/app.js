@@ -182,8 +182,15 @@ let dashboardLoadRequestId = 0;
 let transactionUpdateState = 'idle';
 let holdingsLedgerKnown = false;
 
-// Anonymous mode
-let anonymousMode = portfolioStorage.getItem('anonymousMode') === 'true';
+// Migrate the old on/off preference to the percentage-only privacy setting.
+const DISPLAY_MODES = ['all', 'percentage', 'absolute'];
+const savedDisplayMode = portfolioStorage.getItem('displayMode');
+let displayMode = DISPLAY_MODES.includes(savedDisplayMode) ? savedDisplayMode
+    : (portfolioStorage.getItem('anonymousMode') === 'true' ? 'percentage' : 'all');
+let anonymousMode = displayMode !== 'all';
+function hideAmounts() { return displayMode === 'percentage'; }
+function hidePercentages() { return displayMode === 'absolute'; }
+const privacySnapshots = new Map();
 
 // Transaction detail cache (symbol -> array of transactions)
 const transactionCache = {};
@@ -433,7 +440,7 @@ function getAssetIconHtml(symbol) {
 // Utility functions
 function formatCurrency(value, forceShow = false) {
     if (value === null || value === undefined) return '--';
-    if (anonymousMode && !forceShow) return '***';
+    if (hideAmounts()) return '***';
     return new Intl.NumberFormat('en-US', {
         style: 'currency',
         currency: 'USD',
@@ -444,6 +451,7 @@ function formatCurrency(value, forceShow = false) {
 
 function formatCurrencyAlways(value) {
     if (value === null || value === undefined) return '--';
+    if (hideAmounts()) return '***';
     return new Intl.NumberFormat('en-US', {
         style: 'currency',
         currency: 'USD',
@@ -455,7 +463,7 @@ function formatCurrencyAlways(value) {
 const PRICE_4DP_SYMBOLS = new Set(['ADA-USD', 'NIGHT-USD', 'ADA', 'NIGHT']);
 function formatPrice(symbol, value, alwaysShow = false) {
     if (value === null || value === undefined) return '--';
-    if (anonymousMode && !alwaysShow) return '***';
+    if (hideAmounts()) return '***';
     const dp = PRICE_4DP_SYMBOLS.has((symbol || '').toUpperCase()) ? 4 : 2;
     return new Intl.NumberFormat('en-US', {
         style: 'currency',
@@ -481,36 +489,74 @@ function formatNumber(value, decimals = 2) {
     }).format(value);
 }
 
+function formatQuantity(value, decimals = 4) {
+    if (value == null) return '--';
+    return hideAmounts() ? '***' : formatNumber(value, decimals);
+}
+
 function formatPercent(value) {
     if (value === null || value === undefined) return '--';
-    // Always show percentages even in anonymous mode
+    if (hidePercentages()) return '***';
     const sign = value >= 0 ? '+' : '';
     return `${sign}${formatNumber(value)}%`;
 }
 
-function toggleAnonymousMode() {
-    anonymousMode = !anonymousMode;
+function formatRatio(value, decimals = 1) {
+    if (value == null) return '--';
+    return hidePercentages() ? '***' : `${Number(value).toFixed(decimals)}%`;
+}
+
+function setDisplayMode(mode) {
+    if (!DISPLAY_MODES.includes(mode) || mode === displayMode) return;
+    displayMode = mode;
+    anonymousMode = mode !== 'all';
+    portfolioStorage.setItem('displayMode', mode);
     portfolioStorage.setItem('anonymousMode', anonymousMode);
     updateAnonymousButton();
-    window.coveredCallsUI?.render();
+    // Repaint existing data synchronously: privacy must not depend on a fetch.
+    if (tooltipElement) { tooltipElement.textContent = ''; tooltipElement.classList.remove('visible'); }
+    for (const [render, args] of privacySnapshots) render(...args);
+    if (baseHoldingsData.length) updateHoldingsTable(baseHoldingsData);
+    if (currentHoldingsForAllocation) updateAllocationChart(currentHoldingsForAllocation, allocationView);
+    if (transactionsLoaded) renderTransactions();
+    if (soldData) renderSoldTable();
+    window.TickerTechnicalsUI?.refreshPrivacy();
+    window.coveredCallsUI?.refreshPrivacy();
     window.financeUI?.refreshPrivacy();
-    updateIntradaySpotlight(renderedIntraday);
-    // Reload all data to apply the mode
-    loadAllData();
+    // Draft inputs contain exact quantities and account details; close and scrub.
+    if (anonymousMode) {
+        const modal = document.getElementById('addTxnModal');
+        if (modal) {
+            bootstrap.Modal.getInstance(modal)?.hide();
+            modal.querySelector('form')?.reset();
+            document.getElementById('tradePreviewResults')?.classList.add('d-none');
+        }
+    }
 }
 
 function updateAnonymousButton() {
     const btn = document.getElementById('anonymousBtn');
     if (btn) {
-        if (anonymousMode) {
-            btn.innerHTML = '<i class="bi bi-eye-slash"></i>';
-            btn.title = 'Show Values (Anonymous Mode On)';
-            btn.classList.add('active');
-        } else {
-            btn.innerHTML = '<i class="bi bi-eye"></i>';
-            btn.title = 'Hide Values (Anonymous Mode Off)';
-            btn.classList.remove('active');
-        }
+        const labels = {all: 'Show all', percentage: 'Percent only', absolute: 'Amounts only'};
+        const icons = {all: 'eye', percentage: 'percent', absolute: 'currency-dollar'};
+        btn.innerHTML = `<i class="bi bi-${icons[displayMode]}" aria-hidden="true"></i>`;
+        btn.title = `Privacy display: ${labels[displayMode]}`;
+        btn.setAttribute('aria-label', btn.title);
+        btn.classList.toggle('active', anonymousMode);
+    }
+    document.querySelectorAll('[data-display-mode]').forEach(option => {
+        const selected = option.dataset.displayMode === displayMode;
+        option.setAttribute('aria-checked', String(selected));
+        option.tabIndex = selected ? 0 : -1;
+    });
+    const hint = document.getElementById('privacyModeHint');
+    if (hint) hint.textContent = {all: 'Amounts and percentages are visible.',
+        percentage: 'Amounts, prices and quantities are hidden.',
+        absolute: 'Amounts are visible. Percentages are hidden.'}[displayMode];
+    const addTransactionButton = document.getElementById('addTxnBtn');
+    if (addTransactionButton) {
+        addTransactionButton.disabled = hideAmounts();
+        addTransactionButton.title = hideAmounts() ? 'Show amounts to add a transaction' : 'Add transaction';
     }
 }
 
@@ -857,7 +903,7 @@ function updateTickerHistorySummary(data) {
 
     if (prices.length > 1 && prices[0].close) {
         const change = ((prices.at(-1).close / prices[0].close) - 1) * 100;
-        changeEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+        changeEl.textContent = formatPercent(change);
         changeEl.classList.toggle('text-success', change >= 0);
         changeEl.classList.toggle('text-danger', change < 0);
     } else {
@@ -867,6 +913,7 @@ function updateTickerHistorySummary(data) {
 }
 
 function renderTickerHistoryChart(data) {
+    privacySnapshots.set(renderTickerHistoryChart, [data]);
     const canvas = document.getElementById('tickerHistoryChart');
     const empty = document.getElementById('tickerHistoryEmpty');
     if (!canvas || !empty) return;
@@ -951,7 +998,7 @@ function renderTickerHistoryChart(data) {
                         label: ctx => {
                             const trade = ctx.raw.trade;
                             if (!trade) return ` Close: ${formatPrice(data.symbol, ctx.parsed.y)}`;
-                            const qty = trade.quantity == null ? '' : ` · ${formatNumber(trade.quantity, 4)} shares`;
+                            const qty = trade.quantity == null ? '' : ` · ${formatQuantity(trade.quantity)} shares`;
                             return ` ${trade.action}: ${formatPrice(data.symbol, trade.execution_price)}${qty}`;
                         },
                         afterLabel: ctx => {
@@ -1074,6 +1121,7 @@ async function uploadFile(file) {
 
 // UI Update functions
 function updateSummaryCards(summary) {
+    privacySnapshots.set(updateSummaryCards, [summary]);
     document.getElementById('summaryStrip')?.classList.remove('is-updating');
     document.getElementById('summaryCardsCollapse')?.classList.remove('is-updating');
     document.getElementById('totalValue').textContent = formatCurrency(summary.total_market_value);
@@ -1126,7 +1174,7 @@ function updateSummaryCards(summary) {
     ytdPnlEl.dataset.tooltip = `YTD P&L = Open-position YTD P&L + gains realized this year\nUses prior-year-end value for older lots and cost for lots bought this year.`;
 
     const ytdPctEl = document.getElementById('ytdPnlPercent');
-    ytdPctEl.textContent = `${ytdSign}${ytdPct.toFixed(2)}%`;
+    ytdPctEl.textContent = formatPercent(ytdPct);
     ytdPctEl.className = `card-text fs-6 mb-0 has-tooltip ${ytdColor}`;
     ytdPctEl.dataset.tooltip = `YTD P&L / ${formatCurrency(summary.ytd_basis || 0)} YTD baseline`;
 
@@ -1218,7 +1266,7 @@ function buildTradeActivityHtml(row) {
     const activity = TodayPnl.activity(row);
     if (!activity) return '';
     const trade = activity.trade;
-    const details = anonymousMode ? 'Trades through this point on the selected day'
+    const details = hideAmounts() ? 'Trades through this point on the selected day'
         : `Trades through this point: bought ${formatNumber(trade.bought_quantity, 4)}, sold ${formatNumber(trade.sold_quantity, 4)}. Net change is relative to the opening quantity (${formatNumber(trade.opening_quantity, 4)}).`;
     return `<div class="trade-activity"><span class="trade-activity-badge trade-activity-${activity.kind}" title="${escapeHtml(details)}">${escapeHtml(activity.label)}</span></div>`;
 }
@@ -1246,7 +1294,7 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
     const dailyChangePct = h.daily_change_percent;
     const dailyChangeAmt = h.daily_change_amount;
     const dailyChangePctHtml = dailyChangePct !== null && dailyChangePct !== undefined
-        ? `<span class="${dailyChangePct >= 0 ? 'text-success' : 'text-danger'} daily-change">(${dailyChangePct >= 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%)</span>`
+        ? `<span class="${dailyChangePct >= 0 ? 'text-success' : 'text-danger'} daily-change">(${formatPercent(dailyChangePct)})</span>`
         : '';
     const dailyChangeAmtClass = dailyChangeAmt !== null && dailyChangeAmt !== undefined
         ? (dailyChangeAmt >= 0 ? 'text-success' : 'text-danger')
@@ -1261,21 +1309,21 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
     const annualReturnClass = annualReturn !== null && annualReturn !== undefined
         ? (annualReturn >= 0 ? 'text-success' : 'text-danger') : '';
     const annualReturnText = annualReturn !== null && annualReturn !== undefined
-        ? `${annualReturn >= 0 ? '+' : ''}${annualReturn.toFixed(2)}%` : '--';
+        ? formatPercent(annualReturn) : '--';
 
     let annualTooltip = '';
     if (holdingDays !== null && holdingDays !== undefined && pnlPercent !== null) {
         const years = holdingDays / 365;
         const yearsForCalc = Math.max(years, 1);
         const pnlSign = pnlPercent >= 0 ? '+' : '';
-        annualTooltip = `title="${pnlSign}${pnlPercent.toFixed(2)}% / ${yearsForCalc.toFixed(2)} yrs\n(${holdingDays} days${years < 1 ? ', min 1yr' : ''})"`;
+        annualTooltip = `title="${formatPercent(pnlPercent)} / ${yearsForCalc.toFixed(2)} yrs\n(${holdingDays} days${years < 1 ? ', min 1yr' : ''})"`;
     }
 
     const weightedAnnualReturn = h.weighted_annualized_return;
     const weightedAnnualReturnClass = weightedAnnualReturn !== null && weightedAnnualReturn !== undefined
         ? (weightedAnnualReturn >= 0 ? 'text-success' : 'text-danger') : '';
     const weightedAnnualReturnText = weightedAnnualReturn !== null && weightedAnnualReturn !== undefined
-        ? `${weightedAnnualReturn >= 0 ? '+' : ''}${weightedAnnualReturn.toFixed(2)}%` : '--';
+        ? formatPercent(weightedAnnualReturn) : '--';
     const weightedAnnualTooltip = 'title="Per-lot cost-basis weighted CAGR"';
 
     // Allocation %, Target %, Δ Target (group-aware)
@@ -1294,12 +1342,12 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
     const isCanonical = !isGrouped || targetKey === h.symbol;
     const deltaTarget = hasTarget && isCanonical ? (targetPct / 100 * totalInvValue - groupMV) : null;
 
-    const groupAllocBadge = isGrouped ? ` <span class="cat-target-sum" title="${targetKey} group total">${groupAllocPct.toFixed(1)}%</span>` : '';
-    const allocPctText = `${allocPct.toFixed(1)}%${groupAllocBadge}`;
-    const allocTitle = isGrouped ? `title="${targetKey} group: ${groupAllocPct.toFixed(1)}%"` : '';
+    const groupAllocBadge = isGrouped ? ` <span class="cat-target-sum" title="${targetKey} group total">${formatRatio(groupAllocPct)}</span>` : '';
+    const allocPctText = `${formatRatio(allocPct)}${groupAllocBadge}`;
+    const allocTitle = isGrouped ? `title="${targetKey} group: ${formatRatio(groupAllocPct)}"` : '';
     const catTargetSum = categoryTargetSums[category];
-    const catSumHtml = !isCategoryLevelTarget && catTargetSum != null ? `<span class="cat-target-sum" title="${category} target total">${catTargetSum.toFixed(1)}%</span>` : '';
-    const targetPctText = hasTarget ? `${targetPct.toFixed(1)}%` : '--';
+    const catSumHtml = !isCategoryLevelTarget && catTargetSum != null ? `<span class="cat-target-sum" title="${category} target total">${formatRatio(catTargetSum)}</span>` : '';
+    const targetPctText = hasTarget ? formatRatio(targetPct) : '--';
     // Individual Stocks: no per-symbol target; non-canonical grouped members: hide target and delta columns
     const targetCellContent = isCategoryLevelTarget
         ? '--'
@@ -1319,13 +1367,13 @@ function buildHoldingRowHtml(h, totalInvValue, holdings, categoryTargetSums) {
     return `
     <tr class="holding-row" data-symbol="${h.symbol}" style="cursor:pointer;">
         <td data-col="0"><i class="bi bi-chevron-right holding-chevron me-1"></i>${getAssetIconHtml(h.symbol)}<strong>${displaySymbol(h.symbol)}</strong>${buildTradeActivityHtml(h)}${h.symbol !== 'CASH' && !h.symbol.endsWith('-USD') ? `<span class="holding-cc-slot" data-cc-symbol="${escapeHtml(h.symbol)}" data-cc-quantity="${Number(h.quantity)}" data-cc-pending="${Boolean(h.ledger_pending || h.quantity_pending)}"></span>` : ''}</td>
-        <td data-col="1">${anonymousMode ? '***' : formatNumber(h.quantity, 4)}${!anonymousMode && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)}</div><div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</div>` : ''}</td>
+        <td data-col="1">${formatQuantity(h.quantity)}${!hideAmounts() && h.long_term_quantity != null && h.quantity > 0 && h.symbol !== 'CASH' ? `<div class="text-muted" style="font-size:0.75em;line-height:1.3;">LT ${h.long_term_quantity === 0 ? '0' : formatNumber(h.long_term_quantity, 4)}</div><div class="text-muted" style="font-size:0.75em;line-height:1.3;">ST ${h.short_term_quantity === 0 ? '0' : formatNumber(h.short_term_quantity, 4)}</div>` : ''}</td>
         <td data-col="2">${formatPrice(h.symbol, h.avg_cost)}</td>
         <td data-col="4">${formatPrice(h.symbol, h.current_price, true)} ${dailyChangePctHtml}</td>
         <td data-col="5" class="${dailyChangeAmtClass}">${dailyChangeAmtText}</td>
         <td data-col="17" class="${(h.ytd_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl != null ? `${h.ytd_pnl >= 0 ? '+' : ''}${formatCurrencyAlways(h.ytd_pnl)}` : '--'}${buildLtStBreakdownHtml(h.lt_ytd_pnl, h.st_ytd_pnl)}</td>
         <td data-col="18" class="${(h.ytd_pnl_percent || 0) >= 0 ? 'text-success' : 'text-danger'}">${h.ytd_pnl_percent != null ? formatPercent(h.ytd_pnl_percent) : '--'}</td>
-        <td data-col="3">${formatCurrency(h.cost_basis)}<div class="text-muted" style="font-size:0.75em;line-height:1.3;">${investedPct.toFixed(1)}%</div></td>
+        <td data-col="3">${formatCurrency(h.cost_basis)}<div class="text-muted" style="font-size:0.75em;line-height:1.3;">${formatRatio(investedPct)}</div></td>
         <td data-col="6">${formatCurrency(h.market_value)}</td>
         <td data-col="7" ${allocTitle}>${allocPctText}</td>
         <td data-col="8" ${isCategoryLevelTarget ? '' : `class="target-pct-cell" data-symbol="${targetKey}"`}>${targetCellContent}</td>
@@ -1357,7 +1405,7 @@ function buildLtStBreakdownHtml(lt, st) {
 function coveredCallPnlValue(view) {
     if (!view.complete) return '<span class="text-muted">Pending · not included</span>';
     const cls = view.options >= 0 ? 'text-success' : 'text-danger';
-    const value = anonymousMode ? '***' : `${view.options >= 0 ? '+' : ''}${formatCurrencyAlways(view.options)}`;
+    const value = hideAmounts() ? '***' : `${view.options >= 0 ? '+' : ''}${formatCurrencyAlways(view.options)}`;
     return `<span class="${cls}" title="Estimated daily P&amp;L from reference option prices, including today’s recorded fills and fees.">${value} <small class="text-muted">est.</small></span>`;
 }
 
@@ -1408,7 +1456,7 @@ function buildTotalRowHtml(holdings, totalInvValue) {
         return !group || group === key; // keep if not grouped, or if it IS the canonical key
     });
     const targetSum = canonicalTargets.reduce((s, [, v]) => s + v, 0);
-    const targetSumText = targetSum > 0 ? `${targetSum.toFixed(1)}%` : '--';
+    const targetSumText = targetSum > 0 ? formatRatio(targetSum) : '--';
     const targetWarn = targetSum > 0 && Math.abs(targetSum - 100) > 0.1
         ? `<span class="target-warn" title="Targets don't sum to 100%">&#9888;</span>` : '';
 
@@ -1440,9 +1488,9 @@ function buildTotalRowHtml(holdings, totalInvValue) {
             <td data-col="5" class="${totalDailyClass}"><strong>${dailyPnlAmountHtml(dailyView, true)}</strong></td>
             <td data-col="17" class="${totalYtdClass}"><strong>${totalYtdSign}${formatCurrencyAlways(totalYtd)}</strong>${buildLtStBreakdownHtml(totalLtYtd, totalStYtd)}</td>
             <td data-col="18" class="${totalYtdClass}"><strong>${formatPercent(totalYtdPct)}</strong></td>
-            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong><div class="text-muted" style="font-size:0.75em;line-height:1.3;">100.0%</div></td>
+            <td data-col="3"><strong>${formatCurrency(totalCost)}</strong><div class="text-muted" style="font-size:0.75em;line-height:1.3;">${formatRatio(100)}</div></td>
             <td data-col="6"><strong>${formatCurrency(totalMV)}</strong></td>
-            <td data-col="7"><strong>100.0%</strong></td>
+            <td data-col="7"><strong>${formatRatio(100)}</strong></td>
             <td data-col="8"><strong>${targetSumText}</strong>${targetWarn}</td>
             <td data-col="9">${netDeltaHtml}</td>
             <td data-col="10" class="${totalPnlClass}"><strong>${formatCurrency(totalPnl)}</strong>${buildLtStBreakdownHtml(totalLtUnreal, totalStUnreal)}</td>
@@ -1479,7 +1527,7 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
     const totalCatPnlPct = cost > 0 ? (totalCatPnl / cost * 100) : 0;
     const allocPct = totalInvValue > 0 ? (mv / totalInvValue * 100) : 0;
     const catTargetSum = categoryTargetSums[catName];
-    const catTargetText = catTargetSum != null ? `${catTargetSum.toFixed(1)}%` : '--';
+    const catTargetText = catTargetSum != null ? `${formatRatio(catTargetSum)}` : '--';
 
     // Category Δ Target = target_market_value - actual_market_value
     let catDeltaHtml = '';
@@ -1506,9 +1554,9 @@ function buildCategorySubtotalHtml(catName, catHoldings, totalInvValue, category
             <td data-col="5" class="${dailyClass}"><strong>${dailyPnlAmountHtml(dailyView, true)}</strong></td>
             <td data-col="17" class="${ytdClass}"><strong>${ytdSign}${formatCurrencyAlways(ytd)}</strong>${buildLtStBreakdownHtml(ltYtd, stYtd)}</td>
             <td data-col="18" class="${ytdClass}"><strong>${formatPercent(ytdPct)}</strong></td>
-            <td data-col="3"><strong>${formatCurrency(cost)}</strong><div class="text-muted" style="font-size:0.75em;line-height:1.3;">${totalInvestedCost > 0 ? (cost / totalInvestedCost * 100).toFixed(1) : '0.0'}%</div></td>
+            <td data-col="3"><strong>${formatCurrency(cost)}</strong><div class="text-muted" style="font-size:0.75em;line-height:1.3;">${formatRatio(totalInvestedCost > 0 ? cost / totalInvestedCost * 100 : 0)}</div></td>
             <td data-col="6"><strong>${formatCurrency(mv)}</strong></td>
-            <td data-col="7"><strong>${allocPct.toFixed(1)}%</strong></td>
+            <td data-col="7"><strong>${formatRatio(allocPct)}</strong></td>
             <td data-col="8" ${catName === 'Individual Stocks' ? `class="target-pct-cell" data-symbol="category:Individual Stocks" style="cursor:pointer;"` : ''}><strong>${catTargetText}</strong></td>
             <td data-col="9">${catDeltaHtml}</td>
             <td data-col="10" class="${pnlClass}"><strong>${formatCurrency(pnl)}</strong>${buildLtStBreakdownHtml(ltUnreal, stUnreal)}</td>
@@ -1676,10 +1724,10 @@ async function toggleTransactionDetail(holdingRow) {
     };
 
     const rows = txns.map(t => {
-        const qty = t.quantity !== null ? formatNumber(t.quantity, 4) : '--';
+        const qty = t.quantity !== null ? formatQuantity(t.quantity) : '--';
         const price = t.ave_price !== null ? formatPrice(symbol, t.ave_price, true) : '--';
         const amount = t.amount !== null ? formatCurrencyAlways(t.amount) : '--';
-        const heldQty = t.running_quantity != null ? formatNumber(t.running_quantity, 4) : '--';
+        const heldQty = t.running_quantity != null ? formatQuantity(t.running_quantity) : '--';
         const avgCostAfter = (t.running_quantity > 0 && t.running_avg_cost != null)
             ? formatPrice(symbol, t.running_avg_cost, true) : '--';
         return `<tr>
@@ -1823,14 +1871,14 @@ function updateCategoryTable(holdings) {
             : `<td class="${dailyClass}">${dailyPnlAmountHtml(cat.daily_view)}</td>`;
         const pnlCells = isCash
             ? `<td class="text-muted">—</td><td class="text-muted">—</td>`
-            : `<td class="${pnlClass}">${pnlSign}${formatCurrency(cat.pnl)}</td><td class="${pnlClass}">${pnlSign}${cat.pnl_percent.toFixed(2)}%</td>`;
+            : `<td class="${pnlClass}">${pnlSign}${formatCurrency(cat.pnl)}</td><td class="${pnlClass}">${formatPercent(cat.pnl_percent)}</td>`;
 
         return `
             <tr>
                 <td>
                     <span style="display: inline-block; width: 12px; height: 12px; background-color: ${color}; border-radius: 2px; margin-right: 8px;"></span>
                     ${cat.name}
-                    <span class="text-muted ms-2">(${cat.allocation_percent.toFixed(1)}%)</span>
+                    <span class="text-muted ms-2">(${formatRatio(cat.allocation_percent)})</span>
                 </td>
                 <td>${formatCurrency(cat.cost_basis)}</td>
                 ${dailyChangeCell}
@@ -1860,7 +1908,7 @@ function updateCategoryTable(holdings) {
             <td class="${totalDailyClass}"><strong>${dailyPnlAmountHtml(dailyView)}</strong></td>
             <td><strong>${formatCurrency(totals.market_value)}</strong></td>
             <td class="${totalPnlClass}"><strong>${totalPnlSign}${formatCurrency(totals.pnl)}</strong></td>
-            <td class="${totalPnlClass}"><strong>${totalPnlSign}${totals.pnl_percent.toFixed(2)}%</strong></td>
+            <td class="${totalPnlClass}"><strong>${formatPercent(totals.pnl_percent)}</strong></td>
         </tr>
     `;
 
@@ -1868,6 +1916,7 @@ function updateCategoryTable(holdings) {
 }
 
 function updateDividendsTable(dividends) {
+    privacySnapshots.set(updateDividendsTable, [dividends]);
     const tbody = document.getElementById('dividendsBody');
 
     if (!dividends || !dividends.by_asset || dividends.by_asset.length === 0) {
@@ -1945,7 +1994,7 @@ function renderSoldTable() {
     let rows = sortedAssets.map(s => `
         <tr>
             <td>${getAssetIconHtml(s.symbol)}<strong>${displaySymbol(s.symbol)}</strong></td>
-            <td>${formatNumber(s.quantity, 4)}</td>
+            <td>${formatQuantity(s.quantity)}</td>
             <td>${formatPrice(s.symbol, s.avg_cost)}</td>
             <td>${formatCurrency(s.cost_basis)}</td>
             <td>${formatPrice(s.symbol, s.avg_sell_price)}</td>
@@ -2010,6 +2059,7 @@ async function fetchAndUpdatePortfolioChart(period, view = 'value') {
 }
 
 function updatePerformanceChart(performance) {
+    privacySnapshots.set(updatePerformanceChart, [performance]);
     // Store data for chart switching
     if (performance) {
         currentPerformanceData = performance;
@@ -2079,7 +2129,7 @@ function updatePerformanceChart(performance) {
                             return [
                                 `Value: ${formatCurrency(totalValue)}`,
                                 `P&L: ${pnlSign}${formatCurrency(pnl)}`,
-                                `P&L %: ${pnlSign}${pnlPercent.toFixed(2)}%`
+                                `P&L %: ${formatPercent(pnlPercent)}`
                             ];
                         }
                     }
@@ -2107,7 +2157,7 @@ function updatePerformanceChart(performance) {
     });
 }
 
-async function updateInvestmentChart(performance, period = 'ALL') {
+async function updateInvestmentChart(performance, period = 'ALL', cachedInvestments = null) {
     const ctx = document.getElementById('investmentChart').getContext('2d');
 
     if (investmentChart) {
@@ -2134,15 +2184,18 @@ async function updateInvestmentChart(performance, period = 'ALL') {
         url = `/api/investments?start_date=${startStr}&end_date=${endStr}`;
     }
 
-    let data;
-    try {
-        const response = await fetch(url);
-        const result = await response.json();
-        data = result.investments || [];
-    } catch (error) {
-        console.error('Error fetching investment data:', error);
-        data = [];
+    let data = cachedInvestments;
+    if (data == null) {
+        try {
+            const response = await fetch(url);
+            const result = await response.json();
+            data = result.investments || [];
+        } catch (error) {
+            console.error('Error fetching investment data:', error);
+            data = [];
+        }
     }
+    privacySnapshots.set(updateInvestmentChart, [performance, period, data]);
 
     if (!data || data.length === 0) {
         ctx.font = '14px sans-serif';
@@ -2271,7 +2324,7 @@ async function updateInvestmentChart(performance, period = 'ALL') {
                     },
                     color: '#374151',
                     formatter: function(value, context) {
-                        if (anonymousMode) return '';
+                        if (hideAmounts()) return '';
                         const month = context.chart.data.labels[context.dataIndex];
                         const total = monthlyTotals[month] || 0;
                         if (total === 0) return '';
@@ -2297,7 +2350,7 @@ async function updateInvestmentChart(performance, period = 'ALL') {
                             const value = context.raw;
                             if (value === 0) return null;
                             const sign = value >= 0 ? '+' : '';
-                            if (anonymousMode) {
+                            if (hideAmounts()) {
                                 return `${context.dataset.label}: ***`;
                             }
                             return `${context.dataset.label}: ${sign}${formatCurrencyAlways(value)}`;
@@ -2319,7 +2372,7 @@ async function updateInvestmentChart(performance, period = 'ALL') {
                             const sorted = [...transactions].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
                             sorted.forEach(tx => {
                                 const sign = tx.action === 'BUY' ? '+' : '-';
-                                if (anonymousMode) {
+                                if (hideAmounts()) {
                                     lines.push(`  ${tx.action} ${tx.symbol}: ***`);
                                 } else {
                                     lines.push(`  ${tx.action} ${tx.symbol}: ${sign}${formatCurrencyAlways(tx.amount)}`);
@@ -2335,6 +2388,7 @@ async function updateInvestmentChart(performance, period = 'ALL') {
 }
 
 function updateDailyPnlList(dailyPnlData, intraday) {
+    privacySnapshots.set(updateDailyPnlList, [dailyPnlData, intraday]);
     const container = document.getElementById('dailyPnlList');
     if (!container) return;
 
@@ -2430,7 +2484,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
             const sgn = pnl >= 0 ? '+' : '';
             return `<div class="daily-pnl-breakdown-row">
                 <span class="breakdown-symbol">${getAssetIconHtml(sym)}${sym}</span>
-                <span class="${cls}">${anonymousMode ? '***' : sgn + formatCurrencyAlways(pnl)}</span>
+                <span class="${cls}">${hideAmounts() ? '***' : sgn + formatCurrencyAlways(pnl)}</span>
             </div>`;
         }).join('') || `<div class="text-muted small text-center py-2">No moves</div>`;
 
@@ -2447,7 +2501,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
             const colorClass = d.change == null ? 'text-muted' : (d.change >= 0 ? 'text-success' : 'text-danger');
             const sign = d.change != null && d.change >= 0 ? '+' : '';
             const amountStr = d.change == null ? 'Unavailable' : `${sign}${formatCurrencyAlways(d.change)}`;
-            const pctStr = d.changePct == null ? null : `${d.changePct >= 0 ? '+' : ''}${d.changePct.toFixed(2)}%`;
+            const pctStr = d.changePct == null ? null : formatPercent(d.changePct);
             const dow = new Date(yy, mm - 1, dd).getDay();
             const weekendClass = (dow === 0 || dow === 6) ? ' weekend' : '';
 
@@ -2461,7 +2515,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
                     const aClass = a.pnl >= 0 ? 'text-success' : 'text-danger';
                     return `<div class="daily-pnl-breakdown-row">
                         <span class="breakdown-symbol">${getAssetIconHtml(a.symbol)}${a.symbol}</span>
-                        <span class="${aClass}">${anonymousMode ? '***' : aSign + formatCurrencyAlways(a.pnl)}</span>
+                        <span class="${aClass}">${hideAmounts() ? '***' : aSign + formatCurrencyAlways(a.pnl)}</span>
                     </div>`;
                 }).join('') || (missingNotice ? '' : `<div class="text-muted small text-center py-1">No moves</div>`);
 
@@ -2470,7 +2524,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
                     <span class="date"><i class="bi bi-chevron-right daily-pnl-chevron me-1"></i>${label}</span>
                     <span class="values ${colorClass}">
                         <span class="pnl-amount">${amountStr}${d.change != null && d.missingSymbols.length ? ' <span class="small">(partial)</span>' : ''}</span>
-                        ${anonymousMode || pctStr == null ? '' : `<span class="pnl-percent">(${pctStr})</span>`}
+                        ${pctStr == null ? '' : `<span class="pnl-percent">(${pctStr})</span>`}
                     </span>
                 </div>
                 <div class="daily-pnl-breakdown" style="display:none;">${dayBreakdownRows}${missingNotice}</div>
@@ -2518,6 +2572,7 @@ function updateDailyPnlList(dailyPnlData, intraday) {
 }
 
 function updateMonthlyPnlList(dailyPnlData) {
+    privacySnapshots.set(updateMonthlyPnlList, [dailyPnlData]);
     const container = document.getElementById('monthlyPnlList');
     if (!container) return;
 
@@ -2590,7 +2645,7 @@ function updateMonthlyPnlList(dailyPnlData) {
             const sgn = pnl >= 0 ? '+' : '';
             return `<div class="daily-pnl-breakdown-row">
                 <span class="breakdown-symbol">${getAssetIconHtml(sym)}${sym}</span>
-                <span class="${cls}">${anonymousMode ? '***' : sgn + formatCurrencyAlways(pnl)}</span>
+                <span class="${cls}">${hideAmounts() ? '***' : sgn + formatCurrencyAlways(pnl)}</span>
             </div>`;
         }).join('') || `<div class="text-muted small text-center py-2">No data</div>`;
 
@@ -2625,14 +2680,14 @@ function updateMonthlyPnlList(dailyPnlData) {
                         const aClass = a.pnl >= 0 ? 'text-success' : 'text-danger';
                         return `<div class="daily-pnl-breakdown-row" style="padding-left:0.5rem">
                             <span class="breakdown-symbol">${getAssetIconHtml(a.symbol)}${a.symbol}</span>
-                            <span class="${aClass}">${anonymousMode ? '***' : aSign + formatCurrencyAlways(a.pnl)}</span>
+                            <span class="${aClass}">${hideAmounts() ? '***' : aSign + formatCurrencyAlways(a.pnl)}</span>
                         </div>`;
                     }).join('');
 
                 return `<div class="monthly-pnl-day-item">
                     <div class="monthly-pnl-day-row">
                         <span class="day-label">${dayLabel}</span>
-                        <span class="${dayClass} pnl-amount">${anonymousMode ? '***' : daySign + formatCurrencyAlways(d.daily_pnl)}</span>
+                        <span class="${dayClass} pnl-amount">${hideAmounts() ? '***' : daySign + formatCurrencyAlways(d.daily_pnl)}</span>
                     </div>
                     ${assetRows ? `<div class="monthly-pnl-asset-rows">${assetRows}</div>` : ''}
                 </div>`;
@@ -2641,7 +2696,7 @@ function updateMonthlyPnlList(dailyPnlData) {
             return `<div class="monthly-pnl-week-item" data-mi="${mIdx}" data-wi="${wIdx}">
                 <div class="monthly-pnl-week-item-row">
                     <span class="week-label"><i class="bi bi-chevron-right monthly-pnl-week-chevron me-1"></i>${weekLabel}</span>
-                    <span class="${weekClass} pnl-amount">${anonymousMode ? '***' : weekSign + formatCurrencyAlways(weekSum)}</span>
+                    <span class="${weekClass} pnl-amount">${hideAmounts() ? '***' : weekSign + formatCurrencyAlways(weekSum)}</span>
                 </div>
                 <div class="monthly-pnl-week-breakdown" style="display:none;">${dayRowsHtml}</div>
             </div>`;
@@ -2652,7 +2707,7 @@ function updateMonthlyPnlList(dailyPnlData) {
             <div class="monthly-pnl-weeks">${weekRowsHtml}</div>
             <div class="monthly-pnl-summary">
                 <span class="date"><i class="bi bi-chevron-right weekly-pnl-chevron me-1"></i>Monthly</span>
-                <span class="${monthClass}"><span class="pnl-amount">${anonymousMode ? '***' : monthSign + formatCurrencyAlways(monthTotal)}</span></span>
+                <span class="${monthClass}"><span class="pnl-amount">${hideAmounts() ? '***' : monthSign + formatCurrencyAlways(monthTotal)}</span></span>
             </div>
             <div class="monthly-pnl-summary-breakdown" style="display:none;">${monthBreakdownRows}</div>
         </div>`;
@@ -2686,6 +2741,7 @@ function updateMonthlyPnlList(dailyPnlData) {
 }
 
 function updatePnlChart(performance) {
+    privacySnapshots.set(updatePnlChart, [performance]);
     const ctx = document.getElementById('pnlChart').getContext('2d');
 
     if (pnlChart) {
@@ -2715,23 +2771,29 @@ function updatePnlChart(performance) {
     const costBasisData = data.map(d => d.cost_basis || 0);
 
     // Store investment value data for tooltip calculations
-    const investmentValueData = data.map(d => d.investment_value || d.value || 0);
+    const investmentValueData = data.map(d => d.investment_value ?? d.value ?? 0);
 
     // Use the first P&L value as the baseline
     const baselineValue = pnlData[0] || 0;
 
     // Use the first investment value for percentage calculation
     const startingInvestmentValue = investmentValueData[0] || 0;
+    const percentageView = hideAmounts();
+    const plottedPnlData = percentageView
+        ? pnlData.map(value => startingInvestmentValue !== 0
+            ? ((value - baselineValue) / startingInvestmentValue) * 100 : null)
+        : pnlData;
+    const plottedBaseline = percentageView ? 0 : baselineValue;
 
     // Create segment coloring based on baseline
     const segmentColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= baselineValue ? '#087f65' : '#bd4663';
+        return value >= plottedBaseline ? '#087f65' : '#bd4663';
     };
 
     const segmentBgColor = (ctx) => {
         const value = ctx.p1.parsed.y;
-        return value >= baselineValue ? 'rgba(8, 127, 101, 0.075)' : 'rgba(189, 70, 99, 0.075)';
+        return value >= plottedBaseline ? 'rgba(8, 127, 101, 0.075)' : 'rgba(189, 70, 99, 0.075)';
     };
 
     // Plugin to draw baseline and last point label
@@ -2799,12 +2861,13 @@ function updatePnlChart(performance) {
                     ctx.fillStyle = '#9ca3af';
                     ctx.textAlign = 'left';
                     ctx.fillText(dateStr.substring(5), x + 4, yAxis.top + 12);
-                    const dailyChange = backendDailyPnl[dateStr] != null ? backendDailyPnl[dateStr] : chartDailyPnl[dateStr];
+                    const dailyChange = percentageView ? chartDailyPnl[dateStr]
+                        : (backendDailyPnl[dateStr] != null ? backendDailyPnl[dateStr] : chartDailyPnl[dateStr]);
                     if (dailyChange != null) {
                         const sign = dailyChange >= 0 ? '+' : '';
                         ctx.font = 'bold 10px sans-serif';
                         ctx.fillStyle = dailyChange >= 0 ? '#087f65' : '#bd4663';
-                        ctx.fillText(anonymousMode ? '***' : sign + formatCurrencyAlways(dailyChange), x + 4, yAxis.top + 26);
+                        ctx.fillText(percentageView ? formatPercent(dailyChange) : sign + formatCurrencyAlways(dailyChange), x + 4, yAxis.top + 26);
                     }
                     ctx.restore();
                 };
@@ -2880,7 +2943,7 @@ function updatePnlChart(performance) {
                                 const sign = pnlChange >= 0 ? '+' : '';
                                 ctx.font = 'bold 9px sans-serif';
                                 ctx.fillStyle = pnlChange >= 0 ? '#087f65' : '#bd4663';
-                                ctx.fillText(anonymousMode ? '***' : sign + formatCurrencyAlways(pnlChange), x + 3, yAxis.top + 24);
+                                ctx.fillText(percentageView ? formatPercent(pnlChange) : sign + formatCurrencyAlways(pnlChange), x + 3, yAxis.top + 24);
                             }
                             ctx.restore();
                         };
@@ -2926,7 +2989,7 @@ function updatePnlChart(performance) {
                     const y = yAxis.getPixelForValue(lastValue);
 
                     // Calculate vs Start
-                    const changeFromBaseline = lastValue - baseline;
+                    const changeFromBaseline = dataset.pnlAmountData[lastIndex] - dataset.pnlBaselineValue;
                     const changePercent = startingValue !== 0 ? (changeFromBaseline / startingValue) * 100 : 0;
                     const changeSign = changeFromBaseline >= 0 ? '+' : '';
 
@@ -2937,11 +3000,9 @@ function updatePnlChart(performance) {
                     ctx.fillStyle = changeFromBaseline >= 0 ? '#087f65' : '#bd4663';
                     ctx.fill();
 
-                    // Draw vs Start label (position to the left to avoid overflow)
-                    // In anonymous mode, show amount but hide percentage
-                    const labelText = anonymousMode
-                        ? `${changeSign}${formatCurrencyAlways(changeFromBaseline)}`
-                        : `${changeSign}${formatCurrencyAlways(changeFromBaseline)} (${changeSign}${changePercent.toFixed(2)}%)`;
+                    // Keep the endpoint label in the selected display units.
+                    const labelText = hideAmounts() ? formatPercent(changePercent)
+                        : `${changeSign}${formatCurrencyAlways(changeFromBaseline)}${hidePercentages() ? '' : ` (${formatPercent(changePercent)})`}`;
                     ctx.font = 'bold 12px sans-serif';
                     ctx.fillStyle = changeFromBaseline >= 0 ? '#087f65' : '#bd4663';
 
@@ -2968,8 +3029,8 @@ function updatePnlChart(performance) {
 
     // For time scale, use {x, y} format; for category, use labels + data arrays
     const chartData = isTimeScale
-        ? pnlData.map((y, i) => ({ x: data[i].date, y }))
-        : pnlData;
+        ? plottedPnlData.map((y, i) => ({ x: data[i].date, y }))
+        : plottedPnlData;
     const chartLabels = isTimeScale ? undefined : data.map(d => d.date);
 
     pnlChart = new Chart(ctx, {
@@ -2977,10 +3038,12 @@ function updatePnlChart(performance) {
         data: {
             ...(chartLabels ? { labels: chartLabels } : {}),
             datasets: [{
-                label: 'P&L',
+                label: percentageView ? 'P&L vs Start (%)' : 'P&L',
                 data: chartData,
+                pnlAmountData: pnlData,
                 costBasisData: costBasisData,
-                baselineValue: baselineValue,
+                pnlBaselineValue: baselineValue,
+                baselineValue: plottedBaseline,
                 startingInvestmentValue: startingInvestmentValue,
                 dailyPnlMap: performance.dailyPnlMap || null,
                 segment: {
@@ -2990,7 +3053,7 @@ function updatePnlChart(performance) {
                 borderColor: '#087f65',
                 backgroundColor: 'rgba(8, 127, 101, 0.075)',
                 fill: {
-                    target: { value: baselineValue },
+                    target: { value: plottedBaseline },
                     above: 'rgba(16, 185, 129, 0.15)',
                     below: 'rgba(239, 68, 68, 0.15)'
                 },
@@ -3025,10 +3088,10 @@ function updatePnlChart(performance) {
                             return context[0].label;
                         },
                         label: (context) => {
-                            const pnl = isTimeScale ? context.raw.y : context.raw;
                             const dataIndex = context.dataIndex;
+                            const pnl = context.dataset.pnlAmountData[dataIndex];
                             const costBasis = context.dataset.costBasisData[dataIndex];
-                            const baseline = context.dataset.baselineValue;
+                            const baseline = context.dataset.pnlBaselineValue;
                             const startingValue = context.dataset.startingInvestmentValue;
                             const pnlPercent = costBasis !== 0 ? (pnl / costBasis) * 100 : 0;
                             const changeFromBaseline = pnl - baseline;
@@ -3037,8 +3100,8 @@ function updatePnlChart(performance) {
                             const changeSign = changeFromBaseline >= 0 ? '+' : '';
                             return [
                                 `P&L: ${sign}${formatCurrency(pnl)}`,
-                                `P&L %: ${sign}${pnlPercent.toFixed(2)}%`,
-                                `vs Start: ${changeSign}${formatCurrency(changeFromBaseline)} (${changeSign}${changePercent.toFixed(2)}%)`
+                                `P&L %: ${formatPercent(pnlPercent)}`,
+                                `vs Start: ${hideAmounts() ? formatPercent(changePercent) : `${changeSign}${formatCurrency(changeFromBaseline)}${hidePercentages() ? '' : ` (${formatPercent(changePercent)})`}`}`
                             ];
                         }
                     }
@@ -3077,7 +3140,7 @@ function updatePnlChart(performance) {
                     ticks: {
                         callback: (value) => {
                             const sign = value >= 0 ? '+' : '';
-                            return sign + formatCurrency(value);
+                            return percentageView ? formatPercent(value) : sign + formatCurrency(value);
                         }
                     }
                 }
@@ -3199,10 +3262,13 @@ const marketHoursPlugin = {
                 ctx.fillStyle = lastValue >= 0 ? '#087f65' : '#bd4663';
                 ctx.fill();
 
-                // Draw P&L label (always show amount, hide percentage in anonymous mode)
-                const sign = lastValue >= 0 ? '+' : '';
+                // The plotted value and endpoint label use the same units.
+                const amount = dataset.pnlAmountData?.[lastIndex] ?? lastValue;
+                const sign = amount >= 0 ? '+' : '';
                 const partial = dataset.pointData?.[lastIndex]?.missing_baseline_symbols?.length;
-                const pnlText = `${partial ? 'Partial: ' : ''}${sign}${formatCurrencyAlways(lastValue)}`;
+                const pnlText = `${partial ? 'Partial: ' : ''}${hideAmounts()
+                    ? formatPercent(dataset.pnlPercentData[lastIndex])
+                    : sign + formatCurrencyAlways(amount)}`;
 
                 ctx.font = 'bold 12px sans-serif';
                 ctx.fillStyle = lastValue >= 0 ? '#087f65' : '#bd4663';
@@ -3216,10 +3282,9 @@ const marketHoursPlugin = {
                     ctx.textAlign = 'right';
                     ctx.fillText(pnlText, x - 10, y - 5);
 
-                    // Only show percentage if not in anonymous mode
-                    if (!anonymousMode && dataset.pnlPercentData[lastIndex] != null) {
+                    if (!hideAmounts() && !hidePercentages() && dataset.pnlPercentData[lastIndex] != null) {
                         const pnlPercent = dataset.pnlPercentData[lastIndex];
-                        const percentText = `(${sign}${pnlPercent.toFixed(2)}%)`;
+                        const percentText = `(${formatPercent(pnlPercent)})`;
                         ctx.font = '11px sans-serif';
                         ctx.fillText(percentText, x - 10, y + 10);
                     }
@@ -3227,10 +3292,9 @@ const marketHoursPlugin = {
                     ctx.textAlign = 'left';
                     ctx.fillText(pnlText, x + 10, y - 5);
 
-                    // Only show percentage if not in anonymous mode
-                    if (!anonymousMode && dataset.pnlPercentData[lastIndex] != null) {
+                    if (!hideAmounts() && !hidePercentages() && dataset.pnlPercentData[lastIndex] != null) {
                         const pnlPercent = dataset.pnlPercentData[lastIndex];
-                        const percentText = `(${sign}${pnlPercent.toFixed(2)}%)`;
+                        const percentText = `(${formatPercent(pnlPercent)})`;
                         ctx.font = '11px sans-serif';
                         ctx.fillText(percentText, x + 10, y + 10);
                     }
@@ -3266,7 +3330,7 @@ function updateIntradaySpotlight(intraday, selectedPoint = null) {
         ? `${view.partial ? 'Partial daily P&L' : 'Daily P&L'} · ${selectedPoint.time} ET`
         : `Latest ${view.partial && view.display != null ? 'partial daily' : 'daily'} P&L`;
     if (!value || !percent) return;
-    value.textContent = view.display !== null ? `${view.display >= 0 && !anonymousMode ? '+' : ''}${formatCurrency(view.display)}` : (latest ? 'Unavailable' : '--');
+    value.textContent = view.display !== null ? `${view.display >= 0 && !hideAmounts() ? '+' : ''}${formatCurrency(view.display)}` : (latest ? 'Unavailable' : '--');
     percent.textContent = view.percent !== null ? formatPercent(view.percent) : '--';
     for (const element of [value, percent]) {
         element.classList.toggle('text-success', view.display !== null && view.display >= 0);
@@ -3302,6 +3366,7 @@ function updateIntradayTimestamp() {
 }
 
 function updateIntradayChart(intraday, interval = '5m') {
+    privacySnapshots.set(updateIntradayChart, [intraday, interval]);
     renderedIntraday = intraday;
     if (intraday?.date === marketTodayStr() && TodayPnl.latest(intraday, marketTodayStr())) {
         latestTodaySnapshot = intraday;
@@ -3385,7 +3450,8 @@ function updateIntradayChart(intraday, interval = '5m') {
             labels: fullDayLabels,
             datasets: [{
                 label: rawData.some(d => d.missing_baseline_symbols?.length) ? 'Partial Daily P&L' : 'Daily P&L',
-                data: pnlData,
+                data: hideAmounts() ? pnlPercentData : pnlData,
+                pnlAmountData: pnlData,
                 pointData: pointData,
                 pnlPercentData: pnlPercentData,
                 baselineData: baselineData,
@@ -3404,7 +3470,8 @@ function updateIntradayChart(intraday, interval = '5m') {
                 pointRadius: 0,
                 pointHoverRadius: 4,
                 // Missing reference prices are gaps, never an inferred zero.
-                spanGaps: !rawData.some(d => TodayPnl.valuation(d).display == null)
+                spanGaps: !rawData.some(d => hideAmounts()
+                    ? TodayPnl.valuation(d).percent == null : TodayPnl.valuation(d).display == null)
             }]
         },
         options: {
@@ -3422,7 +3489,7 @@ function updateIntradayChart(intraday, interval = '5m') {
                     const idx = activeElements[0].index;
                     const ac = ds.assetChangesData ? ds.assetChangesData[idx] : null;
                     if (ac != null) {
-                        renderTopMoversAtTime(chart.data.labels[idx], ds.data[idx],
+                        renderTopMoversAtTime(chart.data.labels[idx], ds.pnlAmountData[idx],
                             ds.pnlPercentData ? ds.pnlPercentData[idx] : null, ac, true, ds.pointData[idx]);
                         return;
                     }
@@ -3465,7 +3532,7 @@ function updateIntradayChart(intraday, interval = '5m') {
                     ticks: {
                         callback: (value) => {
                             const sign = value >= 0 ? '+' : '';
-                            return sign + formatCurrencyAlways(value);
+                            return hideAmounts() ? formatPercent(value) : sign + formatCurrencyAlways(value);
                         }
                     }
                 }
@@ -3483,6 +3550,7 @@ function updateIntradayChart(intraday, interval = '5m') {
 }
 
 function updateAllocationChart(holdings, view = 'assets') {
+    privacySnapshots.set(updateAllocationChart, [holdings, view]);
     const ctx = document.getElementById('allocationChart').getContext('2d');
 
     // Store holdings for view switching
@@ -3710,10 +3778,8 @@ function updateAllocationChart(holdings, view = 'assets') {
                     callbacks: {
                         label: (context) => {
                             const percent = ((context.raw / displayTotal) * 100).toFixed(1);
-                            if (anonymousMode) {
-                                return `${context.label}: *** (${percent}%)`;
-                            }
-                            return `${context.label}: ${formatCurrencyAlways(context.raw)} (${percent}%)`;
+                            const value = hideAmounts() ? `${percent}%` : formatCurrencyAlways(context.raw);
+                            return `${context.label}: ${value}${!hideAmounts() && !hidePercentages() ? ` (${percent}%)` : ''}`;
                         },
                         afterBody: (tooltipItems) => {
                             const item = tooltipItems[0];
@@ -3721,11 +3787,8 @@ function updateAllocationChart(holdings, view = 'assets') {
                                 const lines = ['───────────'];
                                 otherHoldings.forEach(h => {
                                     const pct = ((h.market_value / displayTotal) * 100).toFixed(1);
-                                    if (anonymousMode) {
-                                        lines.push(`  ${displaySymbol(h.symbol)}: *** (${pct}%)`);
-                                    } else {
-                                        lines.push(`  ${displaySymbol(h.symbol)}: ${formatCurrencyAlways(h.market_value)} (${pct}%)`);
-                                    }
+                                    const value = hideAmounts() ? `${pct}%` : formatCurrencyAlways(h.market_value);
+                                    lines.push(`  ${displaySymbol(h.symbol)}: ${value}${!hideAmounts() && !hidePercentages() ? ` (${pct}%)` : ''}`);
                                 });
                                 return lines;
                             }
@@ -3746,7 +3809,7 @@ function updateAllocationChart(holdings, view = 'assets') {
                             return '';
                         }
                         const label = context.chart.data.labels[context.dataIndex];
-                        return `${label}\n${percent.toFixed(1)}%`;
+                        return `${label}\n${hidePercentages() ? formatCurrencyAlways(value) : `${percent.toFixed(1)}%`}`;
                     },
                     textAlign: 'center',
                     // Position labels inside the slices
@@ -3764,6 +3827,7 @@ function updateAllocationChart(holdings, view = 'assets') {
 }
 
 function updateAnnualTable(performance) {
+    privacySnapshots.set(updateAnnualTable, [performance]);
     const tbody = document.getElementById('annualBody');
 
     if (!performance || !performance.performance || performance.performance.length === 0) {
@@ -3913,7 +3977,7 @@ function buildAnnualDetail(r, sales, assetRows) {
 
 P&L % = P&L ÷ (Start Value + Net Invested) × 100
     = ${formatCurrency(r.pnl)} ÷ ${formatCurrency(totalInvested)} × 100
-    = ${r.pnlPercent.toFixed(2)}%`;
+    = ${formatRatio(r.pnlPercent, 2)}`;
 
     let assetHtml;
     if (!assetRows.length) {
@@ -3968,7 +4032,7 @@ P&L % = P&L ÷ (Start Value + Net Invested) × 100
             return `<tr>
                 <td><strong>${escapeHtml(displaySymbol(s.symbol))}</strong></td>
                 <td class="text-nowrap">${escapeHtml(s.date)}</td>
-                <td class="text-end">${formatNumber(s.quantity, 4)}</td>
+                <td class="text-end">${formatQuantity(s.quantity)}</td>
                 <td class="text-end">${formatCurrency(s.proceeds)}</td>
                 <td class="text-end">${formatCurrency(s.cost_basis)}</td>
                 <td class="text-end ${gcls}">${formatCurrency(s.gain)}</td>
@@ -4280,7 +4344,7 @@ function renderTransactions() {
 
     body.innerHTML = rows.map(t => {
         const badge = TXN_ACTION_BADGE[t.action] || 'bg-secondary';
-        const qty = t.quantity != null ? formatNumber(t.quantity, 4) : '--';
+        const qty = t.quantity != null ? formatQuantity(t.quantity) : '--';
         const price = t.ave_price != null ? formatCurrency(t.ave_price) : '--';
         const amount = t.amount != null ? formatCurrency(t.amount) : '--';
         return `<tr data-txn-id="${t.id}">
@@ -4290,9 +4354,9 @@ function renderTransactions() {
             <td class="text-end">${qty}</td>
             <td class="text-end">${price}</td>
             <td class="text-end">${amount}</td>
-            <td>${escapeHtml(t.broker || '--')}</td>
-            <td class="text-muted small">${escapeHtml(t.source || '')}</td>
-            <td class="text-muted small">${escapeHtml(t.comment || '')}${t.action === 'SELL' ? `<div class="small text-muted">${escapeHtml(SaleLots.labels[t.cost_basis_method] || 'FIFO (legacy)')}${(t.lot_allocations || []).length ? ` · ${(t.lot_allocations || []).map(a => `#${a.lot_id}: ${escapeHtml(a.quantity)}`).join(', ')}` : ''}</div>` : ''}</td>
+            <td>${escapeHtml(hideAmounts() ? '***' : t.broker || '--')}</td>
+            <td class="text-muted small">${escapeHtml(hideAmounts() ? '***' : t.source || '')}</td>
+            <td class="text-muted small">${escapeHtml(hideAmounts() ? '***' : t.comment || '')}${t.action === 'SELL' ? `<div class="small text-muted">${escapeHtml(SaleLots.labels[t.cost_basis_method] || 'FIFO (legacy)')}${(t.lot_allocations || []).length ? ` · ${(t.lot_allocations || []).map(a => `#${a.lot_id}: ${escapeHtml(hideAmounts() ? '***' : a.quantity)}`).join(', ')}` : ''}</div>` : ''}</td>
             <td class="text-end">
                 <button class="btn btn-sm btn-outline-danger txn-delete-btn" data-txn-id="${t.id}"
                         title="Delete this transaction">
@@ -4306,7 +4370,7 @@ function renderTransactions() {
 async function deleteTransaction(txnId, btn) {
     const txn = allTransactions.find(t => String(t.id) === String(txnId));
     const label = txn
-        ? `${txn.date} · ${txn.action} ${txn.asset}` + (txn.quantity != null ? ` · qty ${formatNumber(txn.quantity, 4)}` : '')
+        ? `${txn.date} · ${txn.action} ${txn.asset}` + (txn.quantity != null ? ` · qty ${formatQuantity(txn.quantity)}` : '')
         : `transaction ${txnId}`;
     if (!confirm(`Permanently delete this transaction?\n\n${label}\n\nThis cannot be undone.`)) return;
 
@@ -4366,7 +4430,7 @@ function _fillMoverTables(items) {
         return `<tr class="mover-detail-row" data-mover-symbol="${escapeHtml(it.symbol)}" tabindex="0" role="button" aria-haspopup="dialog" aria-controls="tickerTechnicalsModal" aria-label="View ${escapeHtml(displaySymbol(it.symbol))} moving averages">
             <td><strong>${escapeHtml(displaySymbol(it.symbol))}</strong><i class="bi bi-graph-up mover-detail-icon" aria-hidden="true"></i>${buildTradeActivityHtml(it)}</td>
             <td class="text-end">${buildPositionPriceHtml(it)}</td>
-            <td class="text-end ${cls}">${sign}${formatCurrencyAlways(it.amt)}</td>
+            <td class="text-end ${cls}">${hideAmounts() ? '***' : sign + formatCurrencyAlways(it.amt)}</td>
             <td class="text-end ${cls}">${it.pct != null ? formatPercent(it.pct) : '--'}</td>
         </tr>`;
     };
@@ -4399,8 +4463,9 @@ function _setTopMoversHeader(amt, pct, timeLabel, missingSymbols = [], partial =
     }
     if (totalEl) {
         const sign = amt != null && amt >= 0 ? '+' : '';
-        const pctText = pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)` : '';
-        totalEl.textContent = amt == null ? 'Unavailable' : `${sign}${formatCurrencyAlways(amt)}${pctText}`;
+        const amountText = hideAmounts() ? '***' : `${sign}${formatCurrencyAlways(amt)}`;
+        const pctText = pct != null && !hidePercentages() ? ` (${formatPercent(pct)})` : '';
+        totalEl.textContent = amt == null ? 'Unavailable' : `${amountText}${pctText}`;
         totalEl.className = `fw-semibold ${amt == null ? 'text-muted' : (amt >= 0 ? 'text-success' : 'text-danger')}`;
     }
 }
@@ -4447,7 +4512,7 @@ function renderTopMoversDefault() {
     if (ds && Number.isInteger(ds.lastDataIndex) && ds.lastDataIndex >= 0
         && ds.assetChangesData && ds.assetChangesData[ds.lastDataIndex]) {
         const i = ds.lastDataIndex;
-        renderTopMoversAtTime(intradayChart.data.labels[i], ds.data[i],
+        renderTopMoversAtTime(intradayChart.data.labels[i], ds.pnlAmountData?.[i] ?? ds.data[i],
             ds.pnlPercentData ? ds.pnlPercentData[i] : null, ds.assetChangesData[i], false, ds.pointData?.[i]);
     } else {
         updateIntradaySpotlight(renderedIntraday);
@@ -5072,6 +5137,7 @@ async function addTransaction(payload) {
 
     function formatTradeQuantity(value) {
         if (value == null) return '--';
+        if (hideAmounts()) return '***';
         return new Intl.NumberFormat('en-US', {
             minimumFractionDigits: 0,
             maximumFractionDigits: 4,
@@ -5086,14 +5152,14 @@ async function addTransaction(payload) {
 
     function signedCurrency(value) {
         if (value == null) return '--';
-        if (anonymousMode) return '***';
+        if (hideAmounts()) return '***';
         const prefix = value > 0 ? '+' : '';
         return `${prefix}${formatCurrencyAlways(value)}`;
     }
 
     function signedPrice(symbol, value) {
         if (value == null) return '--';
-        if (anonymousMode) return '***';
+        if (hideAmounts()) return '***';
         const prefix = value > 0 ? '+' : '';
         return `${prefix}${formatPrice(symbol, value, true)}`;
     }
@@ -5175,6 +5241,7 @@ async function addTransaction(payload) {
                 after: formatPercent(impact.after.pnlPercent),
                 change: impact.change.pnlPercent == null
                     ? '--'
+                    : hidePercentages() ? '***'
                     : `${impact.change.pnlPercent > 0 ? '+' : ''}${formatNumber(impact.change.pnlPercent)} pp`,
                 beforeTone: metricTone(impact.before.pnlPercent),
                 afterTone: metricTone(impact.after.pnlPercent),
@@ -5403,7 +5470,7 @@ function resizeTrackerCharts() {
 document.addEventListener('DOMContentLoaded', () => {
     initLiveRefresh();
     window.financeUI = window.FinanceUI?.init({
-        demo: isDemoPortfolio, private: () => anonymousMode,
+        demo: isDemoPortfolio, private: hideAmounts, hidePercentages,
         today: marketTodayStr, toast: showToast,
     });
     // Every fresh visit starts with the full Today chart, regardless of the
@@ -5426,7 +5493,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     initTransactionsTab();
     window.coveredCallsUI = window.CoveredCalls.init({
-        demo: isDemoPortfolio, private: () => anonymousMode,
+        demo: isDemoPortfolio, private: hideAmounts, hidePercentages,
         money: formatCurrency, today: marketTodayStr, toast: showToast,
         onSaved: () => { applySavedTransaction(); return refreshAfterTransaction(); },
     });
@@ -5512,7 +5579,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('holdingsBody').addEventListener('click', (e) => {
         if (e.target.closest('[data-cc-coverage]')) return;
         // Handle target % inline editing
-        const targetCell = e.target.closest('.target-pct-cell');
+        const targetCell = !hidePercentages() && e.target.closest('.target-pct-cell');
         if (targetCell && !targetCell.querySelector('input')) {
             e.stopPropagation();
             const symbol = targetCell.dataset.symbol;
@@ -5580,8 +5647,22 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Anonymous mode button
-    document.getElementById('anonymousBtn').addEventListener('click', toggleAnonymousMode);
+    // Three-way privacy selector, including standard radio-group arrow keys.
+    const displayOptions = [...document.querySelectorAll('[data-display-mode]')];
+    displayOptions.forEach((option, index) => {
+        option.addEventListener('click', () => setDisplayMode(option.dataset.displayMode));
+        option.addEventListener('keydown', event => {
+            let next;
+            if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % displayOptions.length;
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index + displayOptions.length - 1) % displayOptions.length;
+            if (event.key === 'Home') next = 0;
+            if (event.key === 'End') next = displayOptions.length - 1;
+            if (next == null) return;
+            event.preventDefault();
+            setDisplayMode(displayOptions[next].dataset.displayMode);
+            displayOptions[next].focus();
+        });
+    });
     updateAnonymousButton();
 
     // Portfolio chart view buttons (Value / Investment)

@@ -79,3 +79,45 @@ test('coverage masks all quantities, account names and strike in anonymous mode'
     assert.doesNotMatch(coverageDetailsHtml(c), /<img/);
     assert.match(coverageDetailsHtml(c), /&lt;img/);
 });
+
+test('privacy refresh clears an open covered-call editor and immediately masks loaded monetary records', async () => {
+    const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
+    const elements = new Map();
+    const element = id => {
+        if (!elements.has(id)) elements.set(id, {id, value: '', textContent: '', innerHTML: '', disabled: false, listeners: {},
+            classList: {toggle() {}, contains() {return false;}}, addEventListener(name, fn) {this.listeners[name] = fn;},
+            querySelectorAll() {return [];}, reportValidity() {return true;}});
+        return elements.get(id);
+    };
+    element('ccFilter').value = 'all';
+    let hidden = false, closed = 0;
+    element('ccForm').reset = () => {
+        for (const id of ['ccContracts', 'ccPremium', 'ccFees', 'ccNewPremium', 'ccNewFees', 'ccComment']) element(id).value = '';
+    };
+    const record = {...call(), id: 1, status: 'OPEN', contracts: 1, premium: 13, fees: .65,
+        date: '2026-10-01', transaction_time: '10:00:00', reserved_shares: 100,
+        net_opening_premium: 1299.35, realized_option_pnl: 0, events: []};
+    const context = {document: {getElementById: element, querySelectorAll: () => []},
+        console, crypto: {randomUUID: () => 'uuid'}, setTimeout, clearTimeout,
+        bootstrap: {Modal: {getInstance: () => ({hide() {closed++;}}), getOrCreateInstance: () => ({show() {}, hide() {closed++;}})}},
+        fetch: async () => ({ok: true, json: async () => ({calls: [record], inventory: [account(150, 100)], summary: {open_contracts: 1, net_cash_flow: 1299.35}})}),
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../static/js/covered-calls.js'), 'utf8'), context);
+    const ui = context.CoveredCalls.init({demo: false, private: () => hidden,
+        money: n => hidden ? '***' : '$' + n.toFixed(2), today: () => '2026-10-16', toast() {}, onSaved() {}});
+    await ui.load();
+    await element('ccOpenBtn').listeners.click();
+    element('ccPremium').value = '13'; element('ccComment').value = 'private note';
+    assert.match(element('ccList').innerHTML, /\$1299.35/);
+    hidden = true; ui.refreshPrivacy();
+    assert.equal(element('ccPremium').value, '');
+    assert.equal(element('ccComment').value, '');
+    assert.equal(element('ccHolding').innerHTML, '');
+    assert.equal(element('ccEstimate').textContent, '');
+    assert.equal(element('ccOpenBtn').disabled, true);
+    assert.equal(closed, 1);
+    assert.doesNotMatch(element('ccList').innerHTML, /1299.35|data-cc-manage|data-cc-delete/);
+    hidden = false; ui.refreshPrivacy();
+    assert.equal(element('ccOpenBtn').disabled, false);
+    assert.match(element('ccList').innerHTML, /\$1299.35/);
+});

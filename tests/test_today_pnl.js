@@ -256,14 +256,17 @@ test('the rendered Holdings row, total and category amounts use the displayed sn
     const context = {
         TodayPnl, latestTodaySnapshot: snapshot, marketTodayStr: () => date,
         baseHoldingsData: [], holdingsData: [], anonymousMode: false,
+        hideAmounts: () => context.anonymousMode, hidePercentages: () => false,
         targetAllocations: {}, targetGroups: {}, symbolToGroup: {},
         holdingsSortColumn: 'symbol', holdingsSortDirection: 'asc', holdingsViewMode: 'category',
         window: {},
         document: { getElementById: id => id === 'holdingsBody' ? tbody : category, querySelectorAll: () => [] },
         setDashboardStatus: (id, text) => status[id] = text,
-        formatCurrencyAlways: n => '$' + Number(n || 0).toFixed(2),
-        formatCurrency: n => '$' + Number(n || 0).toFixed(2),
+        formatCurrencyAlways: n => context.anonymousMode ? '***' : '$' + Number(n || 0).toFixed(2),
+        formatCurrency: n => context.anonymousMode ? '***' : '$' + Number(n || 0).toFixed(2),
         formatPercent: n => Number(n || 0).toFixed(2) + '%',
+        formatRatio: (n, decimals = 1) => n == null ? '--' : Number(n).toFixed(decimals) + '%',
+        formatQuantity: n => context.anonymousMode ? '***' : String(n),
         formatNumber: n => String(n), formatPrice: (_symbol, n) => String(n ?? '--'),
         getCategory: symbol => symbol === 'CASH' ? 'Cash' : 'Individual Stocks',
         getTargetKey: symbol => symbol, displaySymbol: symbol => symbol, escapeHtml: s => s,
@@ -322,12 +325,15 @@ test('Holdings has exactly one separate option row and Today TOTAL adds its esti
         asset_changes: [{symbol: 'AAPL', quantity: 100, pnl: 1000, pnl_percent: 2}]};
     const context = {
         TodayPnl, latestTodaySnapshot: {date, intraday: [basePoint]}, marketTodayStr: () => date,
-        anonymousMode: false, targetAllocations: {}, targetGroups: {}, symbolToGroup: {},
+        anonymousMode: false, hideAmounts: () => context.anonymousMode, hidePercentages: () => false,
+        targetAllocations: {}, targetGroups: {}, symbolToGroup: {},
         holdingsSortColumn: 'symbol', holdingsSortDirection: 'asc', holdingsViewMode: 'flat',
         window: {}, document: {getElementById: () => tbody, querySelectorAll: () => []},
-        formatCurrencyAlways: n => '$' + Number(n || 0).toFixed(2),
-        formatCurrency: n => '$' + Number(n || 0).toFixed(2),
+        formatCurrencyAlways: n => context.anonymousMode ? '***' : '$' + Number(n || 0).toFixed(2),
+        formatCurrency: n => context.anonymousMode ? '***' : '$' + Number(n || 0).toFixed(2),
         formatPercent: n => Number(n || 0).toFixed(2) + '%',
+        formatRatio: (n, decimals = 1) => n == null ? '--' : Number(n).toFixed(decimals) + '%',
+        formatQuantity: n => context.anonymousMode ? '***' : String(n),
         formatNumber: n => String(n), formatPrice: (_symbol, n) => String(n ?? '--'),
         getCategory: () => 'Individual Stocks', getTargetKey: symbol => symbol,
         displaySymbol: symbol => symbol, escapeHtml: s => s,
@@ -373,4 +379,52 @@ test('Holdings has exactly one separate option row and Today TOTAL adds its esti
     assert.match(tbody.innerHTML, /Pending · not included/);
     const pendingCategoryTotal = tbody.innerHTML.match(/<tr class="total-row">[\s\S]*?<\/tr>/)[0];
     assert.match(pendingCategoryTotal, /<strong>\+\$1000\.00<\/strong>/);
+});
+
+test('Holdings switches amounts and percentages across rows, subtotals and total without changing input data', () => {
+    const tbody = {innerHTML: '', querySelectorAll: () => []};
+    const context = {
+        TodayPnl, latestTodaySnapshot: null, marketTodayStr: () => date,
+        displayMode: 'all', hideAmounts: () => context.displayMode === 'percentage',
+        hidePercentages: () => context.displayMode === 'absolute',
+        targetAllocations: {}, targetGroups: {}, symbolToGroup: {},
+        holdingsSortColumn: 'symbol', holdingsSortDirection: 'asc', holdingsViewMode: 'category',
+        window: {}, document: {getElementById: () => tbody, querySelectorAll: () => []},
+        getCategory: () => 'Individual Stocks', getTargetKey: symbol => symbol,
+        escapeHtml: value => String(value), getTargetPct: () => null,
+        getAssetIconHtml: () => '', getGroupMarketValue: () => 0,
+    };
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function formatCurrency('), source.indexOf('function setDisplayMode(')), context);
+    vm.runInContext(source.slice(source.indexOf('function sortHoldings('), source.indexOf('async function toggleTransactionDetail(')), context);
+    const stock = {symbol: 'AAPL', quantity: 123, avg_cost: 98, current_price: 102,
+        cost_basis: 12054, market_value: 12546, unrealized_pnl: 492, pnl_percent: 4.08,
+        daily_change_amount: 246, daily_change_percent: 2, ytd_pnl: 615, ytd_pnl_percent: 5.15,
+        ytd_basis: 11931, total_pnl: 492, total_pnl_percent: 4.08,
+        annualized_return: 3.7, weighted_annualized_return: 3.5,
+        long_term_quantity: 100, short_term_quantity: 23};
+    const original = JSON.stringify(stock);
+    const row = () => tbody.innerHTML.match(/<tr class="holding-row"[\s\S]*?<\/tr>/)[0];
+    const cell = (html, col) => html.match(new RegExp(`<td data-col="${col}"[^>]*>([\\s\\S]*?)<\\/td>`))[1];
+    for (const mode of ['all', 'percentage', 'absolute', 'all']) {
+        context.displayMode = mode;
+        context.renderHoldingsTable([stock]);
+        if (mode === 'percentage') {
+            assert.match(cell(row(), 1), /^\*\*\*$/);
+            assert.doesNotMatch(tbody.innerHTML, /\$12,546|\$98\.00|\$246\.00/);
+            assert.match(cell(row(), 11), /\+4\.08%/);
+            assert.match(cell(row(), 7), /100\.0%/);
+            assert.match(tbody.innerHTML, /class="total-row"[\s\S]*?\*\*\*/);
+            assert.match(tbody.innerHTML, /class="category-header-row"[\s\S]*?\*\*\*/);
+        } else if (mode === 'absolute') {
+            assert.match(cell(row(), 1), /123\.00/);
+            assert.match(cell(row(), 6), /\$12,546\.00/);
+            for (const col of [7, 11, 12, 13, 16, 18]) assert.match(cell(row(), col), /\*\*\*/);
+            assert.doesNotMatch(tbody.innerHTML, /4\.08%|100\.0%|5\.15%/);
+        } else {
+            assert.match(cell(row(), 6), /\$12,546\.00/);
+            assert.match(cell(row(), 11), /\+4\.08%/);
+        }
+        assert.equal(JSON.stringify(stock), original);
+    }
 });

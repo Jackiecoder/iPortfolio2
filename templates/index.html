@@ -24,7 +24,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=72">
+    <link rel="stylesheet" href="/static/css/style.css?v=73">
     {% if not demo_mode %}<link rel="stylesheet" href="/static/css/finance.css?v=9">{% endif %}
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -62,9 +62,22 @@
                 <button id="installAppBtn" class="btn btn-light btn-sm d-none" title="Install Portfolio Tracker as an app">
                     <i class="bi bi-download me-1"></i><span class="nav-label">Install App</span>
                 </button>
-                <button id="anonymousBtn" class="btn btn-outline-light btn-sm" title="Toggle Anonymous Mode">
-                    <i class="bi bi-eye"></i>
-                </button>
+                <div class="privacy-control dropdown">
+                    <button id="anonymousBtn" type="button" class="btn btn-outline-light btn-sm"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
+                            aria-controls="privacyModeMenu" aria-label="Privacy display: Show all" title="Privacy display: Show all">
+                        <i class="bi bi-eye" aria-hidden="true"></i>
+                    </button>
+                    <div id="privacyModeMenu" class="dropdown-menu privacy-menu">
+                        <div class="privacy-menu-label" id="privacyModeLabel">Privacy display</div>
+                        <div class="privacy-segments" role="radiogroup" aria-labelledby="privacyModeLabel" aria-describedby="privacyModeHint">
+                            <button type="button" role="radio" data-display-mode="all" aria-checked="true" tabindex="0"><i class="bi bi-eye" aria-hidden="true"></i>Show all</button>
+                            <button type="button" role="radio" data-display-mode="percentage" aria-checked="false" tabindex="-1"><i class="bi bi-percent" aria-hidden="true"></i>Percent only</button>
+                            <button type="button" role="radio" data-display-mode="absolute" aria-checked="false" tabindex="-1"><i class="bi bi-currency-dollar" aria-hidden="true"></i>Amounts only</button>
+                        </div>
+                        <p id="privacyModeHint" aria-live="polite">Amounts and percentages are visible.</p>
+                    </div>
+                </div>
                 <form class="portfolio-mode-control" action="{{ '/' if demo_mode else '/demo' }}" method="get">
                     <button id="demoPortfolioBtn" type="submit" class="btn btn-outline-light btn-sm"
                             aria-label="Demo portfolio" aria-pressed="{{ 'true' if demo_mode else 'false' }}"
@@ -1269,14 +1282,14 @@
     <script src="/static/js/sale-lots.js?v=2"></script>
     <script src="/static/js/today-pnl.js?v=5"></script>
     <script src="/static/js/transaction-updates.js?v=1"></script>
-    <script src="/static/js/ticker-technicals.js?v=2"></script>
+    <script src="/static/js/ticker-technicals.js?v=3"></script>
     {% if demo_mode %}<script src="/static/js/demo-portfolio.js?v=4"></script>{% endif %}
     <script src="/static/js/holdings-layout.js?v=2"></script>
     <script src="/static/js/today-layout.js?v=2"></script>
     <script src="/static/js/option-quotes.js?v=1"></script>
-    <script src="/static/js/covered-calls.js?v=4"></script>
-    {% if not demo_mode %}<script src="/static/js/finance.js?v=11"></script>{% endif %}
-    <script src="/static/js/app.js?v=164"></script>
+    <script src="/static/js/covered-calls.js?v=5"></script>
+    {% if not demo_mode %}<script src="/static/js/finance.js?v=12"></script>{% endif %}
+    <script src="/static/js/app.js?v=165"></script>
     <script>
         // Register the PWA service worker so the app is installable / launchable offline.
         if ('serviceWorker' in navigator) {

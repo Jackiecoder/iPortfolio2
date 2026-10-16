@@ -14,13 +14,19 @@ function setup() {
         return elements.get(id);
     };
     const pending = [];
+    const charts = [];
+    let mode = 'all';
     const context = {window: {}, document: {getElementById: element}, AbortController, URLSearchParams,
-        displaySymbol: s => s, formatPrice: (_s, n) => '$' + n.toFixed(2), anonymousMode: false,
+        displaySymbol: s => s, formatPrice: (_s, n) => mode === 'percentage' ? '***' : '$' + n.toFixed(2),
+        formatPercent: n => mode === 'absolute' ? '***' : (n >= 0 ? '+' : '') + n.toFixed(2) + '%',
+        hideAmounts: () => mode === 'percentage',
+        Chart: function (_canvas, options) {const chart = {options, destroyed: false, destroy() {this.destroyed = true;}}; charts.push(chart); return chart;},
         bootstrap: {Modal: {getOrCreateInstance: () => ({show() {}})}},
         fetch: (url, options) => new Promise(resolve => pending.push({url, options, resolve})),
     };
+    element('tickerTechnicalsChart').getContext = () => ({});
     vm.runInNewContext(source, context);
-    return {ui: context.window.TickerTechnicalsUI, element, pending};
+    return {ui: context.window.TickerTechnicalsUI, element, pending, charts, setMode(value) {mode = value;}};
 }
 const data = symbol => ({symbol, current_price: 110, quote_time: '2026-09-24T15:00:00Z',
     history_as_of: '2026-09-23', day_basis: 'trading sessions', series: [],
@@ -51,6 +57,25 @@ test('rapid ticker switches reject late responses and abort the older request', 
     assert.equal(element('tickerTechnicalsTitle').textContent, 'BTC-USD · Moving averages');
     assert.equal(element('tickerTechnicalsPrice').textContent, '$110.00');
     assert.equal(element('tickerSma200').textContent, 'Not enough history');
+});
+
+test('privacy refresh masks cached quote amounts or comparison percentages without fetching', async () => {
+    const {ui, pending, element, charts, setMode} = setup();
+    const opening = ui.open('AAPL');
+    pending[0].resolve({ok: true, json: async () => ({...data('AAPL'), series: [{date: '2026-09-23', close: 110, sma50: 100, sma200: null}]})});
+    await opening;
+    assert.equal(charts.length, 1);
+    setMode('percentage'); ui.refreshPrivacy();
+    assert.equal(element('tickerTechnicalsPrice').textContent, '***');
+    assert.equal(element('tickerSma50Comparison').textContent, 'Above by *** (10.00%)');
+    assert.equal(charts[0].destroyed, true);
+    assert.equal(element('tickerTechnicalsChartWrap').hidden.has('d-none'), true);
+    setMode('absolute'); ui.refreshPrivacy();
+    assert.equal(element('tickerTechnicalsPrice').textContent, '$110.00');
+    assert.equal(element('tickerSma50Comparison').textContent, 'Above by $10.00 (***)');
+    assert.equal(element('tickerTechnicalsChartWrap').hidden.has('d-none'), false);
+    assert.equal(charts.length, 2);
+    assert.equal(pending.length, 1);
 });
 
 test('HTTP failure hides old values and exposes retry; close cancels in-flight rendering', async () => {
